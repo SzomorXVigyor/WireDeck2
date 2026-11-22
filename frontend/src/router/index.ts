@@ -67,6 +67,14 @@ const router = createRouter({
       ],
     },
 
+    // Standalone full-viewport VNC console tab (opened in a new tab from VNC cards)
+    {
+      path: '/sites/:siteId/vnc/:targetId',
+      name: 'site-vnc-session',
+      component: () => import('../modules/operator/VncSessionView.vue'),
+      meta: { requiresAuth: true, requireFlag: 'vncEnabled' },
+    },
+
     // Surface 2: Site Operator Workspace (lazy-loaded chunk - Members, VNC edge points, WebView pages)
     // Never exposes WireGuard config or site-level feature flags.
     {
