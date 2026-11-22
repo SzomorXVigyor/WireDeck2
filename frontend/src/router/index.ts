@@ -63,9 +63,8 @@ const router = createRouter({
         {
           path: 'sites/:siteId/history',
           name: 'site-history',
-          component: FeaturePlaceholderView,
+          component: () => import('../modules/operator/HistoryView.vue'),
           meta: { requireFlag: 'webviewEnabled' },
-          props: { title: 'WebView History', phase: 'Phase 4', description: 'TimescaleDB sensor & register history integrated with WebView.' },
         },
         {
           path: 'sites/:siteId/alarms',

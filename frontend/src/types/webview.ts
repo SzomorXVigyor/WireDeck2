@@ -23,6 +23,8 @@ export interface ModbusTCPAttributes {
   dataType: ModbusDataType
   wordOrder: ModbusWordOrder
   accessMode: ModbusAccessMode
+  unit?: string
+  precision?: number
 }
 
 export interface RegisterMapping {
@@ -99,4 +101,43 @@ export interface TelemetrySample {
   quality: TelemetryQuality
   error?: string
   timestamp: string
+}
+
+export interface HistoryKeyInfo {
+  entryId: string
+  registerMappingId: string
+  deviceId: string
+  deviceName: string
+  protocol: string
+  registerName: string
+  dataType: string
+  unit: string
+  precision: number
+  pollIntervalSeconds: number
+  retentionDays: number
+  isActive: boolean
+}
+
+export interface HistoryPoint {
+  time: string
+  value: number | null
+  min?: number | null
+  max?: number | null
+  count: number
+}
+
+export interface HistorySeries {
+  registerMappingId: string
+  deviceName: string
+  registerName: string
+  unit: string
+  precision: number
+  points: HistoryPoint[]
+}
+
+export interface HistoryQueryResponse {
+  resolution: string
+  from: string
+  to: string
+  series: HistorySeries[]
 }

@@ -131,6 +131,8 @@ const regAddr = ref('0')
 const regDataType = ref<ModbusDataType>('UINT16')
 const regWordOrder = ref<ModbusWordOrder>('BIG')
 const regAccess = ref<ModbusAccessMode>('READ')
+const regUnit = ref('')
+const regPrecision = ref('')
 
 const selectedRegDevice = computed(() => devices.value.find((d) => d.id === regDeviceId.value) ?? null)
 
@@ -145,6 +147,8 @@ function openCreateRegister() {
   regDataType.value = 'UINT16'
   regWordOrder.value = 'BIG'
   regAccess.value = 'READ'
+  regUnit.value = ''
+  regPrecision.value = ''
   regModalOpen.value = true
 }
 
@@ -160,6 +164,8 @@ function openEditRegister(m: RegisterMapping) {
   regDataType.value = (a?.dataType as ModbusDataType) || 'UINT16'
   regWordOrder.value = (a?.wordOrder as ModbusWordOrder) || 'BIG'
   regAccess.value = (a?.accessMode as ModbusAccessMode) || 'READ'
+  regUnit.value = typeof a?.unit === 'string' ? a.unit : ''
+  regPrecision.value = a?.precision !== undefined && a?.precision !== null ? String(clampPrecision(a.precision)) : ''
   regModalOpen.value = true
 }
 
@@ -213,9 +219,13 @@ const widBtnLabel = ref('Trigger')
 const widBtnTriggerMs = ref('1000')
 
 const widBoundMapping = computed(() => mappings.value.find((m) => m.id === widMappingId.value) ?? null)
+const widEffectivePrecision = computed(() => {
+  if (widPrecision.value.trim() !== '') return clampPrecision(widPrecision.value)
+  return clampPrecision(widBoundMapping.value?.protocolAttributes?.precision ?? 0)
+})
 const widBoundTypeBounds = computed(() => {
   const dt = widBoundMapping.value?.protocolAttributes?.dataType
-  return effectiveDisplayBounds(dt, clampPrecision(widPrecision.value))
+  return effectiveDisplayBounds(dt, widEffectivePrecision.value)
 })
 
 function openCreateWidget() {
@@ -226,7 +236,7 @@ function openCreateWidget() {
   widFontSize.value = 'lg'
   widPrefix.value = ''
   widUnit.value = ''
-  widPrecision.value = '0'
+  widPrecision.value = ''
   widMin.value = ''
   widMax.value = ''
   widLampOn.value = { mode: 'on', color: 'emerald', text: 'ON' }
@@ -247,8 +257,11 @@ function openEditWidget(w: WebviewWidget) {
   widMappingId.value = w.registerMappingId || ''
   widFontSize.value = (w.style?.fontSize as FontSizeOption) || 'lg'
   widPrefix.value = String(w.extra?.prefix ?? '')
-  widUnit.value = String(w.extra?.unit ?? '')
-  widPrecision.value = String(clampPrecision(w.extra?.precision ?? 0))
+  widUnit.value = w.extra?.unit !== undefined && w.extra?.unit !== null ? String(w.extra.unit) : ''
+  widPrecision.value =
+    w.extra?.precision !== undefined && w.extra?.precision !== null && w.extra?.precision !== ''
+      ? String(clampPrecision(w.extra.precision))
+      : ''
   widMin.value = w.extra?.min !== undefined && w.extra?.min !== null ? String(w.extra.min) : ''
   widMax.value = w.extra?.max !== undefined && w.extra?.max !== null ? String(w.extra.max) : ''
 
@@ -452,13 +465,19 @@ function confirmDeleteDevice(d: WebviewDevice) {
 async function saveRegister() {
   errMsg.value = null
   okMsg.value = null
-  const attrs = {
+  const attrs: Record<string, unknown> = {
     slaveAddress: Number(regSlave.value),
     functionCode: regFC.value,
     registerAddress: Number(regAddr.value),
     dataType: regFC.value === 'READ_COIL' || regFC.value === 'READ_DISCRETE' ? 'BOOL' : regDataType.value,
     wordOrder: regWordOrder.value,
     accessMode: regFC.value === 'READ_DISCRETE' || regFC.value === 'READ_INPUT' ? 'READ' : regAccess.value,
+  }
+  if (regUnit.value.trim() !== '') {
+    attrs.unit = regUnit.value.trim()
+  }
+  if (regPrecision.value.trim() !== '') {
+    attrs.precision = clampPrecision(regPrecision.value)
   }
   try {
     if (editingRegId.value) {
@@ -593,13 +612,21 @@ async function saveWidget() {
   if (widType.value === 'display') {
     style.fontSize = widFontSize.value
     extra.prefix = widPrefix.value
-    extra.unit = widUnit.value
-    extra.precision = clampPrecision(widPrecision.value)
+    if (widUnit.value.trim() !== '') {
+      extra.unit = widUnit.value.trim()
+    }
+    if (widPrecision.value.trim() !== '') {
+      extra.precision = clampPrecision(widPrecision.value)
+    }
   } else if (widType.value === 'number_input') {
     style.fontSize = widFontSize.value
     extra.prefix = widPrefix.value
-    extra.unit = widUnit.value
-    extra.precision = clampPrecision(widPrecision.value)
+    if (widUnit.value.trim() !== '') {
+      extra.unit = widUnit.value.trim()
+    }
+    if (widPrecision.value.trim() !== '') {
+      extra.precision = clampPrecision(widPrecision.value)
+    }
     if (widMin.value.trim() !== '' && Number.isFinite(Number(widMin.value))) {
       extra.min = Number(widMin.value)
     }
@@ -903,6 +930,12 @@ async function toggleMemberWrite(member: SiteMember, canWrite: boolean) {
                   unit {{ m.protocolAttributes?.slaveAddress ?? 1 }} |
                   {{ m.protocolAttributes?.functionCode }} @ {{ m.protocolAttributes?.registerAddress }}
                   [{{ m.protocolAttributes?.dataType }}/{{ m.protocolAttributes?.wordOrder || 'BIG' }}]
+                  <span
+                    v-if="m.protocolAttributes?.unit || m.protocolAttributes?.precision !== undefined"
+                    class="ml-1.5 rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-sky-300"
+                  >
+                    {{ m.protocolAttributes?.unit || '' }}{{ m.protocolAttributes?.unit && m.protocolAttributes?.precision !== undefined ? ' ' : '' }}{{ m.protocolAttributes?.precision !== undefined ? `10^${-m.protocolAttributes.precision}` : '' }}
+                  </span>
                 </td>
                 <td class="px-4 py-3 font-mono text-slate-400">
                   {{ m.protocolAttributes?.accessMode === 'READ_WRITE' ? 'R/W' : 'R' }}
@@ -1351,6 +1384,17 @@ async function toggleMemberWrite(member: SiteMember, canWrite: boolean) {
                 </select>
               </div>
             </div>
+
+            <div class="grid gap-3 border-t border-slate-800 pt-3 sm:grid-cols-2">
+              <div>
+                <label class="mb-1 block text-xs text-slate-400">Unit (optional)</label>
+                <input v-model="regUnit" maxlength="32" placeholder="e.g. C, bar, %" class="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-white" />
+              </div>
+              <div>
+                <label class="mb-1 block text-xs text-slate-400">Precision (10^-x, optional)</label>
+                <NumericTextInput v-model="regPrecision" :min="-5" :max="5" allow-negative placeholder="0" input-class="bg-slate-900" />
+              </div>
+            </div>
           </div>
 
           <label v-if="editingRegId" class="inline-flex items-center gap-2 text-xs text-slate-300">
@@ -1445,8 +1489,15 @@ async function toggleMemberWrite(member: SiteMember, canWrite: boolean) {
                 </select>
               </div>
               <div>
-                <label class="mb-1 block text-xs text-slate-400">Decimal Places (10^-x, -5 to 5)</label>
-                <NumericTextInput v-model="widPrecision" :min="-5" :max="5" allow-negative required placeholder="0" input-class="bg-slate-900" />
+                <label class="mb-1 block text-xs text-slate-400">Decimal Places (10^-x)</label>
+                <NumericTextInput
+                  v-model="widPrecision"
+                  :min="-5"
+                  :max="5"
+                  allow-negative
+                  :placeholder="`Default: ${widBoundMapping?.protocolAttributes?.precision ?? 0}`"
+                  input-class="bg-slate-900"
+                />
               </div>
               <div>
                 <label class="mb-1 block text-xs text-slate-400">Prefix</label>
@@ -1454,9 +1505,16 @@ async function toggleMemberWrite(member: SiteMember, canWrite: boolean) {
               </div>
               <div>
                 <label class="mb-1 block text-xs text-slate-400">Unit (Postfix)</label>
-                <input v-model="widUnit" placeholder="e.g. C, bar, %" class="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-white" />
+                <input
+                  v-model="widUnit"
+                  :placeholder="widBoundMapping?.protocolAttributes?.unit ? `Default: ${widBoundMapping.protocolAttributes.unit}` : 'e.g. C, bar, %'"
+                  class="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-white"
+                />
               </div>
             </div>
+            <p class="text-[11px] text-slate-500">
+              Leave Unit or Decimal Places empty to inherit from the bound register (unit: {{ widBoundMapping?.protocolAttributes?.unit || 'none' }}, precision: {{ widBoundMapping?.protocolAttributes?.precision ?? 0 }}).
+            </p>
 
             <div v-if="widType === 'number_input'" class="space-y-2 border-t border-slate-800 pt-3">
               <div class="grid gap-3 sm:grid-cols-2">

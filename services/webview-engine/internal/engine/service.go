@@ -14,6 +14,7 @@ import (
 
 	"github.com/SzomorXVigyor/WireDeck2/pkg/internalclient"
 	"github.com/SzomorXVigyor/WireDeck2/pkg/wireguard"
+	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/history"
 	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/models"
 	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/provider"
 	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/sitecache"
@@ -35,7 +36,12 @@ type Service struct {
 	cache         *sitecache.Cache
 	hub           *TelemetryHub
 	scheduler     *Scheduler
+	histStore     history.Store
 	devDirectDial bool
+}
+
+func (s *Service) SetHistoryStore(store history.Store) {
+	s.histStore = store
 }
 
 func NewService(
@@ -763,10 +769,187 @@ func (s *Service) DrainSite(siteID uuid.UUID) {
 
 func (s *Service) DeleteSiteData(ctx context.Context, siteID uuid.UUID) error {
 	s.DrainSite(siteID)
+	if s.histStore != nil {
+		if err := s.histStore.DeleteSiteHistory(ctx, siteID); err != nil {
+			slog.Warn("delete_site_tsdb_history_failed", "site_id", siteID, "error", err)
+		}
+	}
 	_, _ = s.db.NewDelete().Model((*models.HistoryEntry)(nil)).Where("site_id = ?", siteID).Exec(ctx)
 	_, _ = s.db.NewDelete().Model((*models.Dashboard)(nil)).Where("site_id = ?", siteID).Exec(ctx)
 	_, _ = s.db.NewDelete().Model((*models.Device)(nil)).Where("site_id = ?", siteID).Exec(ctx)
 	_, _ = s.db.NewDelete().Model((*models.MemberPolicy)(nil)).Where("site_id = ?", siteID).Exec(ctx)
 	s.reloadAsync()
 	return nil
+}
+
+// --- History Query & Per-Entry Retention (Phase 4) ---
+
+type HistoryKeyInfo struct {
+	EntryID             uuid.UUID `json:"entryId"`
+	RegisterMappingID   uuid.UUID `json:"registerMappingId"`
+	DeviceID            uuid.UUID `json:"deviceId"`
+	DeviceName          string    `json:"deviceName"`
+	Protocol            string    `json:"protocol"`
+	RegisterName        string    `json:"registerName"`
+	DataType            string    `json:"dataType"`
+	Unit                string    `json:"unit"`
+	Precision           int       `json:"precision"`
+	PollIntervalSeconds int       `json:"pollIntervalSeconds"`
+	RetentionDays       int       `json:"retentionDays"`
+	IsActive            bool      `json:"isActive"`
+}
+
+type HistorySeries struct {
+	RegisterMappingID uuid.UUID              `json:"registerMappingId"`
+	DeviceName        string                 `json:"deviceName"`
+	RegisterName      string                 `json:"registerName"`
+	Unit              string                 `json:"unit"`
+	Precision         int                    `json:"precision"`
+	Points            []history.HistoryPoint `json:"points"`
+}
+
+type HistoryQueryResponse struct {
+	Resolution string          `json:"resolution"`
+	From       time.Time       `json:"from"`
+	To         time.Time       `json:"to"`
+	Series     []HistorySeries `json:"series"`
+}
+
+func (s *Service) ListHistoryKeys(ctx context.Context, siteID uuid.UUID) ([]HistoryKeyInfo, error) {
+	entries, err := s.ListHistoryEntries(ctx, siteID)
+	if err != nil {
+		return nil, err
+	}
+	if len(entries) == 0 {
+		return []HistoryKeyInfo{}, nil
+	}
+	mappings, err := s.ListMappings(ctx, siteID)
+	if err != nil {
+		return nil, err
+	}
+	devices, err := s.ListDevices(ctx, siteID)
+	if err != nil {
+		return nil, err
+	}
+
+	devByID := make(map[uuid.UUID]models.Device, len(devices))
+	for _, d := range devices {
+		devByID[d.ID] = d
+	}
+	mapByID := make(map[uuid.UUID]models.RegisterMapping, len(mappings))
+	for _, m := range mappings {
+		mapByID[m.ID] = m
+	}
+
+	out := make([]HistoryKeyInfo, 0, len(entries))
+	for _, he := range entries {
+		m, ok := mapByID[he.RegisterMappingID]
+		if !ok {
+			continue
+		}
+		dev := devByID[m.DeviceID]
+		unit := ""
+		prec := 0
+		if u, ok := m.ProtocolAttributes["unit"].(string); ok {
+			unit = strings.TrimSpace(u)
+		}
+		if p, ok := m.ProtocolAttributes["precision"].(float64); ok {
+			prec = int(p)
+		} else if p, ok := m.ProtocolAttributes["precision"].(int); ok {
+			prec = p
+		}
+		if prec < -5 {
+			prec = -5
+		} else if prec > 5 {
+			prec = 5
+		}
+		out = append(out, HistoryKeyInfo{
+			EntryID:             he.ID,
+			RegisterMappingID:   m.ID,
+			DeviceID:            m.DeviceID,
+			DeviceName:          dev.Name,
+			Protocol:            dev.Protocol,
+			RegisterName:        m.Name,
+			DataType:            m.DataType,
+			Unit:                unit,
+			Precision:           prec,
+			PollIntervalSeconds: he.PollIntervalSeconds,
+			RetentionDays:       he.RetentionDays,
+			IsActive:            he.IsActive,
+		})
+	}
+	return out, nil
+}
+
+func (s *Service) QueryHistory(ctx context.Context, siteID uuid.UUID, mappingIDs []uuid.UUID, from, to time.Time) (*HistoryQueryResponse, error) {
+	if s.histStore == nil {
+		return nil, history.ErrHistoryUnavailable
+	}
+	keys, err := s.ListHistoryKeys(ctx, siteID)
+	if err != nil {
+		return nil, err
+	}
+	keyByMapping := make(map[uuid.UUID]HistoryKeyInfo, len(keys))
+	for _, k := range keys {
+		keyByMapping[k.RegisterMappingID] = k
+	}
+
+	// Only allow querying mappings that belong to this site
+	validIDs := make([]uuid.UUID, 0, len(mappingIDs))
+	seen := make(map[uuid.UUID]struct{}, len(mappingIDs))
+	for _, id := range mappingIDs {
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		if _, ok := keyByMapping[id]; ok {
+			seen[id] = struct{}{}
+			validIDs = append(validIDs, id)
+		}
+	}
+
+	res, err := s.histStore.Query(ctx, siteID, validIDs, from, to)
+	if err != nil {
+		return nil, err
+	}
+
+	series := make([]HistorySeries, 0, len(validIDs))
+	for _, id := range validIDs {
+		k := keyByMapping[id]
+		pts := res.Series[id]
+		if pts == nil {
+			pts = []history.HistoryPoint{}
+		}
+		series = append(series, HistorySeries{
+			RegisterMappingID: id,
+			DeviceName:        k.DeviceName,
+			RegisterName:      k.RegisterName,
+			Unit:              k.Unit,
+			Precision:         k.Precision,
+			Points:            pts,
+		})
+	}
+	return &HistoryQueryResponse{
+		Resolution: res.Resolution,
+		From:       from.UTC(),
+		To:         to.UTC(),
+		Series:     series,
+	}, nil
+}
+
+func (s *Service) PruneExpiredHistory(ctx context.Context) {
+	if s.histStore == nil || s.db == nil {
+		return
+	}
+	var entries []models.HistoryEntry
+	if err := s.db.NewSelect().Model(&entries).Where("retention_days < 30").Scan(ctx); err != nil {
+		slog.Warn("history_prune_list_failed", "error", err)
+		return
+	}
+	now := time.Now().UTC()
+	for _, he := range entries {
+		cutoff := now.Add(-time.Duration(he.RetentionDays) * 24 * time.Hour)
+		if err := s.histStore.PruneBefore(ctx, he.RegisterMappingID, cutoff); err != nil {
+			slog.Warn("history_prune_entry_failed", "mapping_id", he.RegisterMappingID, "error", err)
+		}
+	}
 }

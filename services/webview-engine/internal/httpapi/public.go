@@ -2,8 +2,12 @@ package httpapi
 
 import (
 	"context"
+	"encoding/csv"
 	"errors"
+	"fmt"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,6 +21,7 @@ import (
 	"github.com/SzomorXVigyor/WireDeck2/pkg/internalclient"
 	"github.com/SzomorXVigyor/WireDeck2/pkg/telemetry"
 	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/engine"
+	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/history"
 	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/models"
 	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/sitecache"
 )
@@ -201,6 +206,81 @@ func NewPublicRouter(svc *engine.Service, hub *engine.TelemetryHub, verifier *au
 		hub.ServeConn(req.Context(), ws, ticket)
 	})
 
+	// Authenticated CSV history export endpoint (raw HTTP response for file download)
+	r.Get("/api/v1/webview/sites/{siteId}/history/export.csv", func(w http.ResponseWriter, req *http.Request) {
+		rawAuth := req.Header.Get("Authorization")
+		if len(rawAuth) < 8 || rawAuth[:7] != "Bearer " {
+			http.Error(w, "missing bearer token", http.StatusUnauthorized)
+			return
+		}
+		claims, err := verifier.Verify(req.Context(), rawAuth[7:])
+		if err != nil {
+			http.Error(w, "invalid or expired token", http.StatusUnauthorized)
+			return
+		}
+		siteID, err := uuid.Parse(chi.URLParam(req, "siteId"))
+		if err != nil {
+			http.Error(w, "invalid siteId", http.StatusBadRequest)
+			return
+		}
+		userID, err := uuid.Parse(claims.Subject)
+		if err != nil {
+			http.Error(w, "invalid token subject", http.StatusUnauthorized)
+			return
+		}
+		authz, err := cache.CheckAuthz(req.Context(), siteID, userID)
+		if err != nil || !authz.Allowed || !authz.WebviewEnabled {
+			http.Error(w, "WebView access denied for this site", http.StatusForbidden)
+			return
+		}
+
+		mappingIDs, from, to, err := parseHistoryQueryParams(req.URL.Query().Get("mappingIds"), req.URL.Query().Get("from"), req.URL.Query().Get("to"))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		res, err := svc.QueryHistory(req.Context(), siteID, mappingIDs, from, to)
+		if err != nil {
+			if errors.Is(err, history.ErrHistoryUnavailable) {
+				http.Error(w, err.Error(), http.StatusServiceUnavailable)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="history-%s.csv"`, siteID.String()[:8]))
+		cw := csv.NewWriter(w)
+		_ = cw.Write([]string{"timestamp", "device", "register", "unit", "value", "min", "max", "samples"})
+		for _, ser := range res.Series {
+			factor := math.Pow10(-ser.Precision)
+			decimals := ser.Precision
+			if decimals < 0 {
+				decimals = 0
+			}
+			fmtScaled := func(v *float64) string {
+				if v == nil {
+					return ""
+				}
+				return strconv.FormatFloat(*v*factor, 'f', decimals, 64)
+			}
+			for _, pt := range ser.Points {
+				_ = cw.Write([]string{
+					pt.Time.UTC().Format(time.RFC3339),
+					ser.DeviceName,
+					ser.RegisterName,
+					ser.Unit,
+					fmtScaled(pt.Value),
+					fmtScaled(pt.Min),
+					fmtScaled(pt.Max),
+					strconv.FormatInt(pt.Count, 10),
+				})
+			}
+		}
+		cw.Flush()
+	})
+
 	humaAPI := api.NewHumaAPI(r, "WireDeck2 WebView Engine API", "2.2.0", "/api/v1/webview", enableDocs)
 
 	type SiteIDInput struct {
@@ -323,6 +403,57 @@ func NewPublicRouter(svc *engine.Service, hub *engine.TelemetryHub, verifier *au
 		out.Body.Ticket = tok
 		out.Body.ExpiresAt = exp
 		return out, nil
+	})
+
+	// --- History Query & Configured Keys (Site Member+) ---
+	type HistoryKeysOutput struct {
+		Body struct {
+			Keys []engine.HistoryKeyInfo `json:"keys"`
+		}
+	}
+	huma.Register(memberGroup, huma.Operation{
+		OperationID: "webviewListHistoryKeys",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/webview/sites/{siteId}/history/keys",
+		Summary:     "List register keys enabled for history archival on a site (Site Member)",
+		Tags:        []string{"WebView History"},
+		Security:    []map[string][]string{{"BearerAuth": {}}},
+	}, func(ctx context.Context, in *SiteIDInput) (*HistoryKeysOutput, error) {
+		keys, err := svc.ListHistoryKeys(ctx, in.SiteID)
+		if err != nil {
+			return nil, mapError(err)
+		}
+		out := &HistoryKeysOutput{}
+		out.Body.Keys = keys
+		return out, nil
+	})
+
+	type QueryHistoryInput struct {
+		SiteID     uuid.UUID `path:"siteId" format:"uuid"`
+		MappingIDs string    `query:"mappingIds" doc:"Comma-separated registerMappingId UUIDs"`
+		From       string    `query:"from" doc:"Start timestamp (RFC3339)"`
+		To         string    `query:"to" doc:"End timestamp (RFC3339)"`
+	}
+	type QueryHistoryOutput struct {
+		Body engine.HistoryQueryResponse
+	}
+	huma.Register(memberGroup, huma.Operation{
+		OperationID: "webviewQueryHistory",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/webview/sites/{siteId}/history",
+		Summary:     "Query TimescaleDB register history with automatic resolution selection (raw / 1m / 5m / 1h / 6h)",
+		Tags:        []string{"WebView History"},
+		Security:    []map[string][]string{{"BearerAuth": {}}},
+	}, func(ctx context.Context, in *QueryHistoryInput) (*QueryHistoryOutput, error) {
+		ids, from, to, err := parseHistoryQueryParams(in.MappingIDs, in.From, in.To)
+		if err != nil {
+			return nil, huma.Error400BadRequest(err.Error())
+		}
+		res, err := svc.QueryHistory(ctx, in.SiteID, ids, from, to)
+		if err != nil {
+			return nil, mapError(err)
+		}
+		return &QueryHistoryOutput{Body: *res}, nil
 	})
 
 	// =========================================================================
@@ -1044,8 +1175,53 @@ func humaSiteAuthzMiddleware(humaAPI huma.API, cache *sitecache.Cache, requireOp
 	}
 }
 
+func parseHistoryQueryParams(rawIDs, rawFrom, rawTo string) ([]uuid.UUID, time.Time, time.Time, error) {
+	now := time.Now().UTC()
+	to := now
+	if strings.TrimSpace(rawTo) != "" {
+		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(rawTo))
+		if err != nil {
+			return nil, time.Time{}, time.Time{}, fmt.Errorf("invalid 'to' timestamp (RFC3339 required)")
+		}
+		to = parsed.UTC()
+	}
+	from := to.Add(-1 * time.Hour)
+	if strings.TrimSpace(rawFrom) != "" {
+		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(rawFrom))
+		if err != nil {
+			return nil, time.Time{}, time.Time{}, fmt.Errorf("invalid 'from' timestamp (RFC3339 required)")
+		}
+		from = parsed.UTC()
+	}
+	if !to.After(from) {
+		return nil, time.Time{}, time.Time{}, fmt.Errorf("'to' timestamp must be after 'from'")
+	}
+	if to.Sub(from) > 366*24*time.Hour {
+		return nil, time.Time{}, time.Time{}, fmt.Errorf("requested range cannot exceed 366 days")
+	}
+
+	var ids []uuid.UUID
+	for _, part := range strings.Split(rawIDs, ",") {
+		p := strings.TrimSpace(part)
+		if p == "" {
+			continue
+		}
+		u, err := uuid.Parse(p)
+		if err != nil {
+			return nil, time.Time{}, time.Time{}, fmt.Errorf("invalid mappingId %q", p)
+		}
+		ids = append(ids, u)
+		if len(ids) > 20 {
+			return nil, time.Time{}, time.Time{}, fmt.Errorf("at most 20 series may be queried at once")
+		}
+	}
+	return ids, from, to, nil
+}
+
 func mapError(err error) error {
 	switch {
+	case errors.Is(err, history.ErrHistoryUnavailable):
+		return huma.Error503ServiceUnavailable(err.Error())
 	case errors.Is(err, engine.ErrNotFound):
 		return huma.Error404NotFound(err.Error())
 	case errors.Is(err, engine.ErrConflict):

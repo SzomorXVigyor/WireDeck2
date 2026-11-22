@@ -10,9 +10,17 @@ const props = defineProps<{
 }>()
 
 const quality = computed(() => props.sample?.quality ?? 'STALE')
-const precision = computed(() => clampPrecision(props.widget.extra?.precision ?? 0))
+const precision = computed(() => {
+  const raw = props.widget.extra?.precision
+  if (raw !== undefined && raw !== null && raw !== '') return clampPrecision(raw)
+  return clampPrecision(props.mapping?.protocolAttributes?.precision ?? 0)
+})
 const prefix = computed(() => String(props.widget.extra?.prefix || ''))
-const unit = computed(() => String(props.widget.extra?.unit || ''))
+const unit = computed(() => {
+  const raw = props.widget.extra?.unit
+  if (raw !== undefined && raw !== null && String(raw).trim() !== '') return String(raw)
+  return String(props.mapping?.protocolAttributes?.unit || '')
+})
 const formatted = computed(() => formatPrecisionValue(props.sample?.value, precision.value))
 
 const fontSizeMap: Record<FontSizeOption, string> = {

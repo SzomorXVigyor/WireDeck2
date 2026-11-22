@@ -34,11 +34,13 @@ type Device struct {
 // ModbusTCPAttributes are the protocol-defined attributes for MODBUS_TCP registers.
 type ModbusTCPAttributes struct {
 	SlaveAddress    int    `json:"slaveAddress"`
-	FunctionCode    string `json:"functionCode"`    // READ_COIL | READ_DISCRETE | READ_HOLDING | READ_INPUT
-	RegisterAddress int    `json:"registerAddress"` // 0..65535
-	DataType        string `json:"dataType"`        // BOOL | UINT16 | INT16 | UINT32 | INT32 | FLOAT32
-	WordOrder       string `json:"wordOrder"`       // BIG | LITTLE
-	AccessMode      string `json:"accessMode"`      // READ | READ_WRITE
+	FunctionCode    string `json:"functionCode"`        // READ_COIL | READ_DISCRETE | READ_HOLDING | READ_INPUT
+	RegisterAddress int    `json:"registerAddress"`     // 0..65535
+	DataType        string `json:"dataType"`            // BOOL | UINT16 | INT16 | UINT32 | INT32 | FLOAT32
+	WordOrder       string `json:"wordOrder"`           // BIG | LITTLE
+	AccessMode      string `json:"accessMode"`          // READ | READ_WRITE
+	Unit            string `json:"unit,omitempty"`      // Optional display/history unit (e.g. "C", "bar", "%")
+	Precision       *int   `json:"precision,omitempty"` // Optional decimal shift 10^-x (-5..5)
 }
 
 type RegisterMapping struct {

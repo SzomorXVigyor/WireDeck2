@@ -11,6 +11,7 @@ import (
 	"net"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -116,6 +117,12 @@ func (p *ModbusTCPProvider) ValidateAttributes(attrs map[string]any) (map[string
 		"wordOrder":       parsed.WordOrder,
 		"accessMode":      parsed.AccessMode,
 	}
+	if parsed.Unit != "" {
+		norm["unit"] = parsed.Unit
+	}
+	if parsed.Precision != nil {
+		norm["precision"] = *parsed.Precision
+	}
 	return norm, RegisterSummary{
 		FunctionCode:    parsed.FunctionCode,
 		RegisterAddress: parsed.RegisterAddress,
@@ -179,6 +186,27 @@ func ParseModbusTCPAttributes(attrs map[string]any) (models.ModbusTCPAttributes,
 		return models.ModbusTCPAttributes{}, fmt.Errorf("%s registers are read-only in Modbus", fc)
 	}
 
+	unit := ""
+	if rawUnit, ok := attrs["unit"]; ok && rawUnit != nil {
+		if s, ok := rawUnit.(string); ok {
+			unit = strings.TrimSpace(s)
+			if len(unit) > 32 {
+				return models.ModbusTCPAttributes{}, fmt.Errorf("unit length exceeds 32 characters")
+			}
+		}
+	}
+
+	var precisionPtr *int
+	if rawPrec, ok := attrs["precision"]; ok && rawPrec != nil {
+		if str, isStr := rawPrec.(string); !isStr || strings.TrimSpace(str) != "" {
+			p, ok := asInt(rawPrec)
+			if !ok || p < -5 || p > 5 {
+				return models.ModbusTCPAttributes{}, fmt.Errorf("precision must be an integer between -5 and 5")
+			}
+			precisionPtr = &p
+		}
+	}
+
 	return models.ModbusTCPAttributes{
 		SlaveAddress:    slave,
 		FunctionCode:    fc,
@@ -186,6 +214,8 @@ func ParseModbusTCPAttributes(attrs map[string]any) (models.ModbusTCPAttributes,
 		DataType:        dataType,
 		WordOrder:       wordOrder,
 		AccessMode:      accessMode,
+		Unit:            unit,
+		Precision:       precisionPtr,
 	}, nil
 }
 

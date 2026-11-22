@@ -41,11 +41,24 @@ func TestWebViewOpenAPI_RoleSeparationAndPreUpgradeWSAuth(t *testing.T) {
 	svc := engine.NewService(nil, nil, cache, hub, nil, false)
 	handler := NewPublicRouter(svc, hub, verifier, cache, true)
 
-	// 1. OpenAPI 3.1 spec served
+	// 1. OpenAPI 3.1 spec served and includes history endpoints
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/webview/openapi.json", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200 openapi.json, got %d", rec.Code)
+	}
+	var spec map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &spec); err != nil {
+		t.Fatalf("openapi.json invalid JSON: %v", err)
+	}
+	paths, _ := spec["paths"].(map[string]any)
+	for _, want := range []string{
+		"/api/v1/webview/sites/{siteId}/history",
+		"/api/v1/webview/sites/{siteId}/history/keys",
+	} {
+		if _, ok := paths[want]; !ok {
+			t.Fatalf("expected OpenAPI spec to contain %s", want)
+		}
 	}
 
 	// 2. SITE_MEMBER must get 403 Forbidden on Site Operator route

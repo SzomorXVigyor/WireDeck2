@@ -19,7 +19,9 @@ import (
 	"github.com/SzomorXVigyor/WireDeck2/pkg/internalclient"
 	"github.com/SzomorXVigyor/WireDeck2/pkg/telemetry"
 	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/engine"
+	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/history"
 	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/httpapi"
+	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/models"
 	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/ownership"
 	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/provider"
 	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/sitecache"
@@ -90,6 +92,56 @@ func main() {
 	scheduler = engine.NewScheduler(dbBundle.Bun, providers, cache, hub, owner, graceDur, devDirectDial)
 	svc = engine.NewService(dbBundle.Bun, providers, cache, hub, scheduler, devDirectDial)
 
+	// Optional TimescaleDB history store + batched COPY ingester
+	var tsdbStore history.Store
+	var histIngester *history.Ingester
+	if tsdbURL := strings.TrimSpace(os.Getenv("TSDB_DATABASE_URL")); tsdbURL != "" {
+		st, err := history.NewTimescaleStore(ctx, tsdbURL)
+		if err != nil {
+			slog.Error("tsdb_connect_failed", "error", err)
+			os.Exit(1)
+		}
+		tsdbStore = st
+		svc.SetHistoryStore(tsdbStore)
+
+		flushMs := time.Duration(parseIntEnv("HISTORY_FLUSH_MS", 1000)) * time.Millisecond
+		flushRows := parseIntEnv("HISTORY_FLUSH_ROWS", 500)
+		histIngester = history.NewIngester(tsdbStore, flushMs, flushRows)
+
+		scheduler.AddSampleHook(func(sample engine.ValueSample, _ models.RegisterMapping, he *models.HistoryEntry) {
+			if he == nil || !he.IsActive || sample.Quality != engine.QualityGood || sample.Value == nil {
+				return
+			}
+			histIngester.Record(sample.SiteID, sample.MappingID, sample.Timestamp, *sample.Value, he.PollIntervalSeconds)
+		})
+
+		go func() {
+			pruneTick := time.NewTicker(time.Hour)
+			defer pruneTick.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-pruneTick.C:
+					svc.PruneExpiredHistory(ctx)
+				}
+			}
+		}()
+		slog.Info("tsdb_history_enabled", "flush_ms", flushMs.Milliseconds(), "flush_rows", flushRows)
+	} else {
+		slog.Warn("tsdb_history_disabled_missing_TSDB_DATABASE_URL")
+	}
+
+	readyCheck := func(rctx context.Context) error {
+		if err := dbBundle.Pool.Ping(rctx); err != nil {
+			return err
+		}
+		if tsdbStore != nil {
+			return tsdbStore.Ping(rctx)
+		}
+		return nil
+	}
+
 	go func() {
 		cache.SyncRuntimeStates(ctx)
 		ticker := time.NewTicker(15 * time.Second)
@@ -116,7 +168,7 @@ func main() {
 	}
 	internalSrv := &http.Server{
 		Addr:              internalAddr,
-		Handler:           httpapi.NewInternalRouter(svc, internalToken, dbBundle.Pool.Ping),
+		Handler:           httpapi.NewInternalRouter(svc, internalToken, readyCheck),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -142,6 +194,12 @@ func main() {
 	defer cancel()
 	_ = publicSrv.Shutdown(shutCtx)
 	_ = internalSrv.Shutdown(shutCtx)
+	if histIngester != nil {
+		histIngester.Shutdown(shutCtx)
+	}
+	if tsdbStore != nil {
+		tsdbStore.Close()
+	}
 	slog.Info("stopped_cleanly")
 }
 
