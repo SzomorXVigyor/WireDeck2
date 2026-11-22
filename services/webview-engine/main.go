@@ -20,8 +20,8 @@ import (
 	"github.com/SzomorXVigyor/WireDeck2/pkg/telemetry"
 	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/engine"
 	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/httpapi"
-	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/modbus"
 	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/ownership"
+	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/provider"
 	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/sitecache"
 	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/migrations"
 )
@@ -75,8 +75,10 @@ func main() {
 		}
 	})
 
-	pool := modbus.NewDevicePool(cache.GetRunnerAuth, devDirectDial, idleTeardown)
-	defer pool.Close()
+	providers := provider.NewRegistry(
+		provider.NewModbusTCPProvider(cache.GetRunnerAuth, devDirectDial, idleTeardown),
+	)
+	defer providers.Close()
 
 	hub = engine.NewTelemetryHub(30*time.Second, func(siteID uuid.UUID, mappingIDs []uuid.UUID) {
 		if scheduler != nil {
@@ -85,10 +87,9 @@ func main() {
 	})
 
 	var owner ownership.Provider = ownership.SingleReplicaOwnership{}
-	scheduler = engine.NewScheduler(dbBundle.Bun, pool, cache, hub, owner, graceDur, devDirectDial)
-	svc = engine.NewService(dbBundle.Bun, pool, cache, hub, scheduler, devDirectDial)
+	scheduler = engine.NewScheduler(dbBundle.Bun, providers, cache, hub, owner, graceDur, devDirectDial)
+	svc = engine.NewService(dbBundle.Bun, providers, cache, hub, scheduler, devDirectDial)
 
-	// 15s runtime-state poll loop (D28)
 	go func() {
 		cache.SyncRuntimeStates(ctx)
 		ticker := time.NewTicker(15 * time.Second)
@@ -103,7 +104,6 @@ func main() {
 		}
 	}()
 
-	// Demand-driven Modbus scheduler
 	go scheduler.Run(ctx)
 
 	verifier := auth.NewRemoteJWKSVerifier(mustEnv("JWKS_URL"))

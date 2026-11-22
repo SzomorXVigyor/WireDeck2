@@ -52,21 +52,31 @@ export const useAuthStore = defineStore('auth', () => {
     applySession(res)
   }
 
+  async function verifyToken(
+    token: string,
+    type: 'INVITE' | 'PASSWORD_RESET',
+  ): Promise<{ valid: boolean; reason?: string }> {
+    return apiRequest<{ valid: boolean; reason?: string }>('/api/v1/iam/auth/verify-token', {
+      method: 'POST',
+      skipAuth: true,
+      body: JSON.stringify({ token, type }),
+    })
+  }
+
   async function acceptInvite(token: string, password: string) {
-    const res = await apiRequest<AuthResponse>('/api/v1/iam/auth/accept-invite', {
+    await apiRequest<void>('/api/v1/iam/auth/accept-invite', {
       method: 'POST',
       skipAuth: true,
       body: JSON.stringify({ token, password }),
     })
-    applySession(res)
   }
 
   async function changePassword(currentPassword: string, newPassword: string) {
-    const res = await apiRequest<AuthResponse>('/api/v1/iam/me/change-password', {
+    await apiRequest<void>('/api/v1/iam/me/change-password', {
       method: 'POST',
       body: JSON.stringify({ currentPassword, newPassword }),
     })
-    applySession(res)
+    clearSession()
   }
 
   async function forgotPassword(email: string) {
@@ -102,6 +112,7 @@ export const useAuthStore = defineStore('auth', () => {
     init,
     login,
     refresh,
+    verifyToken,
     acceptInvite,
     changePassword,
     forgotPassword,

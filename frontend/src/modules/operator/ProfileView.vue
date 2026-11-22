@@ -1,19 +1,19 @@
 <script setup lang="ts">
 import { ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { KeyRound } from 'lucide-vue-next'
 import { useAuthStore } from '../../stores/auth'
 
 const auth = useAuthStore()
+const router = useRouter()
 const currentPassword = ref('')
 const newPassword = ref('')
 const confirmPassword = ref('')
 const error = ref<string | null>(null)
-const success = ref(false)
 const saving = ref(false)
 
 async function onChangePassword() {
   error.value = null
-  success.value = false
   if (newPassword.value !== confirmPassword.value) {
     error.value = 'New passwords do not match'
     return
@@ -21,10 +21,7 @@ async function onChangePassword() {
   saving.value = true
   try {
     await auth.changePassword(currentPassword.value, newPassword.value)
-    currentPassword.value = ''
-    newPassword.value = ''
-    confirmPassword.value = ''
-    success.value = true
+    await router.push('/password-changed')
   } catch (err) {
     error.value = err instanceof Error ? err.message : 'Password change failed'
   } finally {
@@ -85,9 +82,6 @@ async function onChangePassword() {
           />
         </div>
         <p v-if="error" class="rounded-lg border border-rose-500/40 bg-rose-500/10 p-2.5 text-xs text-rose-200">{{ error }}</p>
-        <p v-if="success" class="rounded-lg border border-emerald-500/40 bg-emerald-500/10 p-2.5 text-xs text-emerald-200">
-          Password updated and other sessions revoked.
-        </p>
         <button
           type="submit"
           :disabled="saving"

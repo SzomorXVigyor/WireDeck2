@@ -14,14 +14,14 @@ import (
 
 	"github.com/SzomorXVigyor/WireDeck2/pkg/internalclient"
 	"github.com/SzomorXVigyor/WireDeck2/pkg/wireguard"
-	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/modbus"
 	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/models"
+	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/provider"
 	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/sitecache"
 )
 
 var (
 	ErrNotFound         = errors.New("not found")
-	ErrConflict         = errors.New("name already exists on this site")
+	ErrConflict         = errors.New("entry already exists on this site")
 	ErrHostOutOfSubnets = errors.New("device host IP is outside the site's allowed LAN subnets")
 	ErrReadOnlyMapping  = errors.New("register mapping is read-only")
 	ErrWriteForbidden   = errors.New("user does not have write permission on this site")
@@ -31,7 +31,7 @@ var (
 
 type Service struct {
 	db            *bun.DB
-	pool          *modbus.DevicePool
+	providers     *provider.Registry
 	cache         *sitecache.Cache
 	hub           *TelemetryHub
 	scheduler     *Scheduler
@@ -40,7 +40,7 @@ type Service struct {
 
 func NewService(
 	db *bun.DB,
-	pool *modbus.DevicePool,
+	providers *provider.Registry,
 	cache *sitecache.Cache,
 	hub *TelemetryHub,
 	scheduler *Scheduler,
@@ -48,7 +48,7 @@ func NewService(
 ) *Service {
 	return &Service{
 		db:            db,
-		pool:          pool,
+		providers:     providers,
 		cache:         cache,
 		hub:           hub,
 		scheduler:     scheduler,
@@ -66,32 +66,86 @@ func (s *Service) reloadAsync() {
 	}
 }
 
-// --- Site WebView Settings (History lives inside WebView) ---
+// --- History Entries (Per-register key + poll interval + retention) ---
 
-func (s *Service) GetSiteSettings(ctx context.Context, siteID uuid.UUID) (models.SiteWebviewSettings, error) {
-	st := models.SiteWebviewSettings{SiteID: siteID, HistoryEnabled: false}
-	err := s.db.NewSelect().Model(&st).Where("site_id = ?", siteID).Scan(ctx)
-	if errors.Is(err, sql.ErrNoRows) {
-		return st, nil
-	}
-	return st, err
+func (s *Service) ListHistoryEntries(ctx context.Context, siteID uuid.UUID) ([]models.HistoryEntry, error) {
+	var list []models.HistoryEntry
+	err := s.db.NewSelect().Model(&list).Where("site_id = ?", siteID).Order("created_at ASC").Scan(ctx)
+	return list, err
 }
 
-func (s *Service) UpdateSiteSettings(ctx context.Context, siteID uuid.UUID, historyEnabled bool) (models.SiteWebviewSettings, error) {
-	st := models.SiteWebviewSettings{
-		SiteID:         siteID,
-		HistoryEnabled: historyEnabled,
-		UpdatedAt:      time.Now().UTC(),
-	}
-	_, err := s.db.NewInsert().Model(&st).
-		On("CONFLICT (site_id) DO UPDATE").
-		Set("history_enabled = EXCLUDED.history_enabled, updated_at = EXCLUDED.updated_at").
-		Exec(ctx)
+func (s *Service) CreateHistoryEntry(ctx context.Context, siteID, mappingID uuid.UUID, pollSec, retentionDays int) (*models.HistoryEntry, error) {
+	exists, err := s.db.NewSelect().Model((*models.RegisterMapping)(nil)).
+		Where("id = ? AND site_id = ?", mappingID, siteID).Exists(ctx)
 	if err != nil {
-		return st, err
+		return nil, err
+	}
+	if !exists {
+		return nil, ErrNotFound
+	}
+	if pollSec < 1 {
+		pollSec = 60
+	}
+	if retentionDays < 1 {
+		retentionDays = 30
+	}
+	now := time.Now().UTC()
+	he := &models.HistoryEntry{
+		ID:                  uuid.New(),
+		SiteID:              siteID,
+		RegisterMappingID:   mappingID,
+		PollIntervalSeconds: pollSec,
+		RetentionDays:       retentionDays,
+		IsActive:            true,
+		CreatedAt:           now,
+		UpdatedAt:           now,
+	}
+	if _, err := s.db.NewInsert().Model(he).Exec(ctx); err != nil {
+		if strings.Contains(err.Error(), "duplicate key") {
+			return nil, ErrConflict
+		}
+		return nil, err
 	}
 	s.reloadAsync()
-	return st, nil
+	return he, nil
+}
+
+func (s *Service) UpdateHistoryEntry(ctx context.Context, siteID, entryID uuid.UUID, pollSec *int, retentionDays *int, isActive *bool) (*models.HistoryEntry, error) {
+	he := new(models.HistoryEntry)
+	if err := s.db.NewSelect().Model(he).Where("id = ? AND site_id = ?", entryID, siteID).Scan(ctx); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	if pollSec != nil {
+		he.PollIntervalSeconds = *pollSec
+	}
+	if retentionDays != nil {
+		he.RetentionDays = *retentionDays
+	}
+	if isActive != nil {
+		he.IsActive = *isActive
+	}
+	he.UpdatedAt = time.Now().UTC()
+	if _, err := s.db.NewUpdate().Model(he).WherePK().Exec(ctx); err != nil {
+		return nil, err
+	}
+	s.reloadAsync()
+	return he, nil
+}
+
+func (s *Service) DeleteHistoryEntry(ctx context.Context, siteID, entryID uuid.UUID) error {
+	res, err := s.db.NewDelete().Model((*models.HistoryEntry)(nil)).
+		Where("id = ? AND site_id = ?", entryID, siteID).Exec(ctx)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	s.reloadAsync()
+	return nil
 }
 
 // --- Service-Level Fine-Grained SITE_MEMBER Write Policies ---
@@ -142,7 +196,7 @@ func (s *Service) CanUserWrite(ctx context.Context, siteID, userID uuid.UUID, au
 	return p.CanWrite, nil
 }
 
-// --- Devices CRUD ---
+// --- Devices CRUD (strictly name, host, port, protocol) ---
 
 func (s *Service) ListDevices(ctx context.Context, siteID uuid.UUID) ([]models.Device, error) {
 	var list []models.Device
@@ -151,15 +205,12 @@ func (s *Service) ListDevices(ctx context.Context, siteID uuid.UUID) ([]models.D
 }
 
 type CreateDeviceInput struct {
-	SiteID                uuid.UUID
-	Name                  string
-	Host                  string
-	Port                  int
-	Protocol              string
-	UnitID                int
-	MaxConcurrentRequests int
-	RequestTimeoutMs      int
-	LanSubnets            []string
+	SiteID     uuid.UUID
+	Name       string
+	Host       string
+	Port       int
+	Protocol   string
+	LanSubnets []string
 }
 
 func (s *Service) CreateDevice(ctx context.Context, in CreateDeviceInput) (*models.Device, error) {
@@ -167,35 +218,28 @@ func (s *Service) CreateDevice(ctx context.Context, in CreateDeviceInput) (*mode
 	if !s.devDirectDial && len(in.LanSubnets) > 0 && !wireguard.ContainsHost(host, in.LanSubnets) {
 		return nil, ErrHostOutOfSubnets
 	}
+	proto := in.Protocol
+	if proto == "" {
+		proto = provider.ProtocolModbusTCP
+	}
+	if _, err := s.providers.Get(proto); err != nil {
+		return nil, err
+	}
 	port := in.Port
 	if port == 0 {
 		port = 502
 	}
-	proto := in.Protocol
-	if proto == "" {
-		proto = "MODBUS_TCP"
-	}
-	maxConc := in.MaxConcurrentRequests
-	if maxConc <= 0 {
-		maxConc = 1
-	}
-	timeout := in.RequestTimeoutMs
-	if timeout <= 0 {
-		timeout = 2000
-	}
+	now := time.Now().UTC()
 	dev := &models.Device{
-		ID:                    uuid.New(),
-		SiteID:                in.SiteID,
-		Name:                  strings.TrimSpace(in.Name),
-		Host:                  host,
-		Port:                  port,
-		Protocol:              proto,
-		UnitID:                in.UnitID,
-		MaxConcurrentRequests: maxConc,
-		RequestTimeoutMs:      timeout,
-		IsActive:              true,
-		CreatedAt:             time.Now().UTC(),
-		UpdatedAt:             time.Now().UTC(),
+		ID:        uuid.New(),
+		SiteID:    in.SiteID,
+		Name:      strings.TrimSpace(in.Name),
+		Host:      host,
+		Port:      port,
+		Protocol:  proto,
+		IsActive:  true,
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
 	if _, err := s.db.NewInsert().Model(dev).Exec(ctx); err != nil {
 		if strings.Contains(err.Error(), "duplicate key") {
@@ -208,15 +252,12 @@ func (s *Service) CreateDevice(ctx context.Context, in CreateDeviceInput) (*mode
 }
 
 type UpdateDeviceInput struct {
-	Name                  *string
-	Host                  *string
-	Port                  *int
-	Protocol              *string
-	UnitID                *int
-	MaxConcurrentRequests *int
-	RequestTimeoutMs      *int
-	IsActive              *bool
-	LanSubnets            []string
+	Name       *string
+	Host       *string
+	Port       *int
+	Protocol   *string
+	IsActive   *bool
+	LanSubnets []string
 }
 
 func (s *Service) UpdateDevice(ctx context.Context, siteID, deviceID uuid.UUID, in UpdateDeviceInput) (*models.Device, error) {
@@ -241,23 +282,19 @@ func (s *Service) UpdateDevice(ctx context.Context, siteID, deviceID uuid.UUID, 
 		dev.Port = *in.Port
 	}
 	if in.Protocol != nil {
+		if _, err := s.providers.Get(*in.Protocol); err != nil {
+			return nil, err
+		}
 		dev.Protocol = *in.Protocol
-	}
-	if in.UnitID != nil {
-		dev.UnitID = *in.UnitID
-	}
-	if in.MaxConcurrentRequests != nil {
-		dev.MaxConcurrentRequests = *in.MaxConcurrentRequests
-	}
-	if in.RequestTimeoutMs != nil {
-		dev.RequestTimeoutMs = *in.RequestTimeoutMs
 	}
 	if in.IsActive != nil {
 		dev.IsActive = *in.IsActive
 	}
 	dev.UpdatedAt = time.Now().UTC()
 
-	if _, err := s.db.NewUpdate().Model(dev).WherePK().Exec(ctx); err != nil {
+	if _, err := s.db.NewUpdate().Model(dev).
+		Column("name", "host", "port", "protocol", "is_active", "updated_at").
+		WherePK().Exec(ctx); err != nil {
 		if strings.Contains(err.Error(), "duplicate key") {
 			return nil, ErrConflict
 		}
@@ -279,7 +316,7 @@ func (s *Service) DeleteDevice(ctx context.Context, siteID, deviceID uuid.UUID) 
 	return nil
 }
 
-// --- Register Mappings CRUD + Live Test Read ---
+// --- Register Mappings CRUD (dynamic protocolAttributes validated by Provider) ---
 
 func (s *Service) ListMappings(ctx context.Context, siteID uuid.UUID) ([]models.RegisterMapping, error) {
 	var list []models.RegisterMapping
@@ -287,45 +324,40 @@ func (s *Service) ListMappings(ctx context.Context, siteID uuid.UUID) ([]models.
 	return list, err
 }
 
-func (s *Service) CreateMapping(ctx context.Context, m *models.RegisterMapping) (*models.RegisterMapping, error) {
-	// Verify device belongs to site
-	exists, err := s.db.NewSelect().Model((*models.Device)(nil)).
-		Where("id = ? AND site_id = ?", m.DeviceID, m.SiteID).Exists(ctx)
+func (s *Service) CreateMapping(ctx context.Context, siteID, deviceID uuid.UUID, name string, rawAttrs map[string]any) (*models.RegisterMapping, error) {
+	dev := new(models.Device)
+	if err := s.db.NewSelect().Model(dev).Where("id = ? AND site_id = ?", deviceID, siteID).Scan(ctx); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	prov, err := s.providers.Get(dev.Protocol)
 	if err != nil {
 		return nil, err
 	}
-	if !exists {
-		return nil, ErrNotFound
+	normAttrs, sum, err := prov.ValidateAttributes(rawAttrs)
+	if err != nil {
+		return nil, err
 	}
 
-	m.ID = uuid.New()
-	m.Name = strings.TrimSpace(m.Name)
-	m.RegisterCount = modbus.RegisterCountForType(m.DataType)
-	if m.WordOrder == "" {
-		m.WordOrder = "BIG"
+	now := time.Now().UTC()
+	m := &models.RegisterMapping{
+		ID:                 uuid.New(),
+		DeviceID:           deviceID,
+		SiteID:             siteID,
+		Name:               strings.TrimSpace(name),
+		ProtocolAttributes: normAttrs,
+		FunctionCode:       sum.FunctionCode,
+		RegisterAddress:    sum.RegisterAddress,
+		RegisterCount:      sum.RegisterCount,
+		DataType:           sum.DataType,
+		WordOrder:          sum.WordOrder,
+		AccessMode:         sum.AccessMode,
+		IsActive:           true,
+		CreatedAt:          now,
+		UpdatedAt:          now,
 	}
-	if m.ByteOrder == "" {
-		m.ByteOrder = "BIG"
-	}
-	if m.Scale == 0 {
-		m.Scale = 1
-	}
-	if m.AccessMode == "" {
-		m.AccessMode = "READ"
-	}
-	if m.InteractivePollIntervalMs <= 0 {
-		m.InteractivePollIntervalMs = 1000
-	}
-	if m.ArchivalPollIntervalMs <= 0 {
-		m.ArchivalPollIntervalMs = 60000
-	}
-	if m.MaxIntervalSeconds <= 0 {
-		m.MaxIntervalSeconds = 300
-	}
-	m.IsActive = true
-	m.CreatedAt = time.Now().UTC()
-	m.UpdatedAt = m.CreatedAt
-
 	if _, err := s.db.NewInsert().Model(m).Exec(ctx); err != nil {
 		if strings.Contains(err.Error(), "duplicate key") {
 			return nil, ErrConflict
@@ -336,7 +368,14 @@ func (s *Service) CreateMapping(ctx context.Context, m *models.RegisterMapping) 
 	return m, nil
 }
 
-func (s *Service) UpdateMapping(ctx context.Context, siteID, mappingID uuid.UUID, patch func(*models.RegisterMapping)) (*models.RegisterMapping, error) {
+type UpdateMappingInput struct {
+	DeviceID           *uuid.UUID
+	Name               *string
+	ProtocolAttributes map[string]any
+	IsActive           *bool
+}
+
+func (s *Service) UpdateMapping(ctx context.Context, siteID, mappingID uuid.UUID, in UpdateMappingInput) (*models.RegisterMapping, error) {
 	m := new(models.RegisterMapping)
 	if err := s.db.NewSelect().Model(m).Where("id = ? AND site_id = ?", mappingID, siteID).Scan(ctx); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -344,11 +383,41 @@ func (s *Service) UpdateMapping(ctx context.Context, siteID, mappingID uuid.UUID
 		}
 		return nil, err
 	}
-	patch(m)
-	m.RegisterCount = modbus.RegisterCountForType(m.DataType)
+	if in.DeviceID != nil {
+		m.DeviceID = *in.DeviceID
+	}
+	dev := new(models.Device)
+	if err := s.db.NewSelect().Model(dev).Where("id = ? AND site_id = ?", m.DeviceID, siteID).Scan(ctx); err != nil {
+		return nil, ErrNotFound
+	}
+	if in.Name != nil {
+		m.Name = strings.TrimSpace(*in.Name)
+	}
+	if in.ProtocolAttributes != nil {
+		prov, err := s.providers.Get(dev.Protocol)
+		if err != nil {
+			return nil, err
+		}
+		normAttrs, sum, err := prov.ValidateAttributes(in.ProtocolAttributes)
+		if err != nil {
+			return nil, err
+		}
+		m.ProtocolAttributes = normAttrs
+		m.FunctionCode = sum.FunctionCode
+		m.RegisterAddress = sum.RegisterAddress
+		m.RegisterCount = sum.RegisterCount
+		m.DataType = sum.DataType
+		m.WordOrder = sum.WordOrder
+		m.AccessMode = sum.AccessMode
+	}
+	if in.IsActive != nil {
+		m.IsActive = *in.IsActive
+	}
 	m.UpdatedAt = time.Now().UTC()
 
-	if _, err := s.db.NewUpdate().Model(m).WherePK().Exec(ctx); err != nil {
+	if _, err := s.db.NewUpdate().Model(m).
+		Column("device_id", "name", "protocol_attributes", "function_code", "register_address", "register_count", "data_type", "word_order", "access_mode", "is_active", "updated_at").
+		WherePK().Exec(ctx); err != nil {
 		if strings.Contains(err.Error(), "duplicate key") {
 			return nil, ErrConflict
 		}
@@ -371,7 +440,7 @@ func (s *Service) DeleteMapping(ctx context.Context, siteID, mappingID uuid.UUID
 	return nil
 }
 
-// TestRead performs a live single-register read over the site's WireRelay tunnel.
+// TestRead performs a live single-register read via the device's protocol Provider.
 func (s *Service) TestRead(ctx context.Context, siteID, mappingID uuid.UUID) (*ValueSample, error) {
 	m := new(models.RegisterMapping)
 	if err := s.db.NewSelect().Model(m).Where("id = ? AND site_id = ?", mappingID, siteID).Scan(ctx); err != nil {
@@ -384,23 +453,11 @@ func (s *Service) TestRead(ctx context.Context, siteID, mappingID uuid.UUID) (*V
 	if err := s.db.NewSelect().Model(dev).Where("id = ?", m.DeviceID).Scan(ctx); err != nil {
 		return nil, ErrNotFound
 	}
-	fc, err := modbus.ReadFunctionByte(m.FunctionCode)
+	prov, err := s.providers.Get(dev.Protocol)
 	if err != nil {
 		return nil, err
 	}
-	qty := uint16(modbus.RegisterCountForType(m.DataType))
-	if modbus.IsBitFunction(fc) {
-		qty = 1
-	}
-	respPDU, err := s.pool.Exchange(ctx, *dev, modbus.BuildReadPDU(fc, uint16(m.RegisterAddress), qty))
-	if err != nil {
-		return &ValueSample{SiteID: siteID, MappingID: mappingID, Quality: QualityBad, Error: err.Error(), Timestamp: time.Now().UTC()}, nil
-	}
-	payload, err := modbus.ParseReadResponsePDU(fc, respPDU)
-	if err != nil {
-		return &ValueSample{SiteID: siteID, MappingID: mappingID, Quality: QualityBad, Error: err.Error(), Timestamp: time.Now().UTC()}, nil
-	}
-	val, err := modbus.DecodeValue(*m, payload, 0)
+	val, err := prov.ReadOne(ctx, *dev, *m)
 	if err != nil {
 		return &ValueSample{SiteID: siteID, MappingID: mappingID, Quality: QualityBad, Error: err.Error(), Timestamp: time.Now().UTC()}, nil
 	}
@@ -409,7 +466,7 @@ func (s *Service) TestRead(ctx context.Context, siteID, mappingID uuid.UUID) (*V
 	return &sample, nil
 }
 
-// --- Dashboards & Widgets CRUD ---
+// --- Dashboards & Widgets CRUD + Reorder ---
 
 func (s *Service) ListDashboards(ctx context.Context, siteID uuid.UUID) ([]models.Dashboard, error) {
 	var list []models.Dashboard
@@ -418,20 +475,29 @@ func (s *Service) ListDashboards(ctx context.Context, siteID uuid.UUID) ([]model
 			return q.Order("sort_order ASC", "created_at ASC")
 		}).
 		Where("db.site_id = ?", siteID).
-		Order("db.is_default DESC", "db.name ASC").
+		Order("db.sort_order ASC", "db.created_at ASC").
 		Scan(ctx)
 	return list, err
 }
 
-func (s *Service) CreateDashboard(ctx context.Context, siteID uuid.UUID, name string, isDefault bool) (*models.Dashboard, error) {
+func (s *Service) CreateDashboard(ctx context.Context, siteID uuid.UUID, name string, isDefault bool, pollIntervalMs int) (*models.Dashboard, error) {
+	if pollIntervalMs < 1000 {
+		pollIntervalMs = 1000
+	} else if pollIntervalMs > 60000 {
+		pollIntervalMs = 60000
+	}
+	cnt, _ := s.db.NewSelect().Model((*models.Dashboard)(nil)).Where("site_id = ?", siteID).Count(ctx)
+	now := time.Now().UTC()
 	d := &models.Dashboard{
-		ID:        uuid.New(),
-		SiteID:    siteID,
-		Name:      strings.TrimSpace(name),
-		Layout:    map[string]any{},
-		IsDefault: isDefault,
-		CreatedAt: time.Now().UTC(),
-		UpdatedAt: time.Now().UTC(),
+		ID:             uuid.New(),
+		SiteID:         siteID,
+		Name:           strings.TrimSpace(name),
+		Layout:         map[string]any{},
+		IsDefault:      isDefault,
+		SortOrder:      cnt,
+		PollIntervalMs: pollIntervalMs,
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 	if _, err := s.db.NewInsert().Model(d).Exec(ctx); err != nil {
 		if strings.Contains(err.Error(), "duplicate key") {
@@ -442,7 +508,7 @@ func (s *Service) CreateDashboard(ctx context.Context, siteID uuid.UUID, name st
 	return d, nil
 }
 
-func (s *Service) UpdateDashboard(ctx context.Context, siteID, dashboardID uuid.UUID, name *string, isDefault *bool) (*models.Dashboard, error) {
+func (s *Service) UpdateDashboard(ctx context.Context, siteID, dashboardID uuid.UUID, name *string, isDefault *bool, sortOrder *int, pollIntervalMs *int) (*models.Dashboard, error) {
 	d := new(models.Dashboard)
 	if err := s.db.NewSelect().Model(d).Where("id = ? AND site_id = ?", dashboardID, siteID).Scan(ctx); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -456,14 +522,41 @@ func (s *Service) UpdateDashboard(ctx context.Context, siteID, dashboardID uuid.
 	if isDefault != nil {
 		d.IsDefault = *isDefault
 	}
+	if sortOrder != nil {
+		d.SortOrder = *sortOrder
+	}
+	if pollIntervalMs != nil {
+		v := *pollIntervalMs
+		if v < 1000 {
+			v = 1000
+		} else if v > 60000 {
+			v = 60000
+		}
+		d.PollIntervalMs = v
+	}
 	d.UpdatedAt = time.Now().UTC()
-	if _, err := s.db.NewUpdate().Model(d).WherePK().Exec(ctx); err != nil {
+	if _, err := s.db.NewUpdate().Model(d).Column("name", "is_default", "sort_order", "poll_interval_ms", "updated_at").WherePK().Exec(ctx); err != nil {
 		if strings.Contains(err.Error(), "duplicate key") {
 			return nil, ErrConflict
 		}
 		return nil, err
 	}
 	return d, nil
+}
+
+func (s *Service) ReorderDashboards(ctx context.Context, siteID uuid.UUID, orderedIDs []uuid.UUID) error {
+	return s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		now := time.Now().UTC()
+		for idx, id := range orderedIDs {
+			if _, err := tx.NewUpdate().Model((*models.Dashboard)(nil)).
+				Set("sort_order = ?, updated_at = ?", idx, now).
+				Where("id = ? AND site_id = ?", id, siteID).
+				Exec(ctx); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func (s *Service) DeleteDashboard(ctx context.Context, siteID, dashboardID uuid.UUID) error {
@@ -484,9 +577,13 @@ func (s *Service) CreateWidget(ctx context.Context, siteID, dashboardID uuid.UUI
 	if err != nil || !exists {
 		return nil, ErrNotFound
 	}
+	cnt, _ := s.db.NewSelect().Model((*models.Widget)(nil)).Where("dashboard_id = ?", dashboardID).Count(ctx)
 	w.ID = uuid.New()
 	w.DashboardID = dashboardID
 	w.Name = strings.TrimSpace(w.Name)
+	if w.SortOrder == 0 {
+		w.SortOrder = cnt
+	}
 	if w.Style == nil {
 		w.Style = map[string]any{}
 	}
@@ -515,10 +612,32 @@ func (s *Service) UpdateWidget(ctx context.Context, siteID, widgetID uuid.UUID, 
 	}
 	patch(w)
 	w.UpdatedAt = time.Now().UTC()
-	if _, err := s.db.NewUpdate().Model(w).WherePK().Exec(ctx); err != nil {
+	if _, err := s.db.NewUpdate().Model(w).
+		Column("name", "widget_type", "register_mapping_id", "sort_order", "style", "extra", "updated_at").
+		WherePK().Exec(ctx); err != nil {
 		return nil, err
 	}
 	return w, nil
+}
+
+func (s *Service) ReorderWidgets(ctx context.Context, siteID, dashboardID uuid.UUID, orderedIDs []uuid.UUID) error {
+	exists, err := s.db.NewSelect().Model((*models.Dashboard)(nil)).
+		Where("id = ? AND site_id = ?", dashboardID, siteID).Exists(ctx)
+	if err != nil || !exists {
+		return ErrNotFound
+	}
+	return s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		now := time.Now().UTC()
+		for idx, id := range orderedIDs {
+			if _, err := tx.NewUpdate().Model((*models.Widget)(nil)).
+				Set("sort_order = ?, updated_at = ?", idx, now).
+				Where("id = ? AND dashboard_id = ?", id, dashboardID).
+				Exec(ctx); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func (s *Service) DeleteWidget(ctx context.Context, siteID, widgetID uuid.UUID) error {
@@ -537,15 +656,15 @@ func (s *Service) DeleteWidget(ctx context.Context, siteID, widgetID uuid.UUID) 
 	return err
 }
 
-// --- REST Register Write (D15, D16) ---
+// --- REST Register Write (D15, D16) with optional server-side Button pulse (1 -> triggerTimeMs -> 0) ---
 
-func (s *Service) WriteRegister(ctx context.Context, siteID, userID uuid.UUID, authz *internalclient.SiteAuthzResponse, mappingID uuid.UUID, value float64) error {
+func (s *Service) WriteRegister(ctx context.Context, siteID, userID uuid.UUID, authz *internalclient.SiteAuthzResponse, mappingID uuid.UUID, value float64, pulseMs int) error {
 	canWrite, err := s.CanUserWrite(ctx, siteID, userID, authz)
 	if err != nil {
 		return err
 	}
 	if !canWrite {
-		slog.Warn("modbus_write_audit", "user_id", userID, "site_id", siteID, "mapping_id", mappingID, "value", value, "result", "forbidden")
+		slog.Warn("register_write_audit", "user_id", userID, "site_id", siteID, "mapping_id", mappingID, "value", value, "result", "forbidden")
 		return ErrWriteForbidden
 	}
 
@@ -564,35 +683,56 @@ func (s *Service) WriteRegister(ctx context.Context, siteID, userID uuid.UUID, a
 	if err := s.db.NewSelect().Model(dev).Where("id = ? AND is_active = TRUE", m.DeviceID).Scan(ctx); err != nil {
 		return ErrNotFound
 	}
-
-	fc, reqPDU, err := modbus.BuildWritePDU(*m, value)
+	prov, err := s.providers.Get(dev.Protocol)
 	if err != nil {
 		return err
 	}
-	respPDU, err := s.pool.Exchange(ctx, *dev, reqPDU)
-	if err != nil {
-		slog.Warn("modbus_write_audit", "user_id", userID, "site_id", siteID, "mapping_id", mappingID, "value", value, "result", "error", "error", err.Error())
+
+	if err := prov.WriteOne(ctx, *dev, *m, value); err != nil {
+		slog.Warn("register_write_audit", "user_id", userID, "site_id", siteID, "mapping_id", mappingID, "value", value, "result", "error", "error", err.Error())
 		return fmt.Errorf("write device failed: %w", err)
 	}
-	if err := modbus.ParseWriteResponsePDU(fc, respPDU); err != nil {
-		slog.Warn("modbus_write_audit", "user_id", userID, "site_id", siteID, "mapping_id", mappingID, "value", value, "result", "exception", "error", err.Error())
-		return err
+
+	slog.Info("register_write_audit", "user_id", userID, "site_id", siteID, "mapping_id", mappingID, "value", value, "pulse_ms", pulseMs, "result", "ok")
+
+	vCopy := value
+	s.hub.Publish([]ValueSample{{
+		SiteID:    siteID,
+		MappingID: mappingID,
+		Value:     &vCopy,
+		Quality:   QualityGood,
+		Timestamp: time.Now().UTC(),
+	}})
+
+	// Server-side guaranteed pulse reset (writes 0 back after triggerTimeMs even if tab closes)
+	if pulseMs > 0 {
+		if pulseMs > 60000 {
+			pulseMs = 60000
+		}
+		devCopy := *dev
+		mapCopy := *m
+		go func() {
+			timer := time.NewTimer(time.Duration(pulseMs) * time.Millisecond)
+			defer timer.Stop()
+			<-timer.C
+			rctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := prov.WriteOne(rctx, devCopy, mapCopy, 0); err != nil {
+				slog.Warn("register_pulse_reset_failed", "site_id", siteID, "mapping_id", mappingID, "error", err.Error())
+				return
+			}
+			slog.Info("register_write_audit", "user_id", userID, "site_id", siteID, "mapping_id", mappingID, "value", 0, "result", "pulse_reset_ok")
+			zero := 0.0
+			s.hub.Publish([]ValueSample{{
+				SiteID:    siteID,
+				MappingID: mappingID,
+				Value:     &zero,
+				Quality:   QualityGood,
+				Timestamp: time.Now().UTC(),
+			}})
+		}()
 	}
 
-	// Structured JSON audit log (D16)
-	slog.Info("modbus_write_audit", "user_id", userID, "site_id", siteID, "mapping_id", mappingID, "value", value, "result", "ok")
-
-	// Immediately reflect written value to live subscribers for crisp UI feedback
-	if m.AccessMode == "READ_WRITE" {
-		vCopy := value
-		s.hub.Publish([]ValueSample{{
-			SiteID:    siteID,
-			MappingID: mappingID,
-			Value:     &vCopy,
-			Quality:   QualityGood,
-			Timestamp: time.Now().UTC(),
-		}})
-	}
 	return nil
 }
 
@@ -617,16 +757,16 @@ func (s *Service) PrepareWS(ctx context.Context, rawTicket string) (WSTicket, er
 // --- Lifecycle Drain & Site Deletion (D28) ---
 
 func (s *Service) DrainSite(siteID uuid.UUID) {
-	s.pool.DrainSite(siteID)
+	s.providers.DrainSite(siteID)
 	s.hub.DisconnectSite(siteID)
 }
 
 func (s *Service) DeleteSiteData(ctx context.Context, siteID uuid.UUID) error {
 	s.DrainSite(siteID)
+	_, _ = s.db.NewDelete().Model((*models.HistoryEntry)(nil)).Where("site_id = ?", siteID).Exec(ctx)
 	_, _ = s.db.NewDelete().Model((*models.Dashboard)(nil)).Where("site_id = ?", siteID).Exec(ctx)
 	_, _ = s.db.NewDelete().Model((*models.Device)(nil)).Where("site_id = ?", siteID).Exec(ctx)
 	_, _ = s.db.NewDelete().Model((*models.MemberPolicy)(nil)).Where("site_id = ?", siteID).Exec(ctx)
-	_, _ = s.db.NewDelete().Model((*models.SiteWebviewSettings)(nil)).Where("site_id = ?", siteID).Exec(ctx)
 	s.reloadAsync()
 	return nil
 }

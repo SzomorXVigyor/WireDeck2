@@ -40,6 +40,9 @@ func TestOpenAPISchemaAndAdminSeparation(t *testing.T) {
 	paths, _ := spec["paths"].(map[string]any)
 	for _, wantPath := range []string{
 		"/api/v1/iam/auth/login",
+		"/api/v1/iam/auth/verify-token",
+		"/api/v1/iam/auth/accept-invite",
+		"/api/v1/iam/auth/reset-password",
 		"/api/v1/iam/me/change-password",
 		"/api/v1/iam/sites/{siteId}/operator/members/invite",
 		"/api/v1/iam/admin/sites/{siteId}/conf",
@@ -90,5 +93,34 @@ func TestOpenAPISchemaAndAdminSeparation(t *testing.T) {
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/iam/.well-known/jwks.json", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200 from jwks.json, got %d", rec.Code)
+	}
+
+	// 6. Verify-token returns valid=false cleanly for empty/short tokens and 422 for bad token type
+	verifyReq := httptest.NewRequest(http.MethodPost, "/api/v1/iam/auth/verify-token",
+		bytes.NewBufferString(`{"token":"short","type":"INVITE"}`))
+	verifyReq.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, verifyReq)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 from verify-token, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var verifyBody struct {
+		Valid  bool   `json:"valid"`
+		Reason string `json:"reason"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &verifyBody); err != nil {
+		t.Fatalf("verify-token invalid JSON: %v", err)
+	}
+	if verifyBody.Valid || verifyBody.Reason != "INVALID" {
+		t.Fatalf("expected valid=false reason=INVALID, got %+v", verifyBody)
+	}
+
+	badVerifyReq := httptest.NewRequest(http.MethodPost, "/api/v1/iam/auth/verify-token",
+		bytes.NewBufferString(`{"token":"abc","type":"UNKNOWN"}`))
+	badVerifyReq.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, badVerifyReq)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422 for invalid verify-token type, got %d: %s", rec.Code, rec.Body.String())
 	}
 }

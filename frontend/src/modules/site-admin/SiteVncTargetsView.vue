@@ -5,6 +5,8 @@ import { KeyRound, Monitor, Plus, Trash2, Edit3 } from 'lucide-vue-next'
 import { apiRequest } from '../../services/api'
 import type { VncSession, VncTarget } from '../../types/vnc'
 import StatusBadge from '../../components/StatusBadge.vue'
+import NumericTextInput from '../../components/NumericTextInput.vue'
+import DeleteConfirmModal from '../../components/DeleteConfirmModal.vue'
 
 const route = useRoute()
 const siteId = computed(() => String(route.params.siteId || ''))
@@ -19,11 +21,12 @@ const showModal = ref(false)
 const editingId = ref<string | null>(null)
 const formName = ref('')
 const formHost = ref('')
-const formPort = ref(5900)
+const formPort = ref('5900')
 const formPassword = ref('')
 const formClearPassword = ref(false)
 const formActive = ref(true)
 const saving = ref(false)
+const deleteTarget = ref<VncTarget | null>(null)
 
 async function loadData() {
   errMsg.value = null
@@ -46,7 +49,7 @@ function openCreate() {
   editingId.value = null
   formName.value = ''
   formHost.value = ''
-  formPort.value = 5900
+  formPort.value = '5900'
   formPassword.value = ''
   formClearPassword.value = false
   formActive.value = true
@@ -57,7 +60,7 @@ function openEdit(t: VncTarget) {
   editingId.value = t.id
   formName.value = t.name
   formHost.value = t.host
-  formPort.value = t.port
+  formPort.value = String(t.port)
   formPassword.value = ''
   formClearPassword.value = false
   formActive.value = t.isActive
@@ -103,8 +106,14 @@ async function saveTarget() {
   }
 }
 
-async function removeTarget(t: VncTarget) {
-  if (!window.confirm(`Delete VNC edge point "${t.name}"?`)) return
+function removeTarget(t: VncTarget) {
+  deleteTarget.value = t
+}
+
+async function confirmRemoveTarget() {
+  const t = deleteTarget.value
+  deleteTarget.value = null
+  if (!t) return
   errMsg.value = null
   try {
     await apiRequest(`/api/v1/vnc/sites/${siteId.value}/operator/targets/${t.id}`, {
@@ -248,7 +257,7 @@ function formatBytes(n: number): string {
             </div>
             <div>
               <label class="mb-1 block text-xs text-slate-400">Port</label>
-              <input v-model.number="formPort" type="number" min="1" max="65535" required class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs text-white" />
+              <NumericTextInput v-model="formPort" :min="1" :max="65535" required placeholder="5900" />
             </div>
           </div>
           <div>
@@ -270,5 +279,14 @@ function formatBytes(n: number): string {
         </form>
       </div>
     </div>
+
+    <DeleteConfirmModal
+      :open="Boolean(deleteTarget)"
+      title="Delete VNC Edge Point"
+      :item-name="deleteTarget?.name || ''"
+      description="This VNC endpoint will be removed from the site."
+      @close="deleteTarget = null"
+      @confirm="confirmRemoveTarget"
+    />
   </div>
 </template>

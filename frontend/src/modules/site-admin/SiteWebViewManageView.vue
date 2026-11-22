@@ -1,82 +1,291 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { Cpu, Database, LayoutGrid, Play, Plus, Sliders, Trash2 } from 'lucide-vue-next'
+import {
+  ArrowDown,
+  ArrowUp,
+  Cpu,
+  Database,
+  Edit3,
+  LayoutGrid,
+  Play,
+  Plus,
+  Sliders,
+  Trash2,
+  X,
+} from 'lucide-vue-next'
 import { apiRequest } from '../../services/api'
+import { useWebviewStore } from '../../stores/webview'
 import type { SiteMember } from '../../types/iam'
 import type {
-  AccessMode,
-  DataType,
-  FunctionCode,
+  ColorOption,
+  DeviceProtocol,
+  FontSizeOption,
+  HistoryEntry,
+  LampMode,
+  LampStateConfig,
   MemberWritePolicy,
+  ModbusAccessMode,
+  ModbusDataType,
+  ModbusFunctionCode,
+  ModbusWordOrder,
   RegisterMapping,
   TelemetrySample,
   WebviewDashboard,
   WebviewDevice,
+  WebviewWidget,
   WidgetType,
-  WriteFunctionCode,
 } from '../../types/webview'
+import { clampPrecision, effectiveDisplayBounds } from '../../utils/precision'
 import StatusBadge from '../../components/StatusBadge.vue'
+import DeleteConfirmModal from '../../components/DeleteConfirmModal.vue'
+import NumericTextInput from '../../components/NumericTextInput.vue'
+import RegisterPicker from '../../components/RegisterPicker.vue'
 
 const route = useRoute()
 const siteId = computed(() => String(route.params.siteId || ''))
+const webviewStore = useWebviewStore()
 
-type TabKey = 'devices' | 'mappings' | 'dashboards' | 'settings'
+type TabKey = 'devices' | 'mappings' | 'dashboards' | 'history'
 const activeTab = ref<TabKey>('devices')
 
 const devices = ref<WebviewDevice[]>([])
 const mappings = ref<RegisterMapping[]>([])
 const dashboards = ref<WebviewDashboard[]>([])
+const historyEntries = ref<HistoryEntry[]>([])
 const members = ref<SiteMember[]>([])
 const policies = ref<MemberWritePolicy[]>([])
-const historyEnabled = ref(false)
 const testResults = ref<Record<string, TelemetrySample>>({})
 const testingId = ref<string | null>(null)
 
 const errMsg = ref<string | null>(null)
 const okMsg = ref<string | null>(null)
 
-// Device form
+// --- Delete Confirm Modal State (zero window.confirm) ---
+const deleteModal = ref<{
+  open: boolean
+  title: string
+  itemName: string
+  description: string
+  onConfirm: (() => Promise<void>) | null
+}>({
+  open: false,
+  title: '',
+  itemName: '',
+  description: '',
+  onConfirm: null,
+})
+
+function askDelete(title: string, itemName: string, description: string, action: () => Promise<void>) {
+  deleteModal.value = { open: true, title, itemName, description, onConfirm: action }
+}
+
+async function runDeleteConfirm() {
+  const fn = deleteModal.value.onConfirm
+  deleteModal.value.open = false
+  if (fn) await fn()
+}
+
+// --- Device Create/Edit Modal ---
+const deviceModalOpen = ref(false)
+const editingDeviceId = ref<string | null>(null)
 const devName = ref('')
 const devHost = ref('')
-const devPort = ref(502)
-const devProto = ref<'MODBUS_TCP' | 'MODBUS_UDP'>('MODBUS_TCP')
-const devUnit = ref(1)
-const devTimeout = ref(2000)
+const devPort = ref('502')
+const devProto = ref<DeviceProtocol>('MODBUS_TCP')
+const devActive = ref(true)
 
-// Register mapping form
-const mapDeviceId = ref('')
-const mapName = ref('')
-const mapFC = ref<FunctionCode>('READ_HOLDING')
-const mapAddr = ref(0)
-const mapType = ref<DataType>('UINT16')
-const mapWordOrder = ref<'BIG' | 'LITTLE'>('BIG')
-const mapByteOrder = ref<'BIG' | 'LITTLE'>('BIG')
-const mapScale = ref(1)
-const mapOffset = ref(0)
-const mapUnit = ref('')
-const mapAccess = ref<AccessMode>('READ')
-const mapWriteFC = ref<WriteFunctionCode>('')
-const mapIntMs = ref(1000)
-const mapArchMs = ref(60000)
-const mapDeadband = ref(0)
-const mapMaxSec = ref(300)
+function openCreateDevice() {
+  editingDeviceId.value = null
+  devName.value = ''
+  devHost.value = ''
+  devPort.value = '502'
+  devProto.value = 'MODBUS_TCP'
+  devActive.value = true
+  deviceModalOpen.value = true
+}
 
-// Dashboard & Widget forms
-const newDashName = ref('')
+function openEditDevice(d: WebviewDevice) {
+  editingDeviceId.value = d.id
+  devName.value = d.name
+  devHost.value = d.host
+  devPort.value = String(d.port)
+  devProto.value = d.protocol
+  devActive.value = d.isActive
+  deviceModalOpen.value = true
+}
+
+// --- Register Create/Edit Modal (Dynamic Protocol Attributes) ---
+const regModalOpen = ref(false)
+const editingRegId = ref<string | null>(null)
+const regDeviceId = ref('')
+const regName = ref('')
+const regActive = ref(true)
+// MODBUS_TCP protocol attributes
+const regSlave = ref('1')
+const regFC = ref<ModbusFunctionCode>('READ_HOLDING')
+const regAddr = ref('0')
+const regDataType = ref<ModbusDataType>('UINT16')
+const regWordOrder = ref<ModbusWordOrder>('BIG')
+const regAccess = ref<ModbusAccessMode>('READ')
+
+const selectedRegDevice = computed(() => devices.value.find((d) => d.id === regDeviceId.value) ?? null)
+
+function openCreateRegister() {
+  editingRegId.value = null
+  regDeviceId.value = devices.value[0]?.id || ''
+  regName.value = ''
+  regActive.value = true
+  regSlave.value = '1'
+  regFC.value = 'READ_HOLDING'
+  regAddr.value = '0'
+  regDataType.value = 'UINT16'
+  regWordOrder.value = 'BIG'
+  regAccess.value = 'READ'
+  regModalOpen.value = true
+}
+
+function openEditRegister(m: RegisterMapping) {
+  editingRegId.value = m.id
+  regDeviceId.value = m.deviceId
+  regName.value = m.name
+  regActive.value = m.isActive
+  const a = m.protocolAttributes
+  regSlave.value = String(a?.slaveAddress ?? 1)
+  regFC.value = (a?.functionCode as ModbusFunctionCode) || 'READ_HOLDING'
+  regAddr.value = String(a?.registerAddress ?? 0)
+  regDataType.value = (a?.dataType as ModbusDataType) || 'UINT16'
+  regWordOrder.value = (a?.wordOrder as ModbusWordOrder) || 'BIG'
+  regAccess.value = (a?.accessMode as ModbusAccessMode) || 'READ'
+  regModalOpen.value = true
+}
+
+// --- Dashboard Create/Edit Modal ---
+const dashModalOpen = ref(false)
+const editingDashId = ref<string | null>(null)
+const dashName = ref('')
+const dashIsDefault = ref(false)
+const dashPollIntervalMs = ref('1000')
 const selectedDashId = ref('')
+
+function openCreateDashboard() {
+  editingDashId.value = null
+  dashName.value = ''
+  dashIsDefault.value = dashboards.value.length === 0
+  dashPollIntervalMs.value = '1000'
+  dashModalOpen.value = true
+}
+
+function openEditDashboard(d: WebviewDashboard) {
+  editingDashId.value = d.id
+  dashName.value = d.name
+  dashIsDefault.value = d.isDefault
+  dashPollIntervalMs.value = String(d.pollIntervalMs || 1000)
+  dashModalOpen.value = true
+}
+
+// --- Widget Create/Edit Modal (Card-type-specific parameters) ---
+const widgetModalOpen = ref(false)
+const editingWidgetId = ref<string | null>(null)
 const widName = ref('')
 const widType = ref<WidgetType>('display')
 const widMappingId = ref('')
-const widPressValue = ref(1)
-const widButtonLabel = ref('Trigger')
-const widOnLabel = ref('RUNNING')
-const widOffLabel = ref('STOPPED')
+// Display & Number Input params
+const widFontSize = ref<FontSizeOption>('lg')
+const widPrefix = ref('')
+const widUnit = ref('')
+const widPrecision = ref('0')
+const widMin = ref<string>('')
+const widMax = ref<string>('')
+// Lamp params (for both states)
+const widLampOn = ref<LampStateConfig>({ mode: 'on', color: 'emerald', text: 'ON' })
+const widLampOff = ref<LampStateConfig>({ mode: 'off', color: 'slate', text: 'OFF' })
+// Switch params
+const widSwitchColor = ref<ColorOption>('emerald')
+const widSwitchOnLabel = ref('ON')
+const widSwitchOffLabel = ref('OFF')
+// Button params
+const widBtnColor = ref<ColorOption>('sky')
+const widBtnLabel = ref('Trigger')
+const widBtnTriggerMs = ref('1000')
+
+const widBoundMapping = computed(() => mappings.value.find((m) => m.id === widMappingId.value) ?? null)
+const widBoundTypeBounds = computed(() => {
+  const dt = widBoundMapping.value?.protocolAttributes?.dataType
+  return effectiveDisplayBounds(dt, clampPrecision(widPrecision.value))
+})
+
+function openCreateWidget() {
+  editingWidgetId.value = null
+  widName.value = ''
+  widType.value = 'display'
+  widMappingId.value = mappings.value[0]?.id || ''
+  widFontSize.value = 'lg'
+  widPrefix.value = ''
+  widUnit.value = ''
+  widPrecision.value = '0'
+  widMin.value = ''
+  widMax.value = ''
+  widLampOn.value = { mode: 'on', color: 'emerald', text: 'ON' }
+  widLampOff.value = { mode: 'off', color: 'slate', text: 'OFF' }
+  widSwitchColor.value = 'emerald'
+  widSwitchOnLabel.value = 'ON'
+  widSwitchOffLabel.value = 'OFF'
+  widBtnColor.value = 'sky'
+  widBtnLabel.value = 'Trigger'
+  widBtnTriggerMs.value = '1000'
+  widgetModalOpen.value = true
+}
+
+function openEditWidget(w: WebviewWidget) {
+  editingWidgetId.value = w.id
+  widName.value = w.name
+  widType.value = w.widgetType
+  widMappingId.value = w.registerMappingId || ''
+  widFontSize.value = (w.style?.fontSize as FontSizeOption) || 'lg'
+  widPrefix.value = String(w.extra?.prefix ?? '')
+  widUnit.value = String(w.extra?.unit ?? '')
+  widPrecision.value = String(clampPrecision(w.extra?.precision ?? 0))
+  widMin.value = w.extra?.min !== undefined && w.extra?.min !== null ? String(w.extra.min) : ''
+  widMax.value = w.extra?.max !== undefined && w.extra?.max !== null ? String(w.extra.max) : ''
+
+  const onCfg = (w.extra?.on as Partial<LampStateConfig> | undefined) || {}
+  const offCfg = (w.extra?.off as Partial<LampStateConfig> | undefined) || {}
+  widLampOn.value = {
+    mode: (onCfg.mode as LampMode) || 'on',
+    color: (onCfg.color as ColorOption) || 'emerald',
+    text: onCfg.text ?? 'ON',
+  }
+  widLampOff.value = {
+    mode: (offCfg.mode as LampMode) || 'off',
+    color: (offCfg.color as ColorOption) || 'slate',
+    text: offCfg.text ?? 'OFF',
+  }
+
+  widSwitchColor.value = (w.style?.color as ColorOption) || 'emerald'
+  widSwitchOnLabel.value = String(w.extra?.onLabel ?? 'ON')
+  widSwitchOffLabel.value = String(w.extra?.offLabel ?? 'OFF')
+
+  widBtnColor.value = (w.style?.color as ColorOption) || 'sky'
+  widBtnLabel.value = String(w.extra?.label ?? w.name)
+  widBtnTriggerMs.value = String(Number(w.extra?.triggerTimeMs ?? 1000))
+  widgetModalOpen.value = true
+}
+
+// --- History Entry Form ---
+const histMappingId = ref('')
+const histPollSec = ref(60)
+const histRetentionDays = ref(30)
 
 const selectedDash = computed(() => dashboards.value.find((d) => d.id === selectedDashId.value) ?? dashboards.value[0] ?? null)
-const deviceNameMap = computed<Record<string, string>>(() => {
-  const m: Record<string, string> = {}
-  for (const d of devices.value) m[d.id] = d.name
+const deviceMap = computed<Record<string, WebviewDevice>>(() => {
+  const m: Record<string, WebviewDevice> = {}
+  for (const d of devices.value) m[d.id] = d
+  return m
+})
+const mappingMap = computed<Record<string, RegisterMapping>>(() => {
+  const m: Record<string, RegisterMapping> = {}
+  for (const r of mappings.value) m[r.id] = r
   return m
 })
 const policyMap = computed<Record<string, boolean>>(() => {
@@ -85,33 +294,42 @@ const policyMap = computed<Record<string, boolean>>(() => {
   return m
 })
 const siteMembersOnly = computed(() => members.value.filter((m) => m.role === 'SITE_MEMBER'))
+const availableHistoryMappings = computed(() => {
+  const used = new Set(historyEntries.value.map((e) => e.registerMappingId))
+  return mappings.value.filter((m) => !used.has(m.id))
+})
+
+function registerKeyLabel(m: RegisterMapping): string {
+  const dev = deviceMap.value[m.deviceId]
+  const a = m.protocolAttributes
+  const devPart = dev ? `${dev.name} (${dev.protocol})` : 'Device'
+  return `${devPart} / ${m.name} [unit=${a?.slaveAddress ?? 1} ${a?.functionCode ?? ''}@${a?.registerAddress ?? 0}]`
+}
 
 async function loadAll() {
   errMsg.value = null
   try {
-    const [dRes, mRes, dbRes, stRes, pRes, memRes] = await Promise.all([
+    const [dRes, mRes, dbRes, hRes, pRes, memRes] = await Promise.all([
       apiRequest<{ devices: WebviewDevice[] }>(`/api/v1/webview/sites/${siteId.value}/operator/devices`),
       apiRequest<{ mappings: RegisterMapping[] }>(`/api/v1/webview/sites/${siteId.value}/operator/mappings`),
       apiRequest<{ dashboards: WebviewDashboard[] }>(`/api/v1/webview/sites/${siteId.value}/operator/dashboards`),
-      apiRequest<{ historyEnabled: boolean }>(`/api/v1/webview/sites/${siteId.value}/operator/settings`),
+      apiRequest<{ entries: HistoryEntry[] }>(`/api/v1/webview/sites/${siteId.value}/operator/history-entries`),
       apiRequest<{ policies: MemberWritePolicy[] }>(`/api/v1/webview/sites/${siteId.value}/operator/member-policies`),
       apiRequest<{ members: SiteMember[] }>(`/api/v1/iam/sites/${siteId.value}/operator/members`).catch(() => ({ members: [] })),
     ])
     devices.value = dRes.devices || []
     mappings.value = mRes.mappings || []
     dashboards.value = dbRes.dashboards || []
-    historyEnabled.value = Boolean(stRes.historyEnabled)
+    historyEntries.value = hRes.entries || []
     policies.value = pRes.policies || []
     members.value = memRes.members || []
+    webviewStore.setSiteDashboards(siteId.value, dashboards.value)
 
-    if (!mapDeviceId.value && devices.value.length > 0) {
-      mapDeviceId.value = devices.value[0].id
-    }
-    if (!selectedDashId.value && dashboards.value.length > 0) {
+    if (dashboards.value.length > 0 && !dashboards.value.some((d) => d.id === selectedDashId.value)) {
       selectedDashId.value = dashboards.value[0].id
     }
-    if (!widMappingId.value && mappings.value.length > 0) {
-      widMappingId.value = mappings.value[0].id
+    if (!histMappingId.value && availableHistoryMappings.value.length > 0) {
+      histMappingId.value = availableHistoryMappings.value[0].id
     }
   } catch (err) {
     errMsg.value = err instanceof Error ? err.message : 'Failed to load WebView configuration'
@@ -121,83 +339,106 @@ async function loadAll() {
 onMounted(loadAll)
 watch(siteId, loadAll)
 
-async function addDevice() {
+// --- Device Actions ---
+async function saveDevice() {
   errMsg.value = null
   okMsg.value = null
   try {
-    await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/devices`, {
-      method: 'POST',
-      body: JSON.stringify({
-        name: devName.value,
-        host: devHost.value,
-        port: Number(devPort.value),
-        protocol: devProto.value,
-        unitId: Number(devUnit.value),
-        requestTimeoutMs: Number(devTimeout.value),
-      }),
-    })
-    okMsg.value = `Added Modbus device "${devName.value}".`
-    devName.value = ''
-    devHost.value = ''
+    if (editingDeviceId.value) {
+      await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/devices/${editingDeviceId.value}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          name: devName.value,
+          host: devHost.value,
+          port: Number(devPort.value),
+          protocol: devProto.value,
+          isActive: devActive.value,
+        }),
+      })
+      okMsg.value = `Updated device "${devName.value}".`
+    } else {
+      await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/devices`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: devName.value,
+          host: devHost.value,
+          port: Number(devPort.value),
+          protocol: devProto.value,
+        }),
+      })
+      okMsg.value = `Added device "${devName.value}".`
+    }
+    deviceModalOpen.value = false
     await loadAll()
   } catch (err) {
-    errMsg.value = err instanceof Error ? err.message : 'Failed to add device'
+    errMsg.value = err instanceof Error ? err.message : 'Failed to save device'
   }
 }
 
-async function deleteDevice(d: WebviewDevice) {
-  if (!window.confirm(`Delete device "${d.name}" and all its register mappings?`)) return
-  errMsg.value = null
-  try {
-    await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/devices/${d.id}`, { method: 'DELETE' })
-    await loadAll()
-  } catch (err) {
-    errMsg.value = err instanceof Error ? err.message : 'Failed to delete device'
-  }
+function confirmDeleteDevice(d: WebviewDevice) {
+  askDelete('Delete Device', d.name, 'All registers belonging to this device will also be deleted.', async () => {
+    errMsg.value = null
+    try {
+      await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/devices/${d.id}`, { method: 'DELETE' })
+      await loadAll()
+    } catch (err) {
+      errMsg.value = err instanceof Error ? err.message : 'Failed to delete device'
+    }
+  })
 }
 
-async function addMapping() {
+// --- Register Actions ---
+async function saveRegister() {
   errMsg.value = null
   okMsg.value = null
+  const attrs = {
+    slaveAddress: Number(regSlave.value),
+    functionCode: regFC.value,
+    registerAddress: Number(regAddr.value),
+    dataType: regFC.value === 'READ_COIL' || regFC.value === 'READ_DISCRETE' ? 'BOOL' : regDataType.value,
+    wordOrder: regWordOrder.value,
+    accessMode: regFC.value === 'READ_DISCRETE' || regFC.value === 'READ_INPUT' ? 'READ' : regAccess.value,
+  }
   try {
-    await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/mappings`, {
-      method: 'POST',
-      body: JSON.stringify({
-        deviceId: mapDeviceId.value,
-        name: mapName.value,
-        functionCode: mapFC.value,
-        registerAddress: Number(mapAddr.value),
-        dataType: mapType.value,
-        wordOrder: mapWordOrder.value,
-        byteOrder: mapByteOrder.value,
-        scale: Number(mapScale.value) || 1,
-        offset: Number(mapOffset.value) || 0,
-        unit: mapUnit.value,
-        accessMode: mapAccess.value,
-        writeFunctionCode: mapAccess.value === 'READ' ? '' : mapWriteFC.value,
-        interactivePollIntervalMs: Number(mapIntMs.value),
-        archivalPollIntervalMs: Number(mapArchMs.value),
-        deadband: Number(mapDeadband.value),
-        maxIntervalSeconds: Number(mapMaxSec.value),
-      }),
-    })
-    okMsg.value = `Added register mapping "${mapName.value}".`
-    mapName.value = ''
+    if (editingRegId.value) {
+      await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/mappings/${editingRegId.value}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          deviceId: regDeviceId.value,
+          name: regName.value,
+          protocolAttributes: attrs,
+          isActive: regActive.value,
+        }),
+      })
+      okMsg.value = `Updated register "${regName.value}".`
+    } else {
+      await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/mappings`, {
+        method: 'POST',
+        body: JSON.stringify({
+          deviceId: regDeviceId.value,
+          name: regName.value,
+          protocolAttributes: attrs,
+        }),
+      })
+      okMsg.value = `Added register "${regName.value}".`
+    }
+    regModalOpen.value = false
     await loadAll()
   } catch (err) {
-    errMsg.value = err instanceof Error ? err.message : 'Failed to add register mapping'
+    errMsg.value = err instanceof Error ? err.message : 'Failed to save register'
   }
 }
 
-async function deleteMapping(m: RegisterMapping) {
-  if (!window.confirm(`Delete register mapping "${m.name}"?`)) return
-  errMsg.value = null
-  try {
-    await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/mappings/${m.id}`, { method: 'DELETE' })
-    await loadAll()
-  } catch (err) {
-    errMsg.value = err instanceof Error ? err.message : 'Failed to delete mapping'
-  }
+function confirmDeleteRegister(m: RegisterMapping) {
+  askDelete('Delete Register', m.name, 'Widgets referencing this register will become unbound.', async () => {
+    errMsg.value = null
+    try {
+      await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/mappings/${m.id}`, { method: 'DELETE' })
+      await loadAll()
+    } catch (err) {
+      errMsg.value = err instanceof Error ? err.message : 'Failed to delete register'
+    }
+  })
 }
 
 async function testRead(m: RegisterMapping) {
@@ -216,90 +457,223 @@ async function testRead(m: RegisterMapping) {
   }
 }
 
-async function addDashboard() {
+// --- Dashboard Actions + Reorder ---
+async function saveDashboard() {
   errMsg.value = null
   okMsg.value = null
+  const pollMs = Math.round(Number(dashPollIntervalMs.value))
+  if (!Number.isFinite(pollMs) || pollMs < 1000 || pollMs > 60000) {
+    errMsg.value = 'Dashboard poll interval must be between 1000 and 60000 ms.'
+    return
+  }
   try {
-    const created = await apiRequest<WebviewDashboard>(`/api/v1/webview/sites/${siteId.value}/operator/dashboards`, {
+    if (editingDashId.value) {
+      await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/dashboards/${editingDashId.value}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ name: dashName.value, isDefault: dashIsDefault.value, pollIntervalMs: pollMs }),
+      })
+      okMsg.value = `Updated dashboard "${dashName.value}".`
+    } else {
+      const created = await apiRequest<WebviewDashboard>(`/api/v1/webview/sites/${siteId.value}/operator/dashboards`, {
+        method: 'POST',
+        body: JSON.stringify({ name: dashName.value, isDefault: dashIsDefault.value, pollIntervalMs: pollMs }),
+      })
+      selectedDashId.value = created.id
+      okMsg.value = `Created dashboard "${dashName.value}".`
+    }
+    dashModalOpen.value = false
+    await loadAll()
+  } catch (err) {
+    errMsg.value = err instanceof Error ? err.message : 'Failed to save dashboard'
+  }
+}
+
+async function moveDashboard(idx: number, delta: number) {
+  const target = idx + delta
+  if (target < 0 || target >= dashboards.value.length) return
+  const reordered = [...dashboards.value]
+  const [moved] = reordered.splice(idx, 1)
+  reordered.splice(target, 0, moved)
+  dashboards.value = reordered
+  try {
+    await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/dashboards/reorder`, {
       method: 'POST',
-      body: JSON.stringify({ name: newDashName.value, isDefault: dashboards.value.length === 0 }),
+      body: JSON.stringify({ dashboardIds: reordered.map((d) => d.id) }),
     })
-    okMsg.value = `Created dashboard "${newDashName.value}".`
-    newDashName.value = ''
-    selectedDashId.value = created.id
-    await loadAll()
+    webviewStore.setSiteDashboards(siteId.value, reordered)
   } catch (err) {
-    errMsg.value = err instanceof Error ? err.message : 'Failed to create dashboard'
+    errMsg.value = err instanceof Error ? err.message : 'Failed to reorder dashboards'
+    await loadAll()
   }
 }
 
-async function deleteDashboard(d: WebviewDashboard) {
-  if (!window.confirm(`Delete dashboard "${d.name}" and its widgets?`)) return
-  errMsg.value = null
-  try {
-    await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/dashboards/${d.id}`, { method: 'DELETE' })
-    selectedDashId.value = ''
-    await loadAll()
-  } catch (err) {
-    errMsg.value = err instanceof Error ? err.message : 'Failed to delete dashboard'
-  }
+function confirmDeleteDashboard(d: WebviewDashboard) {
+  askDelete('Delete Dashboard', d.name, 'All widgets on this dashboard will be permanently removed.', async () => {
+    errMsg.value = null
+    try {
+      await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/dashboards/${d.id}`, { method: 'DELETE' })
+      selectedDashId.value = ''
+      await loadAll()
+    } catch (err) {
+      errMsg.value = err instanceof Error ? err.message : 'Failed to delete dashboard'
+    }
+  })
 }
 
-async function addWidget() {
+// --- Widget Actions + Reorder ---
+async function saveWidget() {
   if (!selectedDash.value) return
   errMsg.value = null
   okMsg.value = null
+
+  const style: Record<string, unknown> = {}
   const extra: Record<string, unknown> = {}
-  if (widType.value === 'button') {
-    extra.pressValue = Number(widPressValue.value)
-    extra.buttonLabel = widButtonLabel.value || 'Trigger'
+
+  if (widType.value === 'display') {
+    style.fontSize = widFontSize.value
+    extra.prefix = widPrefix.value
+    extra.unit = widUnit.value
+    extra.precision = clampPrecision(widPrecision.value)
+  } else if (widType.value === 'number_input') {
+    style.fontSize = widFontSize.value
+    extra.prefix = widPrefix.value
+    extra.unit = widUnit.value
+    extra.precision = clampPrecision(widPrecision.value)
+    if (widMin.value.trim() !== '' && Number.isFinite(Number(widMin.value))) {
+      extra.min = Number(widMin.value)
+    }
+    if (widMax.value.trim() !== '' && Number.isFinite(Number(widMax.value))) {
+      extra.max = Number(widMax.value)
+    }
+    if (extra.min !== undefined && extra.max !== undefined && Number(extra.min) > Number(extra.max)) {
+      errMsg.value = 'Minimum value cannot exceed maximum value.'
+      return
+    }
   } else if (widType.value === 'lamp') {
-    extra.onLabel = widOnLabel.value || 'ACTIVE'
-    extra.offLabel = widOffLabel.value || 'INACTIVE'
+    extra.on = { ...widLampOn.value }
+    extra.off = { ...widLampOff.value }
+  } else if (widType.value === 'switch') {
+    style.color = widSwitchColor.value
+    extra.onLabel = widSwitchOnLabel.value || 'ON'
+    extra.offLabel = widSwitchOffLabel.value || 'OFF'
+  } else if (widType.value === 'button') {
+    style.color = widBtnColor.value
+    extra.label = widBtnLabel.value || widName.value
+    extra.triggerTimeMs = Math.max(100, Math.min(60000, Math.round(Number(widBtnTriggerMs.value) || 1000)))
   }
+
   try {
-    await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/dashboards/${selectedDash.value.id}/widgets`, {
+    if (editingWidgetId.value) {
+      await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/widgets/${editingWidgetId.value}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          name: widName.value,
+          widgetType: widType.value,
+          registerMappingId: widMappingId.value || undefined,
+          style,
+          extra,
+        }),
+      })
+      okMsg.value = `Updated widget "${widName.value}".`
+    } else {
+      await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/dashboards/${selectedDash.value.id}/widgets`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: widName.value,
+          widgetType: widType.value,
+          registerMappingId: widMappingId.value || undefined,
+          sortOrder: selectedDash.value.widgets.length,
+          style,
+          extra,
+        }),
+      })
+      okMsg.value = `Added widget "${widName.value}".`
+    }
+    widgetModalOpen.value = false
+    await loadAll()
+  } catch (err) {
+    errMsg.value = err instanceof Error ? err.message : 'Failed to save widget'
+  }
+}
+
+async function moveWidget(idx: number, delta: number) {
+  if (!selectedDash.value) return
+  const list = selectedDash.value.widgets
+  const target = idx + delta
+  if (target < 0 || target >= list.length) return
+  const reordered = [...list]
+  const [moved] = reordered.splice(idx, 1)
+  reordered.splice(target, 0, moved)
+  selectedDash.value.widgets = reordered
+  try {
+    await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/dashboards/${selectedDash.value.id}/widgets/reorder`, {
       method: 'POST',
-      body: JSON.stringify({
-        name: widName.value,
-        widgetType: widType.value,
-        registerMappingId: widMappingId.value || undefined,
-        sortOrder: selectedDash.value.widgets.length,
-        extra,
-      }),
+      body: JSON.stringify({ widgetIds: reordered.map((w) => w.id) }),
     })
-    okMsg.value = `Added widget "${widName.value}".`
-    widName.value = ''
-    await loadAll()
   } catch (err) {
-    errMsg.value = err instanceof Error ? err.message : 'Failed to add widget'
+    errMsg.value = err instanceof Error ? err.message : 'Failed to reorder widgets'
+    await loadAll()
   }
 }
 
-async function deleteWidget(widgetId: string) {
-  errMsg.value = null
-  try {
-    await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/widgets/${widgetId}`, { method: 'DELETE' })
-    await loadAll()
-  } catch (err) {
-    errMsg.value = err instanceof Error ? err.message : 'Failed to delete widget'
-  }
+function confirmDeleteWidget(w: WebviewWidget) {
+  askDelete('Delete Widget', w.name, 'This widget will be removed from the dashboard.', async () => {
+    errMsg.value = null
+    try {
+      await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/widgets/${w.id}`, { method: 'DELETE' })
+      await loadAll()
+    } catch (err) {
+      errMsg.value = err instanceof Error ? err.message : 'Failed to delete widget'
+    }
+  })
 }
 
-async function saveHistorySetting() {
+// --- History Entry Actions ---
+async function addHistoryEntry() {
+  if (!histMappingId.value) return
   errMsg.value = null
   okMsg.value = null
   try {
-    await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/settings`, {
-      method: 'PATCH',
-      body: JSON.stringify({ historyEnabled: historyEnabled.value }),
+    await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/history-entries`, {
+      method: 'POST',
+      body: JSON.stringify({
+        registerMappingId: histMappingId.value,
+        pollIntervalSeconds: Number(histPollSec.value),
+        retentionDays: Number(histRetentionDays.value),
+      }),
     })
-    okMsg.value = historyEnabled.value
-      ? 'WebView history archival enabled for this site.'
-      : 'WebView history archival disabled for this site.'
+    okMsg.value = 'Added register to history archival.'
+    histMappingId.value = ''
+    await loadAll()
   } catch (err) {
-    errMsg.value = err instanceof Error ? err.message : 'Failed to update WebView settings'
+    errMsg.value = err instanceof Error ? err.message : 'Failed to add history entry'
   }
+}
+
+async function updateHistoryEntry(he: HistoryEntry, patch: { pollIntervalSeconds?: number; retentionDays?: number; isActive?: boolean }) {
+  errMsg.value = null
+  try {
+    await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/history-entries/${he.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    })
+    await loadAll()
+  } catch (err) {
+    errMsg.value = err instanceof Error ? err.message : 'Failed to update history entry'
+  }
+}
+
+function confirmDeleteHistoryEntry(he: HistoryEntry) {
+  const m = mappingMap.value[he.registerMappingId]
+  askDelete('Remove History Entry', m ? registerKeyLabel(m) : he.registerMappingId, 'Scheduled background polling for this register will stop unless a dashboard is open.', async () => {
+    errMsg.value = null
+    try {
+      await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/history-entries/${he.id}`, { method: 'DELETE' })
+      await loadAll()
+    } catch (err) {
+      errMsg.value = err instanceof Error ? err.message : 'Failed to remove history entry'
+    }
+  })
 }
 
 async function toggleMemberWrite(member: SiteMember, canWrite: boolean) {
@@ -323,11 +697,11 @@ async function toggleMemberWrite(member: SiteMember, canWrite: boolean) {
     <div>
       <h2 class="text-lg font-semibold text-white">WebView Configuration</h2>
       <p class="text-xs text-slate-400">
-        Manage Modbus devices, register mappings, dashboards, widgets, WebView history archival, and site member write permissions.
+        Manage devices, protocol-defined registers, dashboards, widgets, scheduled history keys, and site member write policies.
       </p>
     </div>
 
-    <!-- Sub-navigation Tabs -->
+    <!-- Tabs -->
     <div class="flex flex-wrap gap-2 border-b border-slate-800 pb-3">
       <button
         type="button"
@@ -356,10 +730,10 @@ async function toggleMemberWrite(member: SiteMember, canWrite: boolean) {
       <button
         type="button"
         class="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium"
-        :class="activeTab === 'settings' ? 'bg-amber-500/20 text-amber-200' : 'text-slate-400 hover:bg-slate-800 hover:text-white'"
-        @click="activeTab = 'settings'"
+        :class="activeTab === 'history' ? 'bg-amber-500/20 text-amber-200' : 'text-slate-400 hover:bg-slate-800 hover:text-white'"
+        @click="activeTab = 'history'"
       >
-        <Database class="h-3.5 w-3.5" /> History & Member Policies
+        <Database class="h-3.5 w-3.5" /> History & Member Policies ({{ historyEntries.length }})
       </button>
     </div>
 
@@ -367,25 +741,16 @@ async function toggleMemberWrite(member: SiteMember, canWrite: boolean) {
     <p v-if="okMsg" class="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-200">{{ okMsg }}</p>
 
     <!-- TAB 1: DEVICES -->
-    <div v-if="activeTab === 'devices'" class="space-y-5">
-      <form
-        class="grid gap-3 rounded-xl border border-slate-800 bg-slate-900/60 p-4 sm:grid-cols-6"
-        @submit.prevent="addDevice"
-      >
-        <input v-model="devName" required placeholder="Device name (e.g. PLC-1)" class="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white sm:col-span-2" />
-        <input v-model="devHost" required placeholder="Host IP (in site LAN)" class="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs text-white" />
-        <input v-model.number="devPort" type="number" min="1" max="65535" required placeholder="502" class="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs text-white" />
-        <select v-model="devProto" class="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white">
-          <option value="MODBUS_TCP">Modbus TCP</option>
-          <option value="MODBUS_UDP">Modbus UDP</option>
-        </select>
-        <div class="flex gap-2">
-          <input v-model.number="devUnit" type="number" min="0" max="255" title="Unit ID" class="w-16 rounded-lg border border-slate-700 bg-slate-950 px-2 py-2 font-mono text-xs text-white" />
-          <button type="submit" class="inline-flex flex-1 items-center justify-center gap-1 rounded-lg bg-amber-500 px-3 py-2 text-xs font-semibold text-slate-950 hover:bg-amber-400">
-            <Plus class="h-3.5 w-3.5" /> Add
-          </button>
-        </div>
-      </form>
+    <div v-if="activeTab === 'devices'" class="space-y-4">
+      <div class="flex justify-end">
+        <button
+          type="button"
+          class="inline-flex items-center gap-1.5 rounded-lg bg-amber-500 px-3.5 py-2 text-xs font-semibold text-slate-950 hover:bg-amber-400"
+          @click="openCreateDevice"
+        >
+          <Plus class="h-4 w-4" /> Add Device
+        </button>
+      </div>
 
       <div class="overflow-x-auto rounded-xl border border-slate-800 bg-slate-900/60">
         <table class="w-full text-left text-xs">
@@ -393,73 +758,54 @@ async function toggleMemberWrite(member: SiteMember, canWrite: boolean) {
             <tr>
               <th class="px-4 py-3">Name</th>
               <th class="px-4 py-3">Endpoint</th>
-              <th class="px-4 py-3">Protocol / Unit</th>
+              <th class="px-4 py-3">Protocol</th>
               <th class="px-4 py-3">Status</th>
               <th class="px-4 py-3 text-right">Actions</th>
             </tr>
           </thead>
           <tbody class="divide-y divide-slate-800/70">
-            <tr v-for="d in devices" :key="d.id">
+            <tr v-for="d in devices" :key="d.id" class="hover:bg-slate-800/30">
               <td class="px-4 py-3 font-medium text-white">{{ d.name }}</td>
               <td class="px-4 py-3 font-mono text-slate-300">{{ d.host }}:{{ d.port }}</td>
-              <td class="px-4 py-3 font-mono text-slate-400">{{ d.protocol }} / unit {{ d.unitId }}</td>
+              <td class="px-4 py-3 font-mono text-slate-400">{{ d.protocol }}</td>
               <td class="px-4 py-3"><StatusBadge :status="d.isActive ? 'ACTIVE' : 'DISABLED'" size="sm" /></td>
-              <td class="px-4 py-3 text-right">
-                <button type="button" class="rounded border border-rose-500/30 bg-rose-500/10 p-1 text-rose-300 hover:bg-rose-500/20" @click="deleteDevice(d)">
+              <td class="px-4 py-3 text-right space-x-1.5">
+                <button
+                  type="button"
+                  class="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-slate-200 hover:bg-slate-700"
+                  @click="openEditDevice(d)"
+                >
+                  <Edit3 class="h-3 w-3" /> Edit
+                </button>
+                <button
+                  type="button"
+                  class="inline-flex items-center rounded border border-rose-500/30 bg-rose-500/10 p-1 text-rose-300 hover:bg-rose-500/20"
+                  @click="confirmDeleteDevice(d)"
+                >
                   <Trash2 class="h-3.5 w-3.5" />
                 </button>
               </td>
             </tr>
             <tr v-if="devices.length === 0">
-              <td colspan="5" class="px-4 py-8 text-center text-slate-500">No Modbus devices configured yet.</td>
+              <td colspan="5" class="px-4 py-8 text-center text-slate-500">No devices configured yet.</td>
             </tr>
           </tbody>
         </table>
       </div>
     </div>
 
-    <!-- TAB 2: REGISTER MAPPINGS -->
-    <div v-if="activeTab === 'mappings'" class="space-y-5">
-      <form
-        class="grid gap-3 rounded-xl border border-slate-800 bg-slate-900/60 p-4 sm:grid-cols-6"
-        @submit.prevent="addMapping"
-      >
-        <select v-model="mapDeviceId" required class="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white sm:col-span-2">
-          <option value="" disabled>Select device...</option>
-          <option v-for="d in devices" :key="d.id" :value="d.id">{{ d.name }} ({{ d.host }})</option>
-        </select>
-        <input v-model="mapName" required placeholder="Register name (e.g. Tank Temp)" class="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white sm:col-span-2" />
-        <select v-model="mapFC" class="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white">
-          <option value="READ_HOLDING">FC03 Holding</option>
-          <option value="READ_INPUT">FC04 Input</option>
-          <option value="READ_COIL">FC01 Coil</option>
-          <option value="READ_DISCRETE">FC02 Discrete</option>
-        </select>
-        <input v-model.number="mapAddr" type="number" min="0" max="65535" required placeholder="Addr" title="Register address" class="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs text-white" />
-
-        <select v-model="mapType" class="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white">
-          <option value="BOOL">BOOL</option>
-          <option value="UINT16">UINT16</option>
-          <option value="INT16">INT16</option>
-          <option value="UINT32">UINT32</option>
-          <option value="INT32">INT32</option>
-          <option value="FLOAT32">FLOAT32</option>
-        </select>
-        <select v-model="mapWordOrder" title="Word order" class="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white">
-          <option value="BIG">Word: BIG</option>
-          <option value="LITTLE">Word: LITTLE</option>
-        </select>
-        <input v-model.number="mapScale" type="number" step="any" placeholder="Scale (1)" title="Scale factor" class="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs text-white" />
-        <input v-model="mapUnit" placeholder="Unit (C, bar)" class="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white" />
-        <select v-model="mapAccess" class="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white">
-          <option value="READ">READ</option>
-          <option value="READ_WRITE">READ_WRITE</option>
-          <option value="WRITE">WRITE</option>
-        </select>
-        <button type="submit" :disabled="!mapDeviceId" class="inline-flex items-center justify-center gap-1 rounded-lg bg-amber-500 px-3 py-2 text-xs font-semibold text-slate-950 hover:bg-amber-400 disabled:opacity-40">
-          <Plus class="h-3.5 w-3.5" /> Add Register
+    <!-- TAB 2: REGISTERS -->
+    <div v-if="activeTab === 'mappings'" class="space-y-4">
+      <div class="flex justify-end">
+        <button
+          type="button"
+          :disabled="devices.length === 0"
+          class="inline-flex items-center gap-1.5 rounded-lg bg-amber-500 px-3.5 py-2 text-xs font-semibold text-slate-950 hover:bg-amber-400 disabled:opacity-40"
+          @click="openCreateRegister"
+        >
+          <Plus class="h-4 w-4" /> Add Register
         </button>
-      </form>
+      </div>
 
       <div class="overflow-x-auto rounded-xl border border-slate-800 bg-slate-900/60">
         <table class="w-full text-left text-xs">
@@ -467,21 +813,27 @@ async function toggleMemberWrite(member: SiteMember, canWrite: boolean) {
             <tr>
               <th class="px-4 py-3">Name</th>
               <th class="px-4 py-3">Device</th>
-              <th class="px-4 py-3">FC / Addr / Type</th>
+              <th class="px-4 py-3">Protocol Attributes</th>
               <th class="px-4 py-3">Access</th>
               <th class="px-4 py-3">Live Test</th>
               <th class="px-4 py-3 text-right">Actions</th>
             </tr>
           </thead>
           <tbody class="divide-y divide-slate-800/70">
-            <tr v-for="m in mappings" :key="m.id">
-              <td class="px-4 py-3 font-medium text-white">{{ m.name }} <span v-if="m.unit" class="text-slate-400">({{ m.unit }})</span></td>
-              <td class="px-4 py-3 text-slate-300">{{ deviceNameMap[m.deviceId] || m.deviceId }}</td>
-              <td class="px-4 py-3 font-mono text-slate-300">{{ m.functionCode }} @ {{ m.registerAddress }} [{{ m.dataType }}]</td>
-              <td class="px-4 py-3 font-mono text-slate-400">{{ m.accessMode }}</td>
+            <tr v-for="m in mappings" :key="m.id" class="hover:bg-slate-800/30">
+              <td class="px-4 py-3 font-medium text-white">{{ m.name }}</td>
+              <td class="px-4 py-3 text-slate-300">{{ deviceMap[m.deviceId]?.name || m.deviceId }}</td>
+              <td class="px-4 py-3 font-mono text-slate-300">
+                unit {{ m.protocolAttributes?.slaveAddress ?? 1 }} |
+                {{ m.protocolAttributes?.functionCode }} @ {{ m.protocolAttributes?.registerAddress }}
+                [{{ m.protocolAttributes?.dataType }}/{{ m.protocolAttributes?.wordOrder || 'BIG' }}]
+              </td>
+              <td class="px-4 py-3 font-mono text-slate-400">
+                {{ m.protocolAttributes?.accessMode === 'READ_WRITE' ? 'R/W' : 'R' }}
+              </td>
               <td class="px-4 py-3 font-mono">
                 <span v-if="testResults[m.id]?.quality === 'GOOD'" class="text-emerald-300">
-                  {{ testResults[m.id].value }} {{ m.unit }}
+                  {{ testResults[m.id].value }}
                 </span>
                 <span v-else-if="testResults[m.id]" class="text-rose-300" :title="testResults[m.id].error">
                   BAD: {{ testResults[m.id].error }}
@@ -490,99 +842,290 @@ async function toggleMemberWrite(member: SiteMember, canWrite: boolean) {
               </td>
               <td class="px-4 py-3 text-right space-x-1.5">
                 <button
-                  v-if="m.accessMode !== 'WRITE'"
                   type="button"
                   :disabled="testingId === m.id"
                   class="inline-flex items-center gap-1 rounded border border-sky-500/40 bg-sky-500/15 px-2 py-1 text-[11px] text-sky-200 hover:bg-sky-500/25 disabled:opacity-40"
                   @click="testRead(m)"
                 >
-                  <Play class="h-3 w-3" /> {{ testingId === m.id ? 'Reading...' : 'Test Read' }}
+                  <Play class="h-3 w-3" /> {{ testingId === m.id ? 'Reading...' : 'Test' }}
                 </button>
-                <button type="button" class="rounded border border-rose-500/30 bg-rose-500/10 p-1 text-rose-300 hover:bg-rose-500/20" @click="deleteMapping(m)">
+                <button
+                  type="button"
+                  class="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-slate-200 hover:bg-slate-700"
+                  @click="openEditRegister(m)"
+                >
+                  <Edit3 class="h-3 w-3" /> Edit
+                </button>
+                <button
+                  type="button"
+                  class="inline-flex items-center rounded border border-rose-500/30 bg-rose-500/10 p-1 text-rose-300 hover:bg-rose-500/20"
+                  @click="confirmDeleteRegister(m)"
+                >
                   <Trash2 class="h-3.5 w-3.5" />
                 </button>
               </td>
             </tr>
             <tr v-if="mappings.length === 0">
-              <td colspan="6" class="px-4 py-8 text-center text-slate-500">No register mappings configured yet.</td>
+              <td colspan="6" class="px-4 py-8 text-center text-slate-500">No registers configured yet.</td>
             </tr>
           </tbody>
         </table>
       </div>
     </div>
 
-    <!-- TAB 3: DASHBOARDS & WIDGETS -->
-    <div v-if="activeTab === 'dashboards'" class="space-y-5">
-      <form class="flex flex-wrap gap-2 rounded-xl border border-slate-800 bg-slate-900/60 p-4" @submit.prevent="addDashboard">
-        <input v-model="newDashName" required placeholder="New dashboard name (e.g. Main Boiler)" class="min-w-[240px] flex-1 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white" />
-        <button type="submit" class="inline-flex items-center gap-1 rounded-lg bg-amber-500 px-3.5 py-2 text-xs font-semibold text-slate-950 hover:bg-amber-400">
-          <Plus class="h-3.5 w-3.5" /> Create Dashboard
-        </button>
-      </form>
-
-      <div v-if="dashboards.length > 0" class="flex flex-wrap items-center gap-2">
-        <div v-for="d in dashboards" :key="d.id" class="inline-flex items-center rounded-lg border" :class="selectedDash?.id === d.id ? 'border-amber-500/50 bg-amber-500/15' : 'border-slate-800 bg-slate-900'">
-          <button type="button" class="px-3 py-1.5 text-xs font-medium text-white" @click="selectedDashId = d.id">
-            {{ d.name }} ({{ d.widgets.length }})
-          </button>
-          <button type="button" class="px-2 py-1.5 text-rose-400 hover:text-rose-300" title="Delete dashboard" @click="deleteDashboard(d)">
-            <Trash2 class="h-3.5 w-3.5" />
+    <!-- TAB 3: DASHBOARDS & WIDGETS (Editable + Reorderable) -->
+    <div v-if="activeTab === 'dashboards'" class="grid gap-6 lg:grid-cols-3">
+      <!-- Dashboards List -->
+      <section class="space-y-3 rounded-xl border border-slate-800 bg-slate-900/60 p-4">
+        <div class="flex items-center justify-between">
+          <h3 class="text-sm font-semibold text-white">Dashboards</h3>
+          <button
+            type="button"
+            class="inline-flex items-center gap-1 rounded-lg bg-amber-500 px-2.5 py-1.5 text-xs font-semibold text-slate-950 hover:bg-amber-400"
+            @click="openCreateDashboard"
+          >
+            <Plus class="h-3.5 w-3.5" /> New
           </button>
         </div>
-      </div>
 
-      <div v-if="selectedDash" class="space-y-4 rounded-xl border border-slate-800 bg-slate-900/60 p-4">
-        <h3 class="text-sm font-semibold text-white">Widgets on "{{ selectedDash.name }}"</h3>
-        <form class="grid gap-3 sm:grid-cols-5" @submit.prevent="addWidget">
-          <input v-model="widName" required placeholder="Widget title" class="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white" />
-          <select v-model="widType" class="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white">
-            <option value="display">Display (Value)</option>
-            <option value="lamp">Lamp (Status)</option>
-            <option value="switch">Switch (Toggle)</option>
-            <option value="button">Button (Momentary)</option>
-            <option value="number_input">Number Input (Setpoint)</option>
-            <option value="chart">Live Chart</option>
-          </select>
-          <select v-model="widMappingId" class="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white sm:col-span-2">
-            <option value="">Select register mapping...</option>
-            <option v-for="m in mappings" :key="m.id" :value="m.id">{{ m.name }} ({{ m.accessMode }})</option>
-          </select>
-          <button type="submit" class="inline-flex items-center justify-center gap-1 rounded-lg bg-amber-500 px-3 py-2 text-xs font-semibold text-slate-950 hover:bg-amber-400">
+        <div class="space-y-1.5">
+          <div
+            v-for="(d, idx) in dashboards"
+            :key="d.id"
+            class="flex items-center justify-between gap-2 rounded-lg border px-2.5 py-2 text-xs transition"
+            :class="selectedDash?.id === d.id ? 'border-amber-500/50 bg-amber-500/15' : 'border-slate-800 bg-slate-950/60'"
+          >
+            <button type="button" class="flex-1 truncate text-left font-medium text-white" @click="selectedDashId = d.id">
+              {{ d.name }}
+              <span class="ml-1 text-[10px] text-slate-400">({{ d.widgets.length }})</span>
+            </button>
+
+            <div class="flex items-center gap-1">
+              <button
+                type="button"
+                :disabled="idx === 0"
+                title="Move up"
+                class="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-white disabled:opacity-30"
+                @click="moveDashboard(idx, -1)"
+              >
+                <ArrowUp class="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                :disabled="idx === dashboards.length - 1"
+                title="Move down"
+                class="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-white disabled:opacity-30"
+                @click="moveDashboard(idx, 1)"
+              >
+                <ArrowDown class="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                title="Edit dashboard"
+                class="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-white"
+                @click="openEditDashboard(d)"
+              >
+                <Edit3 class="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                title="Delete dashboard"
+                class="rounded p-1 text-rose-400 hover:bg-rose-500/15"
+                @click="confirmDeleteDashboard(d)"
+              >
+                <Trash2 class="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
+          <p v-if="dashboards.length === 0" class="py-6 text-center text-xs text-slate-500">No dashboards yet.</p>
+        </div>
+      </section>
+
+      <!-- Selected Dashboard Widgets -->
+      <section class="space-y-3 rounded-xl border border-slate-800 bg-slate-900/60 p-4 lg:col-span-2">
+        <div class="flex items-center justify-between">
+          <h3 class="text-sm font-semibold text-white">
+            {{ selectedDash ? `Widgets on "${selectedDash.name}"` : 'Select a dashboard' }}
+          </h3>
+          <button
+            v-if="selectedDash"
+            type="button"
+            class="inline-flex items-center gap-1 rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-amber-400"
+            @click="openCreateWidget"
+          >
             <Plus class="h-3.5 w-3.5" /> Add Widget
           </button>
-        </form>
+        </div>
 
-        <div class="divide-y divide-slate-800/70 rounded-lg border border-slate-800">
-          <div v-for="w in selectedDash.widgets" :key="w.id" class="flex items-center justify-between px-3 py-2.5 text-xs">
-            <div>
+        <div v-if="selectedDash" class="divide-y divide-slate-800/70 rounded-lg border border-slate-800">
+          <div
+            v-for="(w, idx) in selectedDash.widgets"
+            :key="w.id"
+            class="flex items-center justify-between gap-3 px-3.5 py-2.5 text-xs"
+          >
+            <div class="min-w-0">
               <span class="font-medium text-white">{{ w.name }}</span>
               <span class="ml-2 rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] text-slate-300">{{ w.widgetType }}</span>
+              <p class="mt-0.5 truncate font-mono text-[11px] text-slate-500">
+                {{ w.registerMappingId && mappingMap[w.registerMappingId] ? mappingMap[w.registerMappingId].name : 'Unbound register' }}
+              </p>
             </div>
-            <button type="button" class="rounded border border-rose-500/30 bg-rose-500/10 p-1 text-rose-300 hover:bg-rose-500/20" @click="deleteWidget(w.id)">
-              <Trash2 class="h-3.5 w-3.5" />
-            </button>
+
+            <div class="flex items-center gap-1 shrink-0">
+              <button
+                type="button"
+                :disabled="idx === 0"
+                title="Move up"
+                class="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-white disabled:opacity-30"
+                @click="moveWidget(idx, -1)"
+              >
+                <ArrowUp class="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                :disabled="idx === selectedDash.widgets.length - 1"
+                title="Move down"
+                class="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-white disabled:opacity-30"
+                @click="moveWidget(idx, 1)"
+              >
+                <ArrowDown class="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                title="Edit widget"
+                class="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-slate-200 hover:bg-slate-700"
+                @click="openEditWidget(w)"
+              >
+                <Edit3 class="h-3 w-3" /> Edit
+              </button>
+              <button
+                type="button"
+                title="Delete widget"
+                class="rounded border border-rose-500/30 bg-rose-500/10 p-1 text-rose-300 hover:bg-rose-500/20"
+                @click="confirmDeleteWidget(w)"
+              >
+                <Trash2 class="h-3.5 w-3.5" />
+              </button>
+            </div>
           </div>
-          <div v-if="selectedDash.widgets.length === 0" class="px-3 py-6 text-center text-xs text-slate-500">
+          <div v-if="selectedDash.widgets.length === 0" class="px-4 py-8 text-center text-xs text-slate-500">
             No widgets added to this dashboard yet.
           </div>
         </div>
-      </div>
+      </section>
     </div>
 
-    <!-- TAB 4: HISTORY & MEMBER WRITE POLICIES -->
-    <div v-if="activeTab === 'settings'" class="space-y-5">
-      <section class="rounded-xl border border-slate-800 bg-slate-900/60 p-5 space-y-3">
-        <div class="flex items-center justify-between gap-4">
-          <div>
-            <h3 class="text-sm font-semibold text-white">WebView History Storage</h3>
-            <p class="mt-0.5 text-xs text-slate-400">
-              Enable archival polling and TimescaleDB history storage for active registers on this site.
-            </p>
+    <!-- TAB 4: HISTORY KEYS & MEMBER WRITE POLICIES -->
+    <div v-if="activeTab === 'history'" class="space-y-6">
+      <section class="space-y-4 rounded-xl border border-slate-800 bg-slate-900/60 p-5">
+        <div>
+          <h3 class="text-sm font-semibold text-white">Scheduled History Archival</h3>
+          <p class="mt-0.5 text-xs text-slate-400">
+            Select specific register keys to archive on a schedule. Registers without a history entry are only polled while a dashboard is open.
+          </p>
+        </div>
+
+        <form class="space-y-3" @submit.prevent="addHistoryEntry">
+          <RegisterPicker
+            v-model="histMappingId"
+            :devices="devices"
+            :mappings="availableHistoryMappings"
+            register-label="Register Key"
+            placeholder="Search register to archive..."
+          />
+          <div class="grid gap-3 sm:grid-cols-3">
+            <select v-model.number="histPollSec" class="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white">
+              <option :value="10">Poll: 10s</option>
+              <option :value="30">Poll: 30s</option>
+              <option :value="60">Poll: 1 min</option>
+              <option :value="300">Poll: 5 min</option>
+              <option :value="900">Poll: 15 min</option>
+              <option :value="3600">Poll: 1 hour</option>
+            </select>
+
+            <select v-model.number="histRetentionDays" class="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white">
+              <option :value="1">Keep: 1 day</option>
+              <option :value="7">Keep: 7 days</option>
+              <option :value="30">Keep: 30 days</option>
+              <option :value="90">Keep: 90 days</option>
+              <option :value="365">Keep: 1 year</option>
+            </select>
+
+            <button
+              type="submit"
+              :disabled="!histMappingId"
+              class="inline-flex items-center justify-center gap-1 rounded-lg bg-amber-500 px-3 py-2 text-xs font-semibold text-slate-950 hover:bg-amber-400 disabled:opacity-40"
+            >
+              <Plus class="h-3.5 w-3.5" /> Add Key
+            </button>
           </div>
-          <label class="inline-flex items-center gap-2 text-xs font-medium text-slate-200">
-            <input v-model="historyEnabled" type="checkbox" @change="saveHistorySetting" />
-            {{ historyEnabled ? 'Enabled' : 'Disabled' }}
-          </label>
+        </form>
+
+        <div class="overflow-x-auto rounded-lg border border-slate-800">
+          <table class="w-full text-left text-xs">
+            <thead class="border-b border-slate-800 text-slate-400">
+              <tr>
+                <th class="px-4 py-2.5">Register Key</th>
+                <th class="px-4 py-2.5">Poll Interval</th>
+                <th class="px-4 py-2.5">Retention</th>
+                <th class="px-4 py-2.5">Active</th>
+                <th class="px-4 py-2.5 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-800/70">
+              <tr v-for="he in historyEntries" :key="he.id">
+                <td class="px-4 py-2.5 font-mono text-slate-200">
+                  {{ mappingMap[he.registerMappingId] ? registerKeyLabel(mappingMap[he.registerMappingId]) : he.registerMappingId }}
+                </td>
+                <td class="px-4 py-2.5">
+                  <select
+                    :value="he.pollIntervalSeconds"
+                    class="rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-white"
+                    @change="updateHistoryEntry(he, { pollIntervalSeconds: Number(($event.target as HTMLSelectElement).value) })"
+                  >
+                    <option :value="10">10s</option>
+                    <option :value="30">30s</option>
+                    <option :value="60">1 min</option>
+                    <option :value="300">5 min</option>
+                    <option :value="900">15 min</option>
+                    <option :value="3600">1 hour</option>
+                  </select>
+                </td>
+                <td class="px-4 py-2.5">
+                  <select
+                    :value="he.retentionDays"
+                    class="rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-white"
+                    @change="updateHistoryEntry(he, { retentionDays: Number(($event.target as HTMLSelectElement).value) })"
+                  >
+                    <option :value="1">1 day</option>
+                    <option :value="7">7 days</option>
+                    <option :value="30">30 days</option>
+                    <option :value="90">90 days</option>
+                    <option :value="365">1 year</option>
+                  </select>
+                </td>
+                <td class="px-4 py-2.5">
+                  <input
+                    type="checkbox"
+                    :checked="he.isActive"
+                    @change="updateHistoryEntry(he, { isActive: ($event.target as HTMLInputElement).checked })"
+                  />
+                </td>
+                <td class="px-4 py-2.5 text-right">
+                  <button
+                    type="button"
+                    class="rounded border border-rose-500/30 bg-rose-500/10 p-1 text-rose-300 hover:bg-rose-500/20"
+                    @click="confirmDeleteHistoryEntry(he)"
+                  >
+                    <Trash2 class="h-3.5 w-3.5" />
+                  </button>
+                </td>
+              </tr>
+              <tr v-if="historyEntries.length === 0">
+                <td colspan="5" class="px-4 py-6 text-center text-slate-500">No registers scheduled for history storage yet.</td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </section>
 
@@ -590,7 +1133,7 @@ async function toggleMemberWrite(member: SiteMember, canWrite: boolean) {
         <div>
           <h3 class="text-sm font-semibold text-white">Site Member Register Write Policies</h3>
           <p class="mt-0.5 text-xs text-slate-400">
-            Site Operators and Platform Admins can always write to writable registers. Grant individual Site Members write permission below.
+            Site Operators and Platform Admins can always write to writable registers. Grant individual Site Members write access below.
           </p>
         </div>
 
@@ -610,10 +1153,387 @@ async function toggleMemberWrite(member: SiteMember, canWrite: boolean) {
             </label>
           </div>
           <div v-if="siteMembersOnly.length === 0" class="px-4 py-6 text-center text-xs text-slate-500">
-            No Site Members assigned to this site yet. Invite members under Manage Site -> Members.
+            No Site Members assigned to this site yet.
           </div>
         </div>
       </section>
     </div>
+
+    <!-- MODAL: CREATE / EDIT DEVICE -->
+    <Teleport to="body">
+      <div v-if="deviceModalOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-xs" @click.self="deviceModalOpen = false">
+        <form class="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl space-y-4" @submit.prevent="saveDevice">
+          <div class="flex items-center justify-between">
+            <h3 class="text-sm font-semibold text-white">{{ editingDeviceId ? 'Edit Device' : 'Add Device' }}</h3>
+            <button type="button" class="text-slate-400 hover:text-white" @click="deviceModalOpen = false"><X class="h-4 w-4" /></button>
+          </div>
+          <div>
+            <label class="mb-1 block text-xs text-slate-400">Device Name</label>
+            <input v-model="devName" required placeholder="PLC-1" class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white" />
+          </div>
+          <div class="grid gap-3 sm:grid-cols-3">
+            <div class="sm:col-span-2">
+              <label class="mb-1 block text-xs text-slate-400">IP Address</label>
+              <input v-model="devHost" required placeholder="172.21.0.2" class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs text-white" />
+            </div>
+            <div>
+              <label class="mb-1 block text-xs text-slate-400">Port</label>
+              <NumericTextInput v-model="devPort" :min="1" :max="65535" required placeholder="502" />
+            </div>
+          </div>
+          <div>
+            <label class="mb-1 block text-xs text-slate-400">Protocol</label>
+            <select v-model="devProto" class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white">
+              <option value="MODBUS_TCP">Modbus TCP</option>
+            </select>
+          </div>
+          <label v-if="editingDeviceId" class="inline-flex items-center gap-2 text-xs text-slate-300">
+            <input v-model="devActive" type="checkbox" /> Active
+          </label>
+          <div class="flex justify-end gap-2 pt-2">
+            <button type="button" class="rounded-lg border border-slate-700 px-3.5 py-2 text-xs text-slate-300" @click="deviceModalOpen = false">Cancel</button>
+            <button type="submit" class="rounded-lg bg-amber-500 px-4 py-2 text-xs font-semibold text-slate-950 hover:bg-amber-400">Save Device</button>
+          </div>
+        </form>
+      </div>
+    </Teleport>
+
+    <!-- MODAL: CREATE / EDIT REGISTER (Dynamic Protocol Attributes) -->
+    <Teleport to="body">
+      <div v-if="regModalOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-xs" @click.self="regModalOpen = false">
+        <form class="w-full max-w-lg rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl space-y-4" @submit.prevent="saveRegister">
+          <div class="flex items-center justify-between">
+            <h3 class="text-sm font-semibold text-white">{{ editingRegId ? 'Edit Register' : 'Add Register' }}</h3>
+            <button type="button" class="text-slate-400 hover:text-white" @click="regModalOpen = false"><X class="h-4 w-4" /></button>
+          </div>
+
+          <div class="grid gap-3 sm:grid-cols-2">
+            <div>
+              <label class="mb-1 block text-xs text-slate-400">Device</label>
+              <select v-model="regDeviceId" required class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white">
+                <option v-for="d in devices" :key="d.id" :value="d.id">{{ d.name }} ({{ d.protocol }})</option>
+              </select>
+            </div>
+            <div>
+              <label class="mb-1 block text-xs text-slate-400">Register Name</label>
+              <input v-model="regName" required placeholder="Inlet Temp" class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white" />
+            </div>
+          </div>
+
+          <!-- Dynamic Protocol Section: MODBUS_TCP -->
+          <div v-if="!selectedRegDevice || selectedRegDevice.protocol === 'MODBUS_TCP'" class="space-y-3 rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+            <p class="text-[11px] font-semibold uppercase tracking-wider text-amber-300">Modbus TCP Attributes</p>
+            <div class="grid gap-3 sm:grid-cols-3">
+              <div>
+                <label class="mb-1 block text-xs text-slate-400">Slave Address (Unit ID)</label>
+                <NumericTextInput v-model="regSlave" :min="0" :max="255" required placeholder="1" input-class="bg-slate-900" />
+              </div>
+              <div>
+                <label class="mb-1 block text-xs text-slate-400">Function Code</label>
+                <select v-model="regFC" class="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-white">
+                  <option value="READ_HOLDING">FC03 Holding</option>
+                  <option value="READ_INPUT">FC04 Input</option>
+                  <option value="READ_COIL">FC01 Coil</option>
+                  <option value="READ_DISCRETE">FC02 Discrete</option>
+                </select>
+              </div>
+              <div>
+                <label class="mb-1 block text-xs text-slate-400">Register Address</label>
+                <NumericTextInput v-model="regAddr" :min="0" :max="65535" required placeholder="0" input-class="bg-slate-900" />
+              </div>
+            </div>
+
+            <div class="grid gap-3 sm:grid-cols-3">
+              <div>
+                <label class="mb-1 block text-xs text-slate-400">Data Type</label>
+                <select v-model="regDataType" :disabled="regFC === 'READ_COIL' || regFC === 'READ_DISCRETE'" class="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-white disabled:opacity-50">
+                  <option value="BOOL">BOOL</option>
+                  <option value="UINT16">UINT16</option>
+                  <option value="INT16">INT16</option>
+                  <option value="UINT32">UINT32</option>
+                  <option value="INT32">INT32</option>
+                  <option value="FLOAT32">FLOAT32</option>
+                </select>
+              </div>
+              <div>
+                <label class="mb-1 block text-xs text-slate-400">Word Order</label>
+                <select v-model="regWordOrder" class="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-white">
+                  <option value="BIG">BIG</option>
+                  <option value="LITTLE">LITTLE</option>
+                </select>
+              </div>
+              <div>
+                <label class="mb-1 block text-xs text-slate-400">Access Permission</label>
+                <select v-model="regAccess" :disabled="regFC === 'READ_DISCRETE' || regFC === 'READ_INPUT'" class="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-white disabled:opacity-50">
+                  <option value="READ">Read only (R)</option>
+                  <option value="READ_WRITE">Read / Write (R/W)</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <label v-if="editingRegId" class="inline-flex items-center gap-2 text-xs text-slate-300">
+            <input v-model="regActive" type="checkbox" /> Active
+          </label>
+
+          <div class="flex justify-end gap-2 pt-2">
+            <button type="button" class="rounded-lg border border-slate-700 px-3.5 py-2 text-xs text-slate-300" @click="regModalOpen = false">Cancel</button>
+            <button type="submit" class="rounded-lg bg-amber-500 px-4 py-2 text-xs font-semibold text-slate-950 hover:bg-amber-400">Save Register</button>
+          </div>
+        </form>
+      </div>
+    </Teleport>
+
+    <!-- MODAL: CREATE / EDIT DASHBOARD -->
+    <Teleport to="body">
+      <div v-if="dashModalOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-xs" @click.self="dashModalOpen = false">
+        <form class="w-full max-w-sm rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl space-y-4" @submit.prevent="saveDashboard">
+          <div class="flex items-center justify-between">
+            <h3 class="text-sm font-semibold text-white">{{ editingDashId ? 'Edit Dashboard' : 'New Dashboard' }}</h3>
+            <button type="button" class="text-slate-400 hover:text-white" @click="dashModalOpen = false"><X class="h-4 w-4" /></button>
+          </div>
+          <div>
+            <label class="mb-1 block text-xs text-slate-400">Dashboard Name</label>
+            <input v-model="dashName" required placeholder="Main Boiler" class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white" />
+          </div>
+          <div>
+            <label class="mb-1 block text-xs text-slate-400">Poll Interval (ms, 1000-60000)</label>
+            <NumericTextInput v-model="dashPollIntervalMs" :min="1000" :max="60000" required placeholder="1000" />
+            <p class="mt-1 text-[11px] text-slate-500">
+              Applies up to 100 active registers per device; above 100, the minimum rate increases automatically to protect the device.
+            </p>
+          </div>
+          <label class="inline-flex items-center gap-2 text-xs text-slate-300">
+            <input v-model="dashIsDefault" type="checkbox" /> Set as default dashboard
+          </label>
+          <div class="flex justify-end gap-2 pt-2">
+            <button type="button" class="rounded-lg border border-slate-700 px-3.5 py-2 text-xs text-slate-300" @click="dashModalOpen = false">Cancel</button>
+            <button type="submit" class="rounded-lg bg-amber-500 px-4 py-2 text-xs font-semibold text-slate-950 hover:bg-amber-400">Save</button>
+          </div>
+        </form>
+      </div>
+    </Teleport>
+
+    <!-- MODAL: CREATE / EDIT WIDGET -->
+    <Teleport to="body">
+      <div v-if="widgetModalOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-xs" @click.self="widgetModalOpen = false">
+        <form class="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl space-y-4" @submit.prevent="saveWidget">
+          <div class="flex items-center justify-between">
+            <h3 class="text-sm font-semibold text-white">{{ editingWidgetId ? 'Edit Widget' : 'Add Widget' }}</h3>
+            <button type="button" class="text-slate-400 hover:text-white" @click="widgetModalOpen = false"><X class="h-4 w-4" /></button>
+          </div>
+
+          <div class="grid gap-3 sm:grid-cols-2">
+            <div>
+              <label class="mb-1 block text-xs text-slate-400">Card Title</label>
+              <input v-model="widName" required placeholder="Water Temperature" class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white" />
+            </div>
+            <div>
+              <label class="mb-1 block text-xs text-slate-400">Card Type</label>
+              <select v-model="widType" class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white">
+                <option value="display">Display</option>
+                <option value="lamp">Lamp</option>
+                <option value="switch">Switch</option>
+                <option value="button">Button</option>
+                <option value="number_input">Number Input</option>
+              </select>
+            </div>
+          </div>
+
+          <RegisterPicker
+            v-model="widMappingId"
+            :devices="devices"
+            :mappings="mappings"
+            register-label="Bound Register"
+            placeholder="Search by register name, address, or type..."
+          />
+
+          <!-- DISPLAY & NUMBER INPUT EXTRA PARAMS -->
+          <div v-if="widType === 'display' || widType === 'number_input'" class="space-y-3 rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+            <p class="text-[11px] font-semibold uppercase tracking-wider text-sky-300">
+              {{ widType === 'display' ? 'Display Options' : 'Number Input Options' }}
+            </p>
+            <div class="grid gap-3 sm:grid-cols-2">
+              <div>
+                <label class="mb-1 block text-xs text-slate-400">Font Size</label>
+                <select v-model="widFontSize" class="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-white">
+                  <option value="sm">Small</option>
+                  <option value="md">Medium</option>
+                  <option value="lg">Large</option>
+                  <option value="xl">Extra Large</option>
+                </select>
+              </div>
+              <div>
+                <label class="mb-1 block text-xs text-slate-400">Decimal Places (10^-x, -5 to 5)</label>
+                <NumericTextInput v-model="widPrecision" :min="-5" :max="5" allow-negative required placeholder="0" input-class="bg-slate-900" />
+              </div>
+              <div>
+                <label class="mb-1 block text-xs text-slate-400">Prefix</label>
+                <input v-model="widPrefix" placeholder="e.g. ~" class="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-white" />
+              </div>
+              <div>
+                <label class="mb-1 block text-xs text-slate-400">Unit (Postfix)</label>
+                <input v-model="widUnit" placeholder="e.g. C, bar, %" class="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-white" />
+              </div>
+            </div>
+
+            <div v-if="widType === 'number_input'" class="space-y-2 border-t border-slate-800 pt-3">
+              <div class="grid gap-3 sm:grid-cols-2">
+                <div>
+                  <label class="mb-1 block text-xs text-slate-400">Min Value (optional)</label>
+                  <NumericTextInput
+                    v-model="widMin"
+                    allow-decimal
+                    allow-negative
+                    :min="widBoundTypeBounds.typeMin"
+                    :max="widBoundTypeBounds.typeMax"
+                    :placeholder="String(widBoundTypeBounds.typeMin)"
+                    input-class="bg-slate-900"
+                  />
+                </div>
+                <div>
+                  <label class="mb-1 block text-xs text-slate-400">Max Value (optional)</label>
+                  <NumericTextInput
+                    v-model="widMax"
+                    allow-decimal
+                    allow-negative
+                    :min="widBoundTypeBounds.typeMin"
+                    :max="widBoundTypeBounds.typeMax"
+                    :placeholder="String(widBoundTypeBounds.typeMax)"
+                    input-class="bg-slate-900"
+                  />
+                </div>
+              </div>
+              <p class="text-[11px] text-slate-500">
+                Register type limit ({{ widBoundMapping?.protocolAttributes?.dataType || 'UINT16' }}):
+                {{ widBoundTypeBounds.typeMin }} to {{ widBoundTypeBounds.typeMax }}
+              </p>
+            </div>
+          </div>
+
+          <!-- LAMP EXTRA PARAMS (BOTH ON AND OFF STATES) -->
+          <div v-else-if="widType === 'lamp'" class="space-y-3 rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+            <p class="text-[11px] font-semibold uppercase tracking-wider text-emerald-300">ON State (value != 0)</p>
+            <div class="grid gap-3 sm:grid-cols-3">
+              <div>
+                <label class="mb-1 block text-xs text-slate-400">Mode</label>
+                <select v-model="widLampOn.mode" class="w-full rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-2 text-xs text-white">
+                  <option value="on">On</option>
+                  <option value="blink">Blink</option>
+                  <option value="off">Off</option>
+                </select>
+              </div>
+              <div>
+                <label class="mb-1 block text-xs text-slate-400">Color</label>
+                <select v-model="widLampOn.color" class="w-full rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-2 text-xs text-white">
+                  <option value="emerald">Green</option>
+                  <option value="sky">Blue</option>
+                  <option value="amber">Amber</option>
+                  <option value="rose">Red</option>
+                  <option value="slate">Gray</option>
+                </select>
+              </div>
+              <div>
+                <label class="mb-1 block text-xs text-slate-400">Shown Text</label>
+                <input v-model="widLampOn.text" placeholder="RUNNING" class="w-full rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-2 text-xs text-white" />
+              </div>
+            </div>
+
+            <p class="border-t border-slate-800 pt-3 text-[11px] font-semibold uppercase tracking-wider text-slate-400">OFF State (value = 0)</p>
+            <div class="grid gap-3 sm:grid-cols-3">
+              <div>
+                <label class="mb-1 block text-xs text-slate-400">Mode</label>
+                <select v-model="widLampOff.mode" class="w-full rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-2 text-xs text-white">
+                  <option value="off">Off</option>
+                  <option value="on">On</option>
+                  <option value="blink">Blink</option>
+                </select>
+              </div>
+              <div>
+                <label class="mb-1 block text-xs text-slate-400">Color</label>
+                <select v-model="widLampOff.color" class="w-full rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-2 text-xs text-white">
+                  <option value="slate">Gray</option>
+                  <option value="emerald">Green</option>
+                  <option value="sky">Blue</option>
+                  <option value="amber">Amber</option>
+                  <option value="rose">Red</option>
+                </select>
+              </div>
+              <div>
+                <label class="mb-1 block text-xs text-slate-400">Shown Text</label>
+                <input v-model="widLampOff.text" placeholder="STOPPED" class="w-full rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-2 text-xs text-white" />
+              </div>
+            </div>
+          </div>
+
+          <!-- SWITCH EXTRA PARAMS -->
+          <div v-else-if="widType === 'switch'" class="space-y-3 rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+            <p class="text-[11px] font-semibold uppercase tracking-wider text-emerald-300">Switch Options</p>
+            <div class="grid gap-3 sm:grid-cols-3">
+              <div>
+                <label class="mb-1 block text-xs text-slate-400">ON State Color</label>
+                <select v-model="widSwitchColor" class="w-full rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-2 text-xs text-white">
+                  <option value="emerald">Green</option>
+                  <option value="sky">Blue</option>
+                  <option value="amber">Amber</option>
+                  <option value="rose">Red</option>
+                </select>
+              </div>
+              <div>
+                <label class="mb-1 block text-xs text-slate-400">ON Label</label>
+                <input v-model="widSwitchOnLabel" placeholder="ON" class="w-full rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-2 text-xs text-white" />
+              </div>
+              <div>
+                <label class="mb-1 block text-xs text-slate-400">OFF Label</label>
+                <input v-model="widSwitchOffLabel" placeholder="OFF" class="w-full rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-2 text-xs text-white" />
+              </div>
+            </div>
+          </div>
+
+          <!-- BUTTON EXTRA PARAMS -->
+          <div v-else-if="widType === 'button'" class="space-y-3 rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+            <p class="text-[11px] font-semibold uppercase tracking-wider text-sky-300">Button Options</p>
+            <div class="grid gap-3 sm:grid-cols-3">
+              <div>
+                <label class="mb-1 block text-xs text-slate-400">Color</label>
+                <select v-model="widBtnColor" class="w-full rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-2 text-xs text-white">
+                  <option value="sky">Blue</option>
+                  <option value="emerald">Green</option>
+                  <option value="amber">Amber</option>
+                  <option value="rose">Red</option>
+                  <option value="slate">Gray</option>
+                </select>
+              </div>
+              <div>
+                <label class="mb-1 block text-xs text-slate-400">Button Label</label>
+                <input v-model="widBtnLabel" placeholder="Start Pump" class="w-full rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-2 text-xs text-white" />
+              </div>
+              <div>
+                <label class="mb-1 block text-xs text-slate-400">Trigger Time (ms)</label>
+                <NumericTextInput v-model="widBtnTriggerMs" :min="100" :max="60000" required placeholder="1000" input-class="bg-slate-900" />
+              </div>
+            </div>
+            <p class="text-[11px] text-slate-500">
+              Sends 1 immediately, then automatically resets and sends 0 after the trigger time.
+            </p>
+          </div>
+
+          <div class="flex justify-end gap-2 pt-2">
+            <button type="button" class="rounded-lg border border-slate-700 px-3.5 py-2 text-xs text-slate-300" @click="widgetModalOpen = false">Cancel</button>
+            <button type="submit" class="rounded-lg bg-amber-500 px-4 py-2 text-xs font-semibold text-slate-950 hover:bg-amber-400">Save Widget</button>
+          </div>
+        </form>
+      </div>
+    </Teleport>
+
+    <!-- Custom Delete Confirmation Modal -->
+    <DeleteConfirmModal
+      :open="deleteModal.open"
+      :title="deleteModal.title"
+      :item-name="deleteModal.itemName"
+      :description="deleteModal.description"
+      @close="deleteModal.open = false"
+      @confirm="runDeleteConfirm"
+    />
   </div>
 </template>

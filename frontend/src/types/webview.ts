@@ -1,44 +1,58 @@
+export type DeviceProtocol = 'MODBUS_TCP'
+
 export interface WebviewDevice {
   id: string
   siteId: string
   name: string
   host: string
   port: number
-  protocol: 'MODBUS_TCP' | 'MODBUS_UDP'
-  unitId: number
-  maxConcurrentRequests: number
-  requestTimeoutMs: number
+  protocol: DeviceProtocol
   isActive: boolean
   createdAt: string
 }
 
-export type FunctionCode = 'READ_COIL' | 'READ_DISCRETE' | 'READ_HOLDING' | 'READ_INPUT'
-export type DataType = 'BOOL' | 'UINT16' | 'INT16' | 'UINT32' | 'INT32' | 'FLOAT32'
-export type AccessMode = 'READ' | 'WRITE' | 'READ_WRITE'
-export type WriteFunctionCode = '' | 'WRITE_COIL' | 'WRITE_REGISTER' | 'WRITE_MULTIPLE_REGISTERS'
-export type WidgetType = 'lamp' | 'display' | 'switch' | 'button' | 'number_input' | 'chart'
+export type ModbusFunctionCode = 'READ_COIL' | 'READ_DISCRETE' | 'READ_HOLDING' | 'READ_INPUT'
+export type ModbusDataType = 'BOOL' | 'UINT16' | 'INT16' | 'UINT32' | 'INT32' | 'FLOAT32'
+export type ModbusWordOrder = 'BIG' | 'LITTLE'
+export type ModbusAccessMode = 'READ' | 'READ_WRITE'
+
+export interface ModbusTCPAttributes {
+  slaveAddress: number
+  functionCode: ModbusFunctionCode
+  registerAddress: number
+  dataType: ModbusDataType
+  wordOrder: ModbusWordOrder
+  accessMode: ModbusAccessMode
+}
 
 export interface RegisterMapping {
   id: string
   deviceId: string
   siteId: string
   name: string
-  functionCode: FunctionCode
-  registerAddress: number
-  registerCount: number
-  dataType: DataType
-  wordOrder: 'BIG' | 'LITTLE'
-  byteOrder: 'BIG' | 'LITTLE'
-  scale: number
-  offset: number
-  unit: string
-  accessMode: AccessMode
-  writeFunctionCode: WriteFunctionCode
-  interactivePollIntervalMs: number
-  archivalPollIntervalMs: number
-  deadband: number
-  maxIntervalSeconds: number
+  protocolAttributes: ModbusTCPAttributes & Record<string, unknown>
   isActive: boolean
+}
+
+export interface HistoryEntry {
+  id: string
+  siteId: string
+  registerMappingId: string
+  pollIntervalSeconds: number
+  retentionDays: number
+  isActive: boolean
+  createdAt: string
+}
+
+export type WidgetType = 'display' | 'lamp' | 'switch' | 'button' | 'number_input'
+export type FontSizeOption = 'sm' | 'md' | 'lg' | 'xl'
+export type LampMode = 'off' | 'blink' | 'on'
+export type ColorOption = 'emerald' | 'sky' | 'rose' | 'amber' | 'slate'
+
+export interface LampStateConfig {
+  mode: LampMode
+  color: ColorOption
+  text: string
 }
 
 export interface WebviewWidget {
@@ -58,11 +72,12 @@ export interface WebviewDashboard {
   name: string
   layout: Record<string, unknown>
   isDefault: boolean
+  sortOrder: number
+  pollIntervalMs: number
   widgets: WebviewWidget[]
 }
 
 export interface WebviewWorkspace {
-  historyEnabled: boolean
   canWrite: boolean
   dashboards: WebviewDashboard[]
   mappings: RegisterMapping[]
@@ -84,9 +99,4 @@ export interface TelemetrySample {
   quality: TelemetryQuality
   error?: string
   timestamp: string
-}
-
-export interface LivePoint {
-  ts: number
-  value: number
 }

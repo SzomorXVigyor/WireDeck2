@@ -7,6 +7,7 @@ import LoginView from '../views/auth/LoginView.vue'
 import AcceptInviteView from '../views/auth/AcceptInviteView.vue'
 import ForgotPasswordView from '../views/auth/ForgotPasswordView.vue'
 import ResetPasswordView from '../views/auth/ResetPasswordView.vue'
+import PasswordChangedView from '../views/auth/PasswordChangedView.vue'
 import OperatorLayout from '../layouts/OperatorLayout.vue'
 import HomeRedirectView from '../modules/operator/HomeRedirectView.vue'
 import SiteOverviewView from '../modules/operator/SiteOverviewView.vue'
@@ -21,6 +22,7 @@ const router = createRouter({
     { path: '/accept-invite', name: 'accept-invite', component: AcceptInviteView, meta: { public: true } },
     { path: '/forgot-password', name: 'forgot-password', component: ForgotPasswordView, meta: { public: true } },
     { path: '/reset-password', name: 'reset-password', component: ResetPasswordView, meta: { public: true } },
+    { path: '/password-changed', name: 'password-changed', component: PasswordChangedView, meta: { public: true } },
 
     // Surface 1: Site Services Shell (Site Member, Site Operator, Platform Admin)
     {
@@ -40,6 +42,12 @@ const router = createRouter({
         {
           path: 'sites/:siteId/webview',
           name: 'site-webview',
+          component: () => import('../modules/operator/WebView.vue'),
+          meta: { requireFlag: 'webviewEnabled' },
+        },
+        {
+          path: 'sites/:siteId/webview/:dashboardId',
+          name: 'site-webview-dashboard',
           component: () => import('../modules/operator/WebView.vue'),
           meta: { requireFlag: 'webviewEnabled' },
         },

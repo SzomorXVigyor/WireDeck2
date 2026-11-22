@@ -38,8 +38,9 @@ type WSTicket struct {
 }
 
 type wsClientMsg struct {
-	Type       string      `json:"type"` // subscribe | unsubscribe | ping
-	MappingIDs []uuid.UUID `json:"mappingIds,omitempty"`
+	Type           string      `json:"type"` // subscribe | unsubscribe | ping
+	MappingIDs     []uuid.UUID `json:"mappingIds,omitempty"`
+	PollIntervalMs int         `json:"pollIntervalMs,omitempty"`
 }
 
 type wsServerMsg struct {
@@ -49,14 +50,15 @@ type wsServerMsg struct {
 }
 
 type wsClient struct {
-	id      uuid.UUID
-	userID  uuid.UUID
-	siteID  uuid.UUID
-	conn    *websocket.Conn
-	sendCh  chan []byte
-	cancel  context.CancelFunc
-	mu      sync.Mutex
-	subs    map[uuid.UUID]struct{}
+	id             uuid.UUID
+	userID         uuid.UUID
+	siteID         uuid.UUID
+	conn           *websocket.Conn
+	sendCh         chan []byte
+	cancel         context.CancelFunc
+	mu             sync.Mutex
+	subs           map[uuid.UUID]struct{}
+	pollIntervalMs int
 }
 
 // TelemetryHub manages single-use WS tickets, multiplexed browser WebSocket clients,
@@ -120,15 +122,29 @@ func (h *TelemetryHub) ConsumeTicket(raw string) (WSTicket, error) {
 	return t, nil
 }
 
-// ActiveMappingIDs returns all mapping IDs currently subscribed by >=1 browser client.
-func (h *TelemetryHub) ActiveMappingIDs() map[uuid.UUID]struct{} {
+// ActiveMappingIntervals returns the fastest requested interactive poll interval
+// across all connected browser tabs subscribed to each mapping ID.
+func (h *TelemetryHub) ActiveMappingIntervals() map[uuid.UUID]time.Duration {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	out := make(map[uuid.UUID]struct{}, len(h.mappingSubs))
+	out := make(map[uuid.UUID]time.Duration, len(h.mappingSubs))
 	for id, m := range h.mappingSubs {
-		if len(m) > 0 {
-			out[id] = struct{}{}
+		if len(m) == 0 {
+			continue
 		}
+		var bestMs int
+		for _, c := range m {
+			ms := c.pollIntervalMs
+			if ms < 1000 {
+				ms = 1000
+			} else if ms > 60000 {
+				ms = 60000
+			}
+			if bestMs == 0 || ms < bestMs {
+				bestMs = ms
+			}
+		}
+		out[id] = time.Duration(bestMs) * time.Millisecond
 	}
 	return out
 }
@@ -266,7 +282,7 @@ func (h *TelemetryHub) ServeConn(ctx context.Context, conn *websocket.Conn, tick
 				}
 			}
 		case "subscribe":
-			h.subscribeClient(client, msg.MappingIDs)
+			h.subscribeClient(client, msg.MappingIDs, msg.PollIntervalMs)
 		case "unsubscribe":
 			h.unsubscribeClient(client, msg.MappingIDs)
 		}
@@ -277,15 +293,22 @@ func (h *TelemetryHub) ServeConn(ctx context.Context, conn *websocket.Conn, tick
 	slog.Debug("webview_ws_disconnected", "site_id", ticket.SiteID, "user_id", ticket.UserID)
 }
 
-func (h *TelemetryHub) subscribeClient(c *wsClient, ids []uuid.UUID) {
+func (h *TelemetryHub) subscribeClient(c *wsClient, ids []uuid.UUID, pollIntervalMs int) {
 	if len(ids) == 0 {
 		return
 	}
+	if pollIntervalMs < 1000 {
+		pollIntervalMs = 1000
+	} else if pollIntervalMs > 60000 {
+		pollIntervalMs = 60000
+	}
+
 	var snapshot []ValueSample
 	var newlyActive []uuid.UUID
 
 	c.mu.Lock()
 	h.mu.Lock()
+	c.pollIntervalMs = pollIntervalMs
 	for _, id := range ids {
 		c.subs[id] = struct{}{}
 		m := h.mappingSubs[id]

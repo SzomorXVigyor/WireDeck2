@@ -264,27 +264,66 @@ func (s *IAMService) issueSession(ctx context.Context, u models.User, userAgent,
 
 // --- Invite & Password Flows ---
 
-func (s *IAMService) AcceptInvite(ctx context.Context, rawToken, newPassword, userAgent, ip string) (*AuthResult, error) {
+type TokenCheckResult struct {
+	Valid  bool
+	Reason string // "", "INVALID", "EXPIRED", "USED"
+}
+
+func (s *IAMService) VerifyUserToken(ctx context.Context, rawToken, tokenType string) TokenCheckResult {
+	trimmed := strings.TrimSpace(rawToken)
+	if trimmed == "" || s.db == nil {
+		return TokenCheckResult{Valid: false, Reason: "INVALID"}
+	}
+	ut := new(models.UserToken)
+	err := s.db.NewSelect().Model(ut).
+		Where("token_hash = ? AND type = ?", wcrypto.HashToken(trimmed), tokenType).
+		Scan(ctx)
+	if err != nil {
+		return TokenCheckResult{Valid: false, Reason: "INVALID"}
+	}
+	if ut.UsedAt != nil {
+		return TokenCheckResult{Valid: false, Reason: "USED"}
+	}
+	if time.Now().UTC().After(ut.ExpiresAt) {
+		return TokenCheckResult{Valid: false, Reason: "EXPIRED"}
+	}
+	u := new(models.User)
+	if err := s.db.NewSelect().Model(u).Where("id = ?", ut.UserID).Scan(ctx); err != nil {
+		return TokenCheckResult{Valid: false, Reason: "INVALID"}
+	}
+	if u.Status == models.UserStatusDisabled {
+		return TokenCheckResult{Valid: false, Reason: "INVALID"}
+	}
+	if tokenType == models.TokenTypeInvite && u.Status == models.UserStatusActive {
+		return TokenCheckResult{Valid: false, Reason: "USED"}
+	}
+	return TokenCheckResult{Valid: true}
+}
+
+func (s *IAMService) AcceptInvite(ctx context.Context, rawToken, newPassword string) error {
 	hash, err := password.Hash(newPassword)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	ut := new(models.UserToken)
 	err = s.db.NewSelect().Model(ut).
-		Where("token_hash = ? AND type = ? AND used_at IS NULL", wcrypto.HashToken(rawToken), models.TokenTypeInvite).
+		Where("token_hash = ? AND type = ? AND used_at IS NULL", wcrypto.HashToken(strings.TrimSpace(rawToken)), models.TokenTypeInvite).
 		Scan(ctx)
 	if err != nil || time.Now().UTC().After(ut.ExpiresAt) {
-		return nil, ErrInvalidToken
+		return ErrInvalidToken
 	}
 
 	now := time.Now().UTC()
 	u := new(models.User)
-	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+	return s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		if err := tx.NewSelect().Model(u).Where("id = ?", ut.UserID).Scan(ctx); err != nil {
 			return err
 		}
 		if u.Status == models.UserStatusDisabled {
 			return ErrUserDisabled
+		}
+		if u.Status == models.UserStatusActive {
+			return ErrInvalidToken
 		}
 		u.PasswordHash = &hash
 		u.Status = models.UserStatusActive
@@ -294,33 +333,29 @@ func (s *IAMService) AcceptInvite(ctx context.Context, rawToken, newPassword, us
 		}
 		_, err := tx.NewUpdate().Model((*models.UserToken)(nil)).
 			Set("used_at = ?", now).
-			Where("id = ?", ut.ID).
+			Where("user_id = ? AND type = ? AND used_at IS NULL", u.ID, models.TokenTypeInvite).
 			Exec(ctx)
 		return err
 	})
-	if err != nil {
-		return nil, err
-	}
-	return s.issueSession(ctx, *u, userAgent, ip)
 }
 
-func (s *IAMService) ChangePassword(ctx context.Context, userID uuid.UUID, currentPassword, newPassword, userAgent, ip string) (*AuthResult, error) {
+func (s *IAMService) ChangePassword(ctx context.Context, userID uuid.UUID, currentPassword, newPassword string) error {
 	u := new(models.User)
 	if err := s.db.NewSelect().Model(u).Where("id = ?", userID).Scan(ctx); err != nil {
-		return nil, ErrNotFound
+		return ErrNotFound
 	}
 	if u.Status != models.UserStatusActive || u.PasswordHash == nil {
-		return nil, ErrUserDisabled
+		return ErrUserDisabled
 	}
 	if !password.Verify(currentPassword, *u.PasswordHash) {
-		return nil, ErrInvalidCredential
+		return ErrInvalidCredential
 	}
 	newHash, err := password.Hash(newPassword)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	now := time.Now().UTC()
-	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+	return s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		u.PasswordHash = &newHash
 		u.UpdatedAt = now
 		if _, err := tx.NewUpdate().Model(u).Column("password_hash", "updated_at").WherePK().Exec(ctx); err != nil {
@@ -333,10 +368,6 @@ func (s *IAMService) ChangePassword(ctx context.Context, userID uuid.UUID, curre
 			Exec(ctx)
 		return err
 	})
-	if err != nil {
-		return nil, err
-	}
-	return s.issueSession(ctx, *u, userAgent, ip)
 }
 
 func (s *IAMService) RequestPasswordReset(ctx context.Context, email string) {
@@ -397,7 +428,7 @@ func (s *IAMService) ResetPassword(ctx context.Context, rawToken, newPassword st
 		}
 		_, err := tx.NewUpdate().Model((*models.UserToken)(nil)).
 			Set("used_at = ?", now).
-			Where("id = ?", ut.ID).
+			Where("user_id = ? AND type = ? AND used_at IS NULL", ut.UserID, models.TokenTypePasswordReset).
 			Exec(ctx)
 		return err
 	})

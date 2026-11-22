@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
-import { Send } from 'lucide-vue-next'
-import type { RegisterMapping, TelemetrySample, WebviewWidget } from '../../types/webview'
+import { computed, ref } from 'vue'
+import { Pencil } from 'lucide-vue-next'
+import type { FontSizeOption, RegisterMapping, TelemetrySample, WebviewWidget } from '../../types/webview'
+import { clampPrecision, formatPrecisionValue } from '../../utils/precision'
+import NumberInputModal from './NumberInputModal.vue'
 
 const props = defineProps<{
   widget: WebviewWidget
@@ -14,84 +16,93 @@ const emit = defineEmits<{
   write: [mappingId: string, value: number]
 }>()
 
-const draft = ref<string>('')
-const touched = ref(false)
+const modalOpen = ref(false)
 const quality = computed(() => props.sample?.quality ?? 'STALE')
-const writable = computed(() => props.canWrite && props.mapping && props.mapping.accessMode !== 'READ')
-const minVal = computed(() => (props.widget.extra?.min !== undefined ? Number(props.widget.extra.min) : undefined))
-const maxVal = computed(() => (props.widget.extra?.max !== undefined ? Number(props.widget.extra.max) : undefined))
-const stepVal = computed(() => (props.widget.extra?.step !== undefined ? Number(props.widget.extra.step) : 1))
+const precision = computed(() => clampPrecision(props.widget.extra?.precision ?? 0))
+const prefix = computed(() => String(props.widget.extra?.prefix || ''))
+const unit = computed(() => String(props.widget.extra?.unit || ''))
+const formatted = computed(() => formatPrecisionValue(props.sample?.value, precision.value))
+const writable = computed(() => props.canWrite && props.mapping && props.mapping.protocolAttributes?.accessMode === 'READ_WRITE')
 
-watch(
-  () => props.sample?.value,
-  (val) => {
-    if (!touched.value && val !== null && val !== undefined && Number.isFinite(val)) {
-      draft.value = String(val)
-    }
-  },
-  { immediate: true },
-)
+const fontSizeMap: Record<FontSizeOption, string> = {
+  sm: 'text-xl',
+  md: 'text-2xl',
+  lg: 'text-3xl',
+  xl: 'text-4xl',
+}
+const sizeClass = computed(() => fontSizeMap[(props.widget.style?.fontSize as FontSizeOption) || 'lg'] || 'text-3xl')
 
-function submit() {
-  if (!writable.value || !props.mapping) return
-  const num = Number(draft.value)
-  if (!Number.isFinite(num)) return
-  if (minVal.value !== undefined && num < minVal.value) return
-  if (maxVal.value !== undefined && num > maxVal.value) return
-  touched.value = false
-  emit('write', props.mapping.id, num)
+function openModal() {
+  if (!writable.value) return
+  modalOpen.value = true
+}
+
+function handleSubmit(rawValue: number) {
+  if (!props.mapping) return
+  emit('write', props.mapping.id, rawValue)
 }
 </script>
 
 <template>
   <div
-    class="flex flex-col justify-between rounded-xl border p-4 transition"
-    :class="
+    class="group flex flex-col justify-between rounded-xl border p-4 transition"
+    :class="[
       quality === 'BAD'
         ? 'border-rose-500/40 bg-rose-950/20'
-        : quality === 'STALE' && mapping?.accessMode !== 'WRITE'
+        : quality === 'STALE'
           ? 'border-amber-500/30 bg-slate-900/60'
-          : 'border-slate-800 bg-slate-900/75'
-    "
+          : 'border-slate-800 bg-slate-900/75',
+      writable ? 'cursor-pointer hover:border-sky-500/50 hover:bg-slate-900' : '',
+    ]"
+    @click="openModal"
   >
     <div class="flex items-start justify-between gap-2">
-      <p class="truncate text-xs font-medium text-slate-300">{{ widget.name }}</p>
+      <p class="truncate text-xs font-semibold text-slate-200">{{ widget.name }}</p>
       <span
-        v-if="mapping?.accessMode !== 'WRITE' && quality !== 'GOOD'"
+        v-if="quality !== 'GOOD'"
         class="rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase"
         :class="quality === 'BAD' ? 'bg-rose-500/20 text-rose-300' : 'bg-amber-500/20 text-amber-300'"
+        :title="sample?.error || 'Waiting for fresh telemetry'"
       >
         {{ quality }}
       </span>
     </div>
 
-    <form class="my-3 flex items-center gap-2" @submit.prevent="submit">
-      <input
-        v-model="draft"
-        type="number"
-        :min="minVal"
-        :max="maxVal"
-        :step="stepVal"
-        :disabled="!writable"
-        placeholder="Setpoint"
-        class="w-full rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-1.5 font-mono text-sm text-white disabled:opacity-40"
-        @focus="touched = true"
-      />
-      <span v-if="mapping?.unit" class="shrink-0 text-xs text-slate-400">{{ mapping.unit }}</span>
+    <!-- Same visual layout as Display card + edit pencil affordance -->
+    <div class="my-3 flex items-baseline justify-between gap-2">
+      <div class="flex min-w-0 items-baseline gap-1">
+        <span v-if="prefix" :class="sizeClass" class="shrink-0 font-bold leading-none text-slate-300">{{ prefix }}</span>
+        <span :class="sizeClass" class="truncate font-mono font-bold tabular-nums leading-none tracking-tight text-white">
+          {{ formatted }}
+        </span>
+        <span v-if="unit" :class="sizeClass" class="ml-0.5 shrink-0 font-bold leading-none text-slate-300">{{ unit }}</span>
+      </div>
+
       <button
-        type="submit"
-        :disabled="!writable"
-        class="inline-flex shrink-0 items-center gap-1 rounded-lg bg-sky-500 px-2.5 py-1.5 text-xs font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-40"
+        v-if="writable"
+        type="button"
+        title="Set value"
+        class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-slate-500 transition hover:bg-sky-500/15 hover:text-sky-300 group-hover:text-sky-400"
+        @click.stop="openModal"
       >
-        <Send class="h-3.5 w-3.5" />
+        <Pencil class="h-4 w-4" />
       </button>
-    </form>
+    </div>
 
     <div class="flex items-center justify-between text-[10px] text-slate-500">
-      <span class="truncate">{{ writable ? (mapping?.name || '') : 'Read-only access' }}</span>
-      <span v-if="sample?.value !== null && sample?.value !== undefined" class="font-mono text-slate-400">
-        cur: {{ sample.value }}
+      <span class="truncate font-mono">{{ writable ? (mapping?.name || '') : 'Read-only access' }}</span>
+      <span v-if="sample?.timestamp" class="shrink-0">
+        {{ new Date(sample.timestamp).toLocaleTimeString() }}
       </span>
     </div>
+
+    <NumberInputModal
+      :open="modalOpen"
+      :widget="widget"
+      :mapping="mapping"
+      :sample="sample"
+      @close="modalOpen = false"
+      @submit="handleSubmit"
+    />
   </div>
 </template>

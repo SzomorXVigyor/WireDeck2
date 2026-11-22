@@ -213,29 +213,50 @@ func NewPublicRouter(svc *service.IAMService, verifier *auth.Verifier, opts Publ
 		return &LogoutOutput{SetCookie: clearRefreshCookie()}, nil
 	})
 
+	type VerifyTokenInput struct {
+		Body struct {
+			Token string `json:"token" required:"true"`
+			Type  string `json:"type" enum:"INVITE,PASSWORD_RESET" required:"true"`
+		}
+	}
+	type VerifyTokenOutput struct {
+		Body struct {
+			Valid  bool   `json:"valid"`
+			Reason string `json:"reason,omitempty"`
+		}
+	}
+	huma.Register(humaAPI, huma.Operation{
+		OperationID: "authVerifyToken",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/iam/auth/verify-token",
+		Summary:     "Check whether an account activation or password reset link token is valid before showing the password form",
+		Tags:        []string{"Auth"},
+	}, func(ctx context.Context, in *VerifyTokenInput) (*VerifyTokenOutput, error) {
+		res := svc.VerifyUserToken(ctx, in.Body.Token, in.Body.Type)
+		out := &VerifyTokenOutput{}
+		out.Body.Valid = res.Valid
+		out.Body.Reason = res.Reason
+		return out, nil
+	})
+
 	type AcceptInviteInput struct {
-		UserAgent string `header:"User-Agent"`
-		Body      struct {
+		Body struct {
 			Token    string `json:"token" minLength:"16" required:"true"`
 			Password string `json:"password" minLength:"8" maxLength:"128" required:"true"`
 		}
 	}
 	huma.Register(humaAPI, huma.Operation{
-		OperationID: "authAcceptInvite",
-		Method:      http.MethodPost,
-		Path:        "/api/v1/iam/auth/accept-invite",
-		Summary:     "Activate an invited user account and set initial password",
-		Tags:        []string{"Auth"},
-	}, func(ctx context.Context, in *AcceptInviteInput) (*AuthResponse, error) {
-		res, err := svc.AcceptInvite(ctx, in.Body.Token, in.Body.Password, in.UserAgent, "")
-		if err != nil {
+		OperationID:   "authAcceptInvite",
+		Method:        http.MethodPost,
+		Path:          "/api/v1/iam/auth/accept-invite",
+		Summary:       "Activate an invited user account and set initial password",
+		Tags:          []string{"Auth"},
+		DefaultStatus: http.StatusNoContent,
+	}, func(ctx context.Context, in *AcceptInviteInput) (*struct{}, error) {
+		if err := svc.AcceptInvite(ctx, in.Body.Token, in.Body.Password); err != nil {
 			return nil, mapError(err)
 		}
-		out := &AuthResponse{SetCookie: makeRefreshCookie(res.RefreshToken, res.RefreshExpiresAt)}
-		out.Body.AccessToken = res.AccessToken
-		out.Body.ExpiresAt = res.AccessExpiresAt
-		out.Body.User = toUserDTO(res.User)
-		return out, nil
+		return nil, nil
 	})
 
 	type ForgotPasswordInput struct {
@@ -304,30 +325,25 @@ func NewPublicRouter(svc *service.IAMService, verifier *auth.Verifier, opts Publ
 	})
 
 	type ChangePasswordInput struct {
-		UserAgent string `header:"User-Agent"`
-		Body      struct {
+		Body struct {
 			CurrentPassword string `json:"currentPassword" minLength:"1" required:"true"`
 			NewPassword     string `json:"newPassword" minLength:"8" maxLength:"128" required:"true"`
 		}
 	}
 	huma.Register(userGroup, huma.Operation{
-		OperationID: "changeMyPassword",
-		Method:      http.MethodPost,
-		Path:        "/api/v1/iam/me/change-password",
-		Summary:     "Change current user's password and rotate sessions",
-		Tags:        []string{"User"},
-		Security:    []map[string][]string{{"BearerAuth": {}}},
-	}, func(ctx context.Context, in *ChangePasswordInput) (*AuthResponse, error) {
+		OperationID:   "changeMyPassword",
+		Method:        http.MethodPost,
+		Path:          "/api/v1/iam/me/change-password",
+		Summary:       "Change current user's password and revoke all active sessions",
+		Tags:          []string{"User"},
+		Security:      []map[string][]string{{"BearerAuth": {}}},
+		DefaultStatus: http.StatusNoContent,
+	}, func(ctx context.Context, in *ChangePasswordInput) (*LogoutOutput, error) {
 		uid, _ := auth.UserIDFromContext(ctx)
-		res, err := svc.ChangePassword(ctx, uid, in.Body.CurrentPassword, in.Body.NewPassword, in.UserAgent, "")
-		if err != nil {
+		if err := svc.ChangePassword(ctx, uid, in.Body.CurrentPassword, in.Body.NewPassword); err != nil {
 			return nil, mapError(err)
 		}
-		out := &AuthResponse{SetCookie: makeRefreshCookie(res.RefreshToken, res.RefreshExpiresAt)}
-		out.Body.AccessToken = res.AccessToken
-		out.Body.ExpiresAt = res.AccessExpiresAt
-		out.Body.User = toUserDTO(res.User)
-		return out, nil
+		return &LogoutOutput{SetCookie: clearRefreshCookie()}, nil
 	})
 
 	type ListSitesOutput struct {

@@ -9,23 +9,46 @@ import (
 	"github.com/google/uuid"
 	"github.com/uptrace/bun"
 
-	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/modbus"
 	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/models"
 	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/ownership"
+	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/provider"
 	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/sitecache"
 )
 
-// SampleHook lets Phase 4 History Ingester & Alarm Engine subscribe to every polled sample.
-type SampleHook func(sample ValueSample, mapping models.RegisterMapping)
+const (
+	defaultInteractiveInterval = 1000 * time.Millisecond
+	maxInteractiveInterval     = 60000 * time.Millisecond
+	deviceFastPollThreshold    = 100 // Up to 100 active registers per device run at full requested rate
+)
 
-// Scheduler implements demand-driven Modbus polling (D6, D17, D26):
-//   - Polls only mappings with active demand (interactive WS + 30s grace, or archival when historyEnabled).
-//   - Never polls access_mode == "WRITE".
-//   - Primes newly subscribed mappings immediately for <1s interactive startup.
-//   - Coalesces contiguous reads per device and applies exponential backoff (1s -> 60s) on failures.
+// effectiveInteractiveFloor computes the minimum safe interactive poll interval
+// for a device based on how many active registers are currently demanded on it:
+//   - 1..100 registers: 1000ms (honors dashboard setting down to 1000ms)
+//   - >100 registers: scales up by +1000ms per additional 100 registers (capped at 60000ms)
+//     so querying large register sets never overloads the remote PLC/gateway.
+func effectiveInteractiveFloor(activeRegisterCount int) time.Duration {
+	if activeRegisterCount <= deviceFastPollThreshold {
+		return defaultInteractiveInterval
+	}
+	blocks := (activeRegisterCount + deviceFastPollThreshold - 1) / deviceFastPollThreshold
+	floor := time.Duration(blocks) * defaultInteractiveInterval
+	if floor > maxInteractiveInterval {
+		return maxInteractiveInterval
+	}
+	return floor
+}
+
+// SampleHook lets Phase 4 History Ingester & Alarm Engine subscribe to polled samples.
+type SampleHook func(sample ValueSample, mapping models.RegisterMapping, historyEntry *models.HistoryEntry)
+
+// Scheduler implements demand-driven polling via protocol Providers:
+//   - Polls a register ONLY if a dashboard is open somewhere (active WebSocket subscription
+//     + grace period) OR it has an active history_entries row (at its configured pollIntervalSeconds).
+//   - Primes newly subscribed registers immediately for <1s interactive startup.
+//   - Delegates batch reads to the device's protocol Provider with exponential backoff (1s -> 60s).
 type Scheduler struct {
 	db            *bun.DB
-	pool          *modbus.DevicePool
+	providers     *provider.Registry
 	cache         *sitecache.Cache
 	hub           *TelemetryHub
 	owner         ownership.Provider
@@ -35,8 +58,9 @@ type Scheduler struct {
 	mu             sync.Mutex
 	devices        map[uuid.UUID]models.Device
 	mappings       map[uuid.UUID]models.RegisterMapping
-	siteHistory    map[uuid.UUID]bool
+	historyEntries map[uuid.UUID]models.HistoryEntry // keyed by register_mapping_id
 	graceUntil     map[uuid.UUID]time.Time
+	graceInterval  map[uuid.UUID]time.Duration
 	lastPolled     map[uuid.UUID]time.Time
 	deviceBackoff  map[uuid.UUID]backoffState
 	deviceInFlight map[uuid.UUID]bool
@@ -52,7 +76,7 @@ type backoffState struct {
 
 func NewScheduler(
 	db *bun.DB,
-	pool *modbus.DevicePool,
+	providers *provider.Registry,
 	cache *sitecache.Cache,
 	hub *TelemetryHub,
 	owner ownership.Provider,
@@ -64,7 +88,7 @@ func NewScheduler(
 	}
 	return &Scheduler{
 		db:             db,
-		pool:           pool,
+		providers:      providers,
 		cache:          cache,
 		hub:            hub,
 		owner:          owner,
@@ -72,8 +96,9 @@ func NewScheduler(
 		devDirectDial:  devDirectDial,
 		devices:        make(map[uuid.UUID]models.Device),
 		mappings:       make(map[uuid.UUID]models.RegisterMapping),
-		siteHistory:    make(map[uuid.UUID]bool),
+		historyEntries: make(map[uuid.UUID]models.HistoryEntry),
 		graceUntil:     make(map[uuid.UUID]time.Time),
+		graceInterval:  make(map[uuid.UUID]time.Duration),
 		lastPolled:     make(map[uuid.UUID]time.Time),
 		deviceBackoff:  make(map[uuid.UUID]backoffState),
 		deviceInFlight: make(map[uuid.UUID]bool),
@@ -87,13 +112,12 @@ func (s *Scheduler) AddSampleHook(h SampleHook) {
 	s.mu.Unlock()
 }
 
-// NotifySubscribed triggers immediate prime-on-subscribe polling for newly watched mappings.
 func (s *Scheduler) NotifySubscribed(_ uuid.UUID, mappingIDs []uuid.UUID) {
 	now := time.Now()
 	s.mu.Lock()
 	for _, id := range mappingIDs {
 		s.graceUntil[id] = now.Add(s.graceDuration)
-		delete(s.lastPolled, id) // Force immediate read on next tick
+		delete(s.lastPolled, id)
 	}
 	s.mu.Unlock()
 	s.TriggerImmediate()
@@ -106,7 +130,6 @@ func (s *Scheduler) TriggerImmediate() {
 	}
 }
 
-// ReloadConfig refreshes active devices, register mappings, and per-site history flags from OLTP DB.
 func (s *Scheduler) ReloadConfig(ctx context.Context) error {
 	var devs []models.Device
 	if err := s.db.NewSelect().Model(&devs).Where("is_active = TRUE").Scan(ctx); err != nil {
@@ -116,8 +139,8 @@ func (s *Scheduler) ReloadConfig(ctx context.Context) error {
 	if err := s.db.NewSelect().Model(&maps).Where("is_active = TRUE").Scan(ctx); err != nil {
 		return err
 	}
-	var settings []models.SiteWebviewSettings
-	if err := s.db.NewSelect().Model(&settings).Scan(ctx); err != nil {
+	var entries []models.HistoryEntry
+	if err := s.db.NewSelect().Model(&entries).Where("is_active = TRUE").Scan(ctx); err != nil {
 		return err
 	}
 
@@ -131,20 +154,21 @@ func (s *Scheduler) ReloadConfig(ctx context.Context) error {
 			mapMap[m.ID] = m
 		}
 	}
-	histMap := make(map[uuid.UUID]bool, len(settings))
-	for _, st := range settings {
-		histMap[st.SiteID] = st.HistoryEnabled
+	histMap := make(map[uuid.UUID]models.HistoryEntry, len(entries))
+	for _, he := range entries {
+		if _, ok := mapMap[he.RegisterMappingID]; ok {
+			histMap[he.RegisterMappingID] = he
+		}
 	}
 
 	s.mu.Lock()
 	s.devices = devMap
 	s.mappings = mapMap
-	s.siteHistory = histMap
+	s.historyEntries = histMap
 	s.mu.Unlock()
 	return nil
 }
 
-// Run starts the demand-driven scheduler loop until ctx is cancelled.
 func (s *Scheduler) Run(ctx context.Context) {
 	_ = s.ReloadConfig(ctx)
 
@@ -164,7 +188,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 				slog.Warn("scheduler_reload_failed", "error", err)
 			}
 		case <-reapTick.C:
-			s.pool.ReapIdle()
+			s.providers.ReapIdle()
 		case <-s.primeCh:
 			s.pollDue(ctx)
 		case <-tick.C:
@@ -175,28 +199,36 @@ func (s *Scheduler) Run(ctx context.Context) {
 
 func (s *Scheduler) pollDue(ctx context.Context) {
 	now := time.Now()
-	activeSubs := s.hub.ActiveMappingIDs()
+	activeIntervals := s.hub.ActiveMappingIntervals()
 
-	// Determine due mappings per device
 	dueByDevice := make(map[uuid.UUID][]models.RegisterMapping)
 	devSnapshots := make(map[uuid.UUID]models.Device)
 
 	s.mu.Lock()
-	// Extend grace windows for actively subscribed mappings
-	for id := range activeSubs {
+	for id, dur := range activeIntervals {
 		s.graceUntil[id] = now.Add(s.graceDuration)
+		s.graceInterval[id] = dur
+	}
+
+	// Count active demanded registers per device to apply overload protection above 100 entries
+	activeCountByDevice := make(map[uuid.UUID]int)
+	for id, m := range s.mappings {
+		if !s.owner.OwnsSite(m.SiteID) {
+			continue
+		}
+		_, isSub := activeIntervals[id]
+		inGrace := now.Before(s.graceUntil[id])
+		_, hasHist := s.historyEntries[id]
+		if isSub || inGrace || hasHist {
+			activeCountByDevice[m.DeviceID]++
+		}
 	}
 
 	for id, m := range s.mappings {
-		// D17: Never poll write-only registers
-		if m.AccessMode == "WRITE" {
-			continue
-		}
 		if !s.owner.OwnsSite(m.SiteID) {
 			continue
 		}
 
-		// Skip disabled or offline sites (unless DEV_DIRECT_DIAL)
 		if !s.devDirectDial {
 			st, ok := s.cache.GetRuntimeState(m.SiteID)
 			if !ok || !st.IsActive || !st.WebviewEnabled || st.Status == "OFFLINE" {
@@ -204,18 +236,26 @@ func (s *Scheduler) pollDue(ctx context.Context) {
 			}
 		}
 
-		// Compute effective demand interval = min(interactive, archival)
+		// Demand check: ONLY poll if dashboard is open (WS active/grace) OR has active history entry
 		var effInterval time.Duration
-		_, isSub := activeSubs[id]
+		subDur, isSub := activeIntervals[id]
 		inGrace := now.Before(s.graceUntil[id])
 		if isSub || inGrace {
-			effInterval = time.Duration(m.InteractivePollIntervalMs) * time.Millisecond
-			if effInterval < 250*time.Millisecond {
-				effInterval = 250 * time.Millisecond
+			requested := subDur
+			if !isSub {
+				requested = s.graceInterval[id]
 			}
+			if requested < defaultInteractiveInterval {
+				requested = defaultInteractiveInterval
+			}
+			floor := effectiveInteractiveFloor(activeCountByDevice[m.DeviceID])
+			if requested < floor {
+				requested = floor
+			}
+			effInterval = requested
 		}
-		if s.siteHistory[m.SiteID] {
-			arch := time.Duration(m.ArchivalPollIntervalMs) * time.Millisecond
+		if he, hasHist := s.historyEntries[id]; hasHist {
+			arch := time.Duration(he.PollIntervalSeconds) * time.Second
 			if arch < time.Second {
 				arch = time.Second
 			}
@@ -224,7 +264,6 @@ func (s *Scheduler) pollDue(ctx context.Context) {
 			}
 		}
 
-		// Zero demand -> never poll!
 		if effInterval == 0 {
 			continue
 		}
@@ -232,8 +271,6 @@ func (s *Scheduler) pollDue(ctx context.Context) {
 		if last, ok := s.lastPolled[id]; ok && now.Sub(last) < effInterval {
 			continue
 		}
-
-		// Respect device backoff & in-flight guard
 		if s.deviceInFlight[m.DeviceID] {
 			continue
 		}
@@ -270,66 +307,36 @@ func (s *Scheduler) pollDevice(ctx context.Context, dev models.Device, mappings 
 		s.mu.Unlock()
 	}()
 
-	batches := modbus.CoalesceReads(mappings)
-	now := time.Now().UTC()
-	var samples []ValueSample
-	var hadTransportErr bool
-
-	for _, batch := range batches {
-		reqPDU := modbus.BuildReadPDU(batch.FunctionCode, batch.StartAddress, batch.Quantity)
-		respPDU, err := s.pool.Exchange(ctx, dev, reqPDU)
-		if err != nil {
-			hadTransportErr = true
-			for _, m := range batch.Mappings {
-				samples = append(samples, ValueSample{
-					SiteID:    m.SiteID,
-					MappingID: m.ID,
-					Quality:   QualityBad,
-					Error:     err.Error(),
-					Timestamp: now,
-				})
-			}
-			continue
-		}
-		payload, err := modbus.ParseReadResponsePDU(batch.FunctionCode, respPDU)
-		if err != nil {
-			for _, m := range batch.Mappings {
-				samples = append(samples, ValueSample{
-					SiteID:    m.SiteID,
-					MappingID: m.ID,
-					Quality:   QualityBad,
-					Error:     err.Error(),
-					Timestamp: now,
-				})
-			}
-			continue
-		}
-
-		for _, m := range batch.Mappings {
-			offset := m.RegisterAddress - int(batch.StartAddress)
-			val, decErr := modbus.DecodeValue(m, payload, offset)
-			if decErr != nil {
-				samples = append(samples, ValueSample{
-					SiteID:    m.SiteID,
-					MappingID: m.ID,
-					Quality:   QualityBad,
-					Error:     decErr.Error(),
-					Timestamp: now,
-				})
-				continue
-			}
-			vCopy := val
-			samples = append(samples, ValueSample{
-				SiteID:    m.SiteID,
-				MappingID: m.ID,
-				Value:     &vCopy,
-				Quality:   QualityGood,
-				Timestamp: now,
-			})
-		}
+	prov, err := s.providers.Get(dev.Protocol)
+	if err != nil {
+		slog.Warn("provider_not_found", "device_id", dev.ID, "protocol", dev.Protocol)
+		return
 	}
 
-	// Update per-device exponential backoff (1s -> 60s)
+	results, hadTransportErr := prov.ReadBatch(ctx, dev, mappings)
+	now := time.Now().UTC()
+
+	samples := make([]ValueSample, 0, len(results))
+	for _, r := range results {
+		if r.Err != nil {
+			samples = append(samples, ValueSample{
+				SiteID:    dev.SiteID,
+				MappingID: r.MappingID,
+				Quality:   QualityBad,
+				Error:     r.Err.Error(),
+				Timestamp: now,
+			})
+			continue
+		}
+		samples = append(samples, ValueSample{
+			SiteID:    dev.SiteID,
+			MappingID: r.MappingID,
+			Value:     r.Value,
+			Quality:   QualityGood,
+			Timestamp: now,
+		})
+	}
+
 	s.mu.Lock()
 	if hadTransportErr {
 		bo := s.deviceBackoff[dev.ID]
@@ -348,6 +355,13 @@ func (s *Scheduler) pollDevice(ctx context.Context, dev models.Device, mappings 
 	for _, m := range mappings {
 		mappingLookup[m.ID] = m
 	}
+	histLookup := make(map[uuid.UUID]*models.HistoryEntry, len(mappings))
+	for _, m := range mappings {
+		if he, ok := s.historyEntries[m.ID]; ok {
+			cp := he
+			histLookup[m.ID] = &cp
+		}
+	}
 	s.mu.Unlock()
 
 	if len(samples) > 0 {
@@ -355,7 +369,7 @@ func (s *Scheduler) pollDevice(ctx context.Context, dev models.Device, mappings 
 		for _, sample := range samples {
 			if m, ok := mappingLookup[sample.MappingID]; ok {
 				for _, hook := range hooks {
-					hook(sample, m)
+					hook(sample, m, histLookup[sample.MappingID])
 				}
 			}
 		}

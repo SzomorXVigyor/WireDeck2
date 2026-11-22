@@ -1,56 +1,55 @@
 import { defineStore } from 'pinia'
 import { ref, shallowRef } from 'vue'
 import { apiRequest } from '../services/api'
-import type { LivePoint, TelemetrySample } from '../types/webview'
-
-const MAX_RING_POINTS = 900 // D18: 900-pt client-side live ring buffer
+import type { TelemetrySample, WebviewDashboard, WebviewWorkspace } from '../types/webview'
 
 export const useWebviewStore = defineStore('webview', () => {
   const connectionState = ref<'disconnected' | 'connecting' | 'connected' | 'error'>('disconnected')
   const connectionError = ref('')
   const samples = shallowRef<Record<string, TelemetrySample>>({})
-  const ringBuffers = shallowRef<Record<string, LivePoint[]>>({})
+  const siteDashboards = ref<Record<string, WebviewDashboard[]>>({})
 
   let activeSiteId = ''
   let subscribedIds: string[] = []
+  let activePollIntervalMs = 1000
   let ws: WebSocket | null = null
   let pingTimer: number | null = null
   let reconnectTimer: number | null = null
   let intentionalClose = false
   let visibilityBound = false
 
+  async function fetchSiteDashboards(siteId: string): Promise<WebviewDashboard[]> {
+    if (!siteId) return []
+    try {
+      const wsData = await apiRequest<WebviewWorkspace>(`/api/v1/webview/sites/${siteId}/workspace`)
+      const list = wsData.dashboards || []
+      siteDashboards.value = { ...siteDashboards.value, [siteId]: list }
+      return list
+    } catch {
+      return siteDashboards.value[siteId] || []
+    }
+  }
+
+  function setSiteDashboards(siteId: string, list: WebviewDashboard[]) {
+    siteDashboards.value = { ...siteDashboards.value, [siteId]: list }
+  }
+
   function handleVisibilityChange() {
     if (!ws || ws.readyState !== WebSocket.OPEN) return
     if (document.hidden) {
       ws.send(JSON.stringify({ type: 'unsubscribe' }))
     } else if (subscribedIds.length > 0) {
-      ws.send(JSON.stringify({ type: 'subscribe', mappingIds: subscribedIds }))
+      ws.send(JSON.stringify({ type: 'subscribe', mappingIds: subscribedIds, pollIntervalMs: activePollIntervalMs }))
     }
   }
 
   function applySamples(list: TelemetrySample[]) {
     if (!list || list.length === 0) return
     const nextSamples = { ...samples.value }
-    const nextRings = { ...ringBuffers.value }
-    let ringDirty = false
-
     for (const s of list) {
       nextSamples[s.mappingId] = s
-      if (s.quality === 'GOOD' && s.value !== null && Number.isFinite(s.value)) {
-        const prev = nextRings[s.mappingId] ? [...nextRings[s.mappingId]] : []
-        prev.push({ ts: Date.parse(s.timestamp) || Date.now(), value: s.value })
-        if (prev.length > MAX_RING_POINTS) {
-          prev.splice(0, prev.length - MAX_RING_POINTS)
-        }
-        nextRings[s.mappingId] = prev
-        ringDirty = true
-      }
     }
-
     samples.value = nextSamples
-    if (ringDirty) {
-      ringBuffers.value = nextRings
-    }
   }
 
   function clearTimers() {
@@ -115,7 +114,7 @@ export const useWebviewStore = defineStore('webview', () => {
         connectionState.value = 'connected'
         connectionError.value = ''
         if (!document.hidden && subscribedIds.length > 0) {
-          sock.send(JSON.stringify({ type: 'subscribe', mappingIds: subscribedIds }))
+          sock.send(JSON.stringify({ type: 'subscribe', mappingIds: subscribedIds, pollIntervalMs: activePollIntervalMs }))
         }
         pingTimer = window.setInterval(() => {
           if (sock.readyState === WebSocket.OPEN) {
@@ -166,15 +165,18 @@ export const useWebviewStore = defineStore('webview', () => {
     }
   }
 
-  function connect(siteId: string, mappingIds: string[]) {
+  function connect(siteId: string, mappingIds: string[], pollIntervalMs = 1000) {
     const uniqueIds = Array.from(new Set(mappingIds.filter(Boolean)))
+    const clampedPoll = Math.max(1000, Math.min(60000, Math.round(pollIntervalMs || 1000)))
+    activePollIntervalMs = clampedPoll
+
     if (activeSiteId !== siteId) {
       disconnect()
       samples.value = {}
-      ringBuffers.value = {}
       intentionalClose = false
       activeSiteId = siteId
       subscribedIds = uniqueIds
+      activePollIntervalMs = clampedPoll
       if (!visibilityBound) {
         document.addEventListener('visibilitychange', handleVisibilityChange)
         visibilityBound = true
@@ -187,15 +189,19 @@ export const useWebviewStore = defineStore('webview', () => {
     if (ws && ws.readyState === WebSocket.OPEN && !document.hidden) {
       ws.send(JSON.stringify({ type: 'unsubscribe' }))
       if (uniqueIds.length > 0) {
-        ws.send(JSON.stringify({ type: 'subscribe', mappingIds: uniqueIds }))
+        ws.send(JSON.stringify({ type: 'subscribe', mappingIds: uniqueIds, pollIntervalMs: clampedPoll }))
       }
     }
   }
 
-  async function writeValue(siteId: string, mappingId: string, value: number) {
+  async function writeValue(siteId: string, mappingId: string, value: number, pulseMs?: number) {
     await apiRequest(`/api/v1/webview/sites/${siteId}/write`, {
       method: 'POST',
-      body: JSON.stringify({ mappingId, value }),
+      body: JSON.stringify({
+        mappingId,
+        value,
+        ...(pulseMs && pulseMs > 0 ? { pulseMs } : {}),
+      }),
     })
   }
 
@@ -203,7 +209,9 @@ export const useWebviewStore = defineStore('webview', () => {
     connectionState,
     connectionError,
     samples,
-    ringBuffers,
+    siteDashboards,
+    fetchSiteDashboards,
+    setSiteDashboards,
     connect,
     disconnect,
     writeValue,

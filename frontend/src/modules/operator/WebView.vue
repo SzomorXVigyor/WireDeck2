@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
-import { LayoutGrid, RefreshCw, ShieldCheck, ShieldOff, Wifi, WifiOff } from 'lucide-vue-next'
+import { useRoute, useRouter } from 'vue-router'
+import { LayoutGrid, RefreshCw, Wifi, WifiOff } from 'lucide-vue-next'
 import { apiRequest } from '../../services/api'
 import { useWebviewStore } from '../../stores/webview'
 import type { RegisterMapping, WebviewDashboard, WebviewWorkspace } from '../../types/webview'
@@ -10,14 +10,14 @@ import WidgetDisplay from '../../components/widgets/WidgetDisplay.vue'
 import WidgetSwitch from '../../components/widgets/WidgetSwitch.vue'
 import WidgetButton from '../../components/widgets/WidgetButton.vue'
 import WidgetNumberInput from '../../components/widgets/WidgetNumberInput.vue'
-import WidgetChart from '../../components/widgets/WidgetChart.vue'
 
 const route = useRoute()
+const router = useRouter()
 const siteId = computed(() => String(route.params.siteId || ''))
+const routeDashboardId = computed(() => (typeof route.params.dashboardId === 'string' ? route.params.dashboardId : ''))
 const webviewStore = useWebviewStore()
 
 const workspace = ref<WebviewWorkspace | null>(null)
-const activeDashboardId = ref<string>('')
 const loading = ref(false)
 const errMsg = ref<string | null>(null)
 const writeNotice = ref<{ ok: boolean; text: string } | null>(null)
@@ -32,7 +32,12 @@ const mappingsById = computed<Record<string, RegisterMapping>>(() => {
 
 const activeDashboard = computed<WebviewDashboard | null>(() => {
   const list = workspace.value?.dashboards || []
-  return list.find((d) => d.id === activeDashboardId.value) ?? list[0] ?? null
+  if (list.length === 0) return null
+  if (routeDashboardId.value) {
+    const found = list.find((d) => d.id === routeDashboardId.value)
+    if (found) return found
+  }
+  return list.find((d) => d.isDefault) ?? list[0]
 })
 
 function syncSubscriptions() {
@@ -43,12 +48,8 @@ function syncSubscriptions() {
   }
   const ids = dash.widgets
     .map((w) => w.registerMappingId || '')
-    .filter((id) => {
-      if (!id) return false
-      const m = mappingsById.value[id]
-      return m && m.accessMode !== 'WRITE'
-    })
-  webviewStore.connect(siteId.value, ids)
+    .filter((id) => Boolean(id && mappingsById.value[id]))
+  webviewStore.connect(siteId.value, ids, dash.pollIntervalMs || 1000)
 }
 
 async function loadWorkspace() {
@@ -58,14 +59,10 @@ async function loadWorkspace() {
   try {
     const data = await apiRequest<WebviewWorkspace>(`/api/v1/webview/sites/${siteId.value}/workspace`)
     workspace.value = data
-    if (data.dashboards.length > 0) {
-      const stillExists = data.dashboards.some((d) => d.id === activeDashboardId.value)
-      if (!stillExists) {
-        const def = data.dashboards.find((d) => d.isDefault) ?? data.dashboards[0]
-        activeDashboardId.value = def.id
-      }
-    } else {
-      activeDashboardId.value = ''
+    webviewStore.setSiteDashboards(siteId.value, data.dashboards || [])
+    if (data.dashboards.length > 0 && !routeDashboardId.value) {
+      const target = data.dashboards.find((d) => d.isDefault) ?? data.dashboards[0]
+      await router.replace(`/sites/${siteId.value}/webview/${target.id}`)
     }
     syncSubscriptions()
   } catch (err) {
@@ -75,12 +72,15 @@ async function loadWorkspace() {
   }
 }
 
-async function handleWrite(mappingId: string, value: number) {
+async function handleWrite(mappingId: string, value: number, pulseMs?: number) {
   writeNotice.value = null
   try {
-    await webviewStore.writeValue(siteId.value, mappingId, value)
+    await webviewStore.writeValue(siteId.value, mappingId, value, pulseMs)
     const name = mappingsById.value[mappingId]?.name || 'register'
-    writeNotice.value = { ok: true, text: `Wrote ${value} to ${name}.` }
+    writeNotice.value = {
+      ok: true,
+      text: pulseMs ? `Triggered ${name} for ${pulseMs} ms.` : `Wrote value to ${name}.`,
+    }
   } catch (err) {
     writeNotice.value = {
       ok: false,
@@ -91,10 +91,9 @@ async function handleWrite(mappingId: string, value: number) {
 
 onMounted(loadWorkspace)
 watch(siteId, () => {
-  activeDashboardId.value = ''
   void loadWorkspace()
 })
-watch(activeDashboardId, syncSubscriptions)
+watch(routeDashboardId, syncSubscriptions)
 onUnmounted(() => {
   webviewStore.disconnect()
 })
@@ -102,40 +101,35 @@ onUnmounted(() => {
 
 <template>
   <div class="space-y-5">
-    <!-- Top Header & Live Telemetry Status -->
+    <!-- Horizontal Dashboard Selector Bar (above the title) -->
+    <nav
+      v-if="workspace && workspace.dashboards.length > 0"
+      aria-label="Site dashboards"
+      class="flex items-center gap-2 overflow-x-auto border-b border-slate-800/80 pb-3"
+    >
+      <RouterLink
+        v-for="d in workspace.dashboards"
+        :key="d.id"
+        :to="`/sites/${siteId}/webview/${d.id}`"
+        class="inline-flex shrink-0 items-center gap-2 rounded-lg border px-3.5 py-2 text-xs font-medium transition"
+        :class="
+          activeDashboard?.id === d.id
+            ? 'border-sky-500/60 bg-sky-500/15 text-sky-200'
+            : 'border-slate-800 bg-slate-900/70 text-slate-300 hover:border-slate-700 hover:bg-slate-800/80 hover:text-white'
+        "
+      >
+        <LayoutGrid class="h-3.5 w-3.5" />
+        <span>{{ d.name }}</span>
+      </RouterLink>
+    </nav>
+
+    <!-- Dashboard Title & Live Connection Header -->
     <div class="flex flex-wrap items-center justify-between gap-3">
-      <div class="flex flex-wrap items-center gap-2">
-        <button
-          v-for="d in workspace?.dashboards || []"
-          :key="d.id"
-          type="button"
-          class="rounded-lg border px-3 py-1.5 text-xs font-medium transition"
-          :class="
-            activeDashboard?.id === d.id
-              ? 'border-sky-500/50 bg-sky-500/15 text-sky-200'
-              : 'border-slate-800 bg-slate-900/70 text-slate-400 hover:border-slate-700 hover:text-white'
-          "
-          @click="activeDashboardId = d.id"
-        >
-          {{ d.name }}
-        </button>
-      </div>
+      <h2 class="text-lg font-semibold text-white">
+        {{ activeDashboard?.name || 'WebView' }}
+      </h2>
 
       <div class="flex flex-wrap items-center gap-2 text-xs">
-        <span
-          v-if="workspace"
-          class="inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px]"
-          :class="
-            workspace.canWrite
-              ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
-              : 'border-slate-700 bg-slate-900 text-slate-400'
-          "
-        >
-          <ShieldCheck v-if="workspace.canWrite" class="h-3.5 w-3.5" />
-          <ShieldOff v-else class="h-3.5 w-3.5" />
-          {{ workspace.canWrite ? 'Control enabled' : 'Read-only' }}
-        </span>
-
         <span
           class="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px]"
           :class="
@@ -187,7 +181,7 @@ onUnmounted(() => {
       <LayoutGrid class="h-9 w-9 text-slate-700" />
       <p class="mt-3 text-sm font-medium text-slate-300">No WebView dashboards configured</p>
       <p class="mt-1 max-w-md text-xs text-slate-500">
-        Ask a Site Operator to add Modbus devices, register mappings, and dashboard widgets under Manage Site -> WebView.
+        Ask a Site Operator to add devices, registers, and dashboards under Manage Site -> WebView.
       </p>
     </div>
 
@@ -197,14 +191,14 @@ onUnmounted(() => {
       class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
     >
       <template v-for="w in activeDashboard.widgets" :key="w.id">
-        <WidgetLamp
-          v-if="w.widgetType === 'lamp'"
+        <WidgetDisplay
+          v-if="w.widgetType === 'display'"
           :widget="w"
           :mapping="w.registerMappingId ? mappingsById[w.registerMappingId] : undefined"
           :sample="w.registerMappingId ? webviewStore.samples[w.registerMappingId] : undefined"
         />
-        <WidgetDisplay
-          v-else-if="w.widgetType === 'display'"
+        <WidgetLamp
+          v-else-if="w.widgetType === 'lamp'"
           :widget="w"
           :mapping="w.registerMappingId ? mappingsById[w.registerMappingId] : undefined"
           :sample="w.registerMappingId ? webviewStore.samples[w.registerMappingId] : undefined"
@@ -215,7 +209,7 @@ onUnmounted(() => {
           :mapping="w.registerMappingId ? mappingsById[w.registerMappingId] : undefined"
           :sample="w.registerMappingId ? webviewStore.samples[w.registerMappingId] : undefined"
           :can-write="Boolean(workspace?.canWrite)"
-          @write="handleWrite"
+          @write="(mid, val) => handleWrite(mid, val)"
         />
         <WidgetButton
           v-else-if="w.widgetType === 'button'"
@@ -223,7 +217,7 @@ onUnmounted(() => {
           :mapping="w.registerMappingId ? mappingsById[w.registerMappingId] : undefined"
           :sample="w.registerMappingId ? webviewStore.samples[w.registerMappingId] : undefined"
           :can-write="Boolean(workspace?.canWrite)"
-          @write="handleWrite"
+          @write="(mid, val, pulse) => handleWrite(mid, val, pulse)"
         />
         <WidgetNumberInput
           v-else-if="w.widgetType === 'number_input'"
@@ -231,14 +225,7 @@ onUnmounted(() => {
           :mapping="w.registerMappingId ? mappingsById[w.registerMappingId] : undefined"
           :sample="w.registerMappingId ? webviewStore.samples[w.registerMappingId] : undefined"
           :can-write="Boolean(workspace?.canWrite)"
-          @write="handleWrite"
-        />
-        <WidgetChart
-          v-else-if="w.widgetType === 'chart'"
-          :widget="w"
-          :mapping="w.registerMappingId ? mappingsById[w.registerMappingId] : undefined"
-          :sample="w.registerMappingId ? webviewStore.samples[w.registerMappingId] : undefined"
-          :points="w.registerMappingId ? webviewStore.ringBuffers[w.registerMappingId] || [] : []"
+          @write="(mid, val) => handleWrite(mid, val)"
         />
       </template>
 
