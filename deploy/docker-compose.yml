@@ -3,9 +3,9 @@ name: wiredeck2
 # Single Docker host deployment (docs/ARCHITECTURE.md v2.2).
 #
 # Prerequisites:
-#   1. Create the two isolated Docker networks (172.21/20 & 172.22/20 — leaves 172.20/20 for WireDeck 1.x):
-#        docker network create --driver bridge --internal --subnet=172.21.0.0/20 --ipv6=false wiredeck-control
-#        docker network create --driver bridge --subnet=172.22.0.0/20 --ipv6=false wiredeck-runners
+#   1. Create the two isolated Docker networks (control /24 + runners /22; keeps 172.21/16 & 172.22/16 free for remote sites):
+#        docker network create --driver bridge --internal --subnet=172.30.248.0/24 --ipv6=false wiredeck-control
+#        docker network create --driver bridge --subnet=172.30.252.0/22 --ipv6=false wiredeck-runners
 #   2. Mount a tmpfs for ephemeral runner configs (site private keys never touch persistent disk):
 #        sudo mkdir -p /var/lib/wiredeck2/runners
 #        sudo mount -t tmpfs -o size=16m,mode=0700 tmpfs /var/lib/wiredeck2/runners
@@ -140,7 +140,7 @@ services:
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
       WG_CONF_ENCRYPTION_KEY: ${WG_CONF_ENCRYPTION_KEY}
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
-      RESERVED_CIDRS: ${RESERVED_CIDRS:-172.21.0.0/20,172.22.0.0/20}
+      RESERVED_CIDRS: ${RESERVED_CIDRS:-172.30.248.0/24,172.30.252.0/22}
       ORCHESTRATOR_URL: http://runner-orchestrator:8081
       WEBVIEW_INTERNAL_URL: http://webview-engine:8081
       WEBVNC_INTERNAL_URL: http://webvnc-proxy:8081
@@ -182,7 +182,7 @@ services:
     networks: [wiredeck-control, wiredeck-runners]
     environment:
       INTERNAL_ADDR: ":8081"
-      BIND_SUBNET: ${CONTROL_NET_CIDR:-172.21.0.0/20}
+      BIND_SUBNET: ${CONTROL_NET_CIDR:-172.30.248.0/24}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       DATABASE_URL: postgresql://svc_runner_orchestrator:${ORCHESTRATOR_DB_PASSWORD}@postgres-oltp:5432/wiredeck_oltp?sslmode=disable
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
@@ -317,6 +317,9 @@ networks:
     name: wiredeck-runners
   wiredeck-ingress:
     driver: bridge
+    ipam:
+      config:
+        - subnet: ${INGRESS_NET_CIDR:-172.30.249.0/24}
 
 volumes:
   postgres_oltp_data:

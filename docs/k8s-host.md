@@ -54,4 +54,4 @@ All three singleton loops live in Go services and swap `NoopLeader` for native `
 2. **`OwnershipProvider` (`webview-engine`):** `OwnsSite(siteID) bool` + `OnOwnershipChanged(cb)` checked by poll scheduler, alarm evaluator, and history ingester.
 3. **`LeaderElector` (`pkg/k8s`):** `RunAsLeader(ctx, name, fn)` wrapping all singleton background loops (`NoopLeader` in Docker Compose, `client-go` Lease on K8s).
 4. **`HistoryStore` (`webview-engine`):** `WriteBatch / QueryRange / DeleteSite` encapsulating the dedicated TimescaleDB pool.
-5. **`RESERVED_CIDRS` (`core-iam`):** Env-configured forbidden CIDRs (`172.21.0.0/20,172.22.0.0/20` on Docker Compose; cluster Pod + Service CIDRs on K8s).
+5. **`RESERVED_CIDRS` (`core-iam`):** Env-configured forbidden CIDRs (`172.30.248.0/24,172.30.252.0/22` on Docker Compose; cluster Pod + Service CIDRs on K8s).

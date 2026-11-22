@@ -18,13 +18,13 @@ WireDeck2 is a greenfield rewrite of WireDeck. It replaces the *discrete site ru
 | D4 | `webview-engine` runs **single-replica** in v1 (with `OwnershipProvider` K8s seam). | No Redis, no message bus, no leader election in v1 Compose; Lease-based site sharding on K8s later. |
 | D5 | Separate **`runner-orchestrator`** owns `/var/run/docker.sock` behind `RunnerBackend`. | Keeps host-equivalent Docker access off internet-facing services; swaps to `client-go` on K8s. |
 | D6 | Scale target **25–100 sites**, ~20 devices/site, ~5,000 register mappings. | Per-device stream pooling and contiguous register coalescing are mandatory. |
-| D7 | **Per-site RBAC** via `SiteMembership` (`SITE_ADMIN \| SITE_USER_RW \| SITE_USER_RO`) + `is_platform_admin`. | Users may hold different roles across different sites. |
+| D7 | **Strictly three platform roles**: **Platform Admin** (`is_platform_admin`), **Site Operator** (`SITE_OPERATOR`), and **Site Member** (`SITE_MEMBER`). | Platform Admin is sole overlord of sites, site features (`vnc_enabled`, `webview_enabled`), WireGuard configs, runners, and global users. Site Operator manages site members (inviting new emails as `SITE_MEMBER`) and service-level config (VNC edge points, WebView pages/elements/history/alarms). Site Member uses enabled services; fine-grained policies live inside each service. |
 | D8 | **VPN Portal (iframe) dropped from v1.** | High security surface, low value. |
 | D9 | History uses **deadband + max-interval**, not store-every-poll. | 1–2 orders of magnitude less write/storage volume; charts use TimescaleDB `time_bucket_gapfill` + `locf()`. |
 | D10 | Alarms **latch and re-arm**: fire once, silent clear (or opt-in email), re-arm on return beyond `clear_deadband`. Ack is cosmetic. | Prevents alert storms; persisted `alarm_pending_states` preserves holds across restarts. |
 | D11 | **No MFA in v1.** | Email + argon2id password, rotating refresh cookie, admin email invites, anytime password change/reset. |
 | D12 | On site `OFFLINE`: **freeze active alarms (`is_stale = true`), cancel pending timers**. | Never raise an alarm from unread/stale data. Driven by `core-iam` runtime-state sync (D28). |
-| D13 | Retention: **raw 30d, continuous aggregates (`1m`, `1h`) 1y**, plus per-site `history_enabled` toggle. | When `history_enabled = false`, zero rows are written. |
+| D13 | Retention: **raw 30d, continuous aggregates (`1m`, `1h`) 1y**. History storage is **part of WebView** (not a separate site-level feature flag). | Configured inside `webview-engine` whenever `webview_enabled = true`. |
 | D14 | VNC: **no session locking** — target VNC server decides. Idle timeout (`15m`) & max session (`8h`) enforced. | Releases runner gRPC streams and sockets cleanly. |
 | D15 | Modbus writes go over **REST** (`POST /write`), not WebSocket. | Explicit request/response, RBAC check, and error feedback against physical outputs. |
 | D16 | **No audit log table in v1.** | Writes emit structured JSON audit logs (`user_id`, `site_id`, `mapping_id`, `value`, `result`). |
@@ -148,10 +148,10 @@ Every public HTTP service (`core-iam`, `webview-engine`, `webvnc-proxy`) uses **
 - **Auto-Generated OpenAPI 3.1 + Interactive Swagger/Scalar UI:** Served at `/api/v1/<service>/openapi.json` and `/api/v1/<service>/docs` (controlled via `ENABLE_OPENAPI_DOCS`), used to generate typed TypeScript clients (`openapi-typescript`) for `frontend/`.
 - **Strict Router-Group Separation:**
   - **Public (Unauth):** `/api/v1/iam/auth/*` (login, cookie refresh, accept-invite, forgot/reset password), `/api/v1/iam/.well-known/jwks.json`.
-  - **Self-Service User:** `/api/v1/iam/me/*` (`RequireAuth`: profile, change-password, sessions, accessible sites).
-  - **Operator / Site User:** `/api/v1/webview/sites/{siteId}/*`, `/api/v1/vnc/sites/{siteId}/*`, `/api/v1/webview/alarms` (`RequireAuth` + `RequireSiteMember`; writes also require `SITE_USER_RW+`).
-  - **Site Admin:** `/api/v1/{iam,webview,vnc}/sites/{siteId}/admin/*` (`RequireAuth` + `RequireSiteAdmin`).
-  - **Platform Admin:** `/api/v1/iam/admin/*` (`RequireAuth` + `RequirePlatformAdmin`).
+  - **Self-Service User:** `/api/v1/iam/me/*` (`RequireAuth`: profile, change-password, accessible sites).
+  - **Site Member / Service Consumer:** `/api/v1/webview/sites/{siteId}/*`, `/api/v1/vnc/sites/{siteId}/*`, `/api/v1/webview/alarms` (`RequireAuth` + `RequireSiteMember`; fine-grained write/view policies live inside `webview-engine`).
+  - **Site Operator:** `/api/v1/iam/sites/{siteId}/operator/members*` (list, invite new email as `SITE_MEMBER`, remove `SITE_MEMBER`), `/api/v1/webview/sites/{siteId}/operator/*` (devices, registers, dashboards, history settings, alarm rules), `/api/v1/vnc/sites/{siteId}/operator/*` (VNC edge points) (`RequireAuth` + `RequireSiteOperator`). **Site Operators cannot access WireGuard configs or site feature flags.**
+  - **Platform Admin:** `/api/v1/iam/admin/*` (`RequireAuth` + `RequirePlatformAdmin` — sole owner of site creation/deletion/activation, `vnc_enabled`/`webview_enabled` toggles, WireGuard conf upload/rotation, global user management, `SITE_OPERATOR` assignment, and runners).
   - **Internal Control Plane:** `:8081/internal/*` (`RequireInternalToken`, never exposed to Traefik or public OpenAPI).
 
 ---
@@ -171,8 +171,8 @@ Every public HTTP service (`core-iam`, `webview-engine`, `webvnc-proxy`) uses **
   - `users`: `id`, `email` (citext unique), `password_hash` (argon2id, nullable while `INVITED`), `status` (`INVITED | ACTIVE | DISABLED`), `is_platform_admin`, `created_at`, `updated_at`.
   - `user_tokens`: `id`, `user_id`, `type` (`INVITE | PASSWORD_RESET`), `token_hash` (unique), `expires_at`, `used_at`, `created_at`.
   - `refresh_tokens`: `id`, `user_id`, `token_hash` (unique), `expires_at`, `revoked_at`, `replaced_by_id`, `client_info` (jsonb), `created_at`.
-  - `sites`: `id`, `name`, `slug` (unique), `wireguard_conf_encrypted` (bytea, AES-256-GCM with `WG_CONF_ENCRYPTION_KEY`), `wireguard_meta` (jsonb: `publicKey`, `endpointHost`, `endpointPort`, `lanSubnets[]`, `confFingerprint`, `mtu`, `persistentKeepalive`), `vnc_enabled`, `webview_enabled`, `history_enabled`, `is_active`, `status` (`ONLINE | DEGRADED | OFFLINE | UNKNOWN`), `handshake_state`, `last_handshake_at`, `status_updated_at`, `created_at`, `updated_at`.
-  - `site_memberships`: `id`, `user_id`, `site_id`, `role` (`SITE_ADMIN | SITE_USER_RW | SITE_USER_RO`), unique(`user_id`, `site_id`).
+  - `sites`: `id`, `name`, `slug` (unique), `wireguard_conf_encrypted` (bytea, AES-256-GCM with `WG_CONF_ENCRYPTION_KEY`), `wireguard_meta` (jsonb: `publicKey`, `clientPublicKey`, `endpointHost`, `endpointPort`, `lanSubnets[]`, `confFingerprint`, `mtu`, `persistentKeepalive`), `vnc_enabled`, `webview_enabled`, `is_active`, `status` (`ONLINE | DEGRADED | OFFLINE | UNKNOWN`), `handshake_state`, `last_handshake_at`, `status_updated_at`, `created_at`, `updated_at`.
+  - `site_memberships`: `id`, `user_id`, `site_id`, `role` (`SITE_OPERATOR | SITE_MEMBER`), unique(`user_id`, `site_id`).
 - **`platform_runners` (`runner-orchestrator`):**
   - `runners`: `id`, `site_id` (unique), `container_name`, `container_id`, `image`, `conf_fingerprint`, `auth_token_encrypted`, `desired_state` (`RUNNING | STOPPED`), `observed_state`, `status`, `handshake_state`, `handshake_age_seconds`, `last_handshake_at`, `last_checked_at`, `last_error`, `last_reconciled_at`.
   - `runner_health_events`: transition-only audit of status changes (`id`, `site_id`, `from_status`, `to_status`, `occurred_at`, `detail`).
@@ -234,8 +234,8 @@ Built with **Vue 3.5 + TypeScript + Vite 8 + Pinia + Tailwind CSS v4 + ECharts +
 
 | Surface | Layout & Chunk | Routes | Role Guard |
 |---|---|---|---|
-| **Operator Shell** | `OperatorLayout.vue` (eager) | `/sites/:siteId/{overview, webview, vnc, history, alarms}`, `/alarms`, `/profile` | Authenticated site member |
-| **Site Admin Mode** | `SiteAdminLayout.vue` (lazy chunk) | `/sites/:siteId/admin/{settings, devices, registers, dashboards, vnc-targets, alarm-rules}` | `SITE_ADMIN` or `PLATFORM_ADMIN` |
+| **Service / Member Shell** | `OperatorLayout.vue` (eager) | `/sites/:siteId/{overview, webview, vnc, history, alarms}`, `/alarms`, `/profile` | Authenticated site member |
+| **Site Operator Workspace** | `SiteAdminLayout.vue` (lazy chunk) | `/sites/:siteId/manage/{members, vnc-targets, webview}` | `SITE_OPERATOR` or `PLATFORM_ADMIN` |
 | **Platform Admin Console** | `PlatformAdminLayout.vue` (lazy chunk) | `/admin/{sites, users, runners}` | `isPlatformAdmin` |
 
 - **Telemetry WebSocket:** Single multiplexed connection per tab (`shallowRef` value/quality map), 15 s ping/pong heartbeat, `visibilitychange` auto-unsubscribe/resubscribe, 900-pt live ring buffer for `HistoryChart` when `history_enabled = false`.

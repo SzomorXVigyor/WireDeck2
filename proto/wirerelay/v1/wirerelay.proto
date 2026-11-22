@@ -1,0 +1,92 @@
+syntax = "proto3";
+
+package wirerelay.v1;
+
+option go_package = "github.com/SzomorXVigyor/WireDeck2/pkg/wirerelay/v1;wirerelayv1";
+
+// WireRelayService provides health monitoring and network tunnel relaying over WireGuard.
+service WireRelayService {
+  rpc GetHealth (HealthRequest) returns (HealthResponse);
+  rpc PingTarget (PingRequest) returns (PingResponse);
+  rpc TunnelStream (stream TunnelFrame) returns (stream TunnelFrame);
+}
+
+message HealthRequest {
+  string interface = 1;
+}
+
+enum TunnelStatus {
+  TUNNEL_STATUS_UNSPECIFIED = 0;
+  TUNNEL_STATUS_CONNECTED = 1;
+  TUNNEL_STATUS_DEGRADED = 2;
+  TUNNEL_STATUS_DISCONNECTED = 3;
+}
+
+enum HandshakeState {
+  HANDSHAKE_STATE_UNSPECIFIED = 0;
+  HANDSHAKE_STATE_CONNECTED = 1;
+  HANDSHAKE_STATE_DEGRADED = 2;
+  HANDSHAKE_STATE_STALE = 3;
+  HANDSHAKE_STATE_NEVER_HANDSHAKED = 4;
+  HANDSHAKE_STATE_INTERFACE_ERROR = 5;
+}
+
+message PeerHealth {
+  string public_key = 1;
+  int64 handshake_age_seconds = 2;
+  HandshakeState state = 3;
+}
+
+message HealthResponse {
+  string interface = 1;
+  TunnelStatus status = 2;
+  int64 handshake_age_seconds = 3;
+  int64 timestamp = 4;
+  HandshakeState handshake_state = 5;
+  string error_message = 6;
+  repeated PeerHealth peers = 7;
+}
+
+message PingRequest {
+  string target_host = 1;
+  uint32 target_port = 2;
+  uint32 timeout_ms = 3;
+}
+
+message PingResponse {
+  bool reachable = 1;
+  uint32 latency_ms = 2;
+  string error_message = 3;
+}
+
+enum TransportProtocol {
+  TRANSPORT_PROTOCOL_UNSPECIFIED = 0;
+  TRANSPORT_PROTOCOL_TCP = 1;
+  TRANSPORT_PROTOCOL_UDP = 2;
+}
+
+message TunnelHeader {
+  string target_host = 1;
+  uint32 target_port = 2;
+  TransportProtocol protocol = 3;
+  uint32 timeout_ms = 4;
+}
+
+message TunnelAck {
+  bool success = 1;
+  string error_message = 2;
+  string local_bound_address = 3;
+}
+
+message TunnelClose {
+  string reason = 1;
+}
+
+message TunnelFrame {
+  oneof frame {
+    TunnelHeader header = 1;
+    TunnelAck ack = 2;
+    bytes payload = 3;
+    TunnelClose close = 4;
+  }
+}

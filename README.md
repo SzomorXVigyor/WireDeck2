@@ -20,9 +20,9 @@ Centralized, multi-site industrial telemetry, remote browser VNC, and alerting p
 ## Quick Start (Docker Compose)
 
 ```sh
-# 1. Create the two isolated Docker networks (172.21/20 & 172.22/20 — leaves 172.20/20 for WireDeck 1.x)
-docker network create --driver bridge --internal --subnet=172.21.0.0/20 --ipv6=false wiredeck-control
-docker network create --driver bridge --subnet=172.22.0.0/20 --ipv6=false wiredeck-runners
+# 1. Create the two isolated Docker networks (control /24 + runners /22)
+docker network create --driver bridge --internal --subnet=172.30.248.0/24 --ipv6=false wiredeck-control
+docker network create --driver bridge --subnet=172.30.252.0/22 --ipv6=false wiredeck-runners
 
 # 2. Mount tmpfs for ephemeral runner WireGuard configs (private keys never touch disk)
 sudo mkdir -p /var/lib/wiredeck2/runners

@@ -2,7 +2,7 @@
 
 WireDeck2 acts as a **WireGuard client** (D1, D2). Each remote site runs its own WireGuard server (e.g., MikroTik, OPNsense, pfSense, UniFi, OpenWrt, or Linux `wg-quick`) with a reachable UDP endpoint (static IP or DDNS + port forward).
 
-When onboarding a site, a Platform Admin or Site Admin uploads a standard WireGuard client `.conf` file. `core-iam` validates, normalises, and encrypts it with AES-256-GCM before storing it; the raw config and private key are **never** returned by any API or written to persistent runner disks.
+When onboarding or rotating a site, **only a Platform Admin** uploads a standard WireGuard client `.conf` file. `core-iam` validates, normalises, and encrypts it with AES-256-GCM before storing it; the raw config and private key are **never** returned by any API or written to persistent runner disks, and non-secret WireGuard metadata is exposed exclusively to Platform Admins.
 
 ---
 
@@ -14,7 +14,7 @@ When onboarding a site, a Platform Admin or Site Admin uploads a standard WireGu
 | **`PrivateKey` & `PublicKey`** | Must be valid 32-byte base64 WireGuard keys | Fails immediately at upload rather than silently at runner boot. |
 | **`Endpoint = host:port`** | Required; hostname resolved at validation time | Catches typos/NXDOMAIN on upload. DDNS hostnames are automatically re-resolved every 60 s by `WireRelay`. |
 | **`AllowedIPs` catch-all (`0.0.0.0/0`, `::/0`)** | **Narrow-don't-reject flow** | Most router exports default to `0.0.0.0/0`, which installs a default route inside the runner container and knocks it off `wiredeck-runners`. When detected, the API returns a structured `422` prompt and the UI asks for the site's actual LAN subnets (e.g., `192.168.10.0/24`), rewrites `AllowedIPs`, and saves them as `lanSubnets`. |
-| **Overlap with `RESERVED_CIDRS`** | Rejected | Prevents `Address` or `AllowedIPs` from overlapping Docker bridges (`172.21.0.0/20`, `172.22.0.0/20`) or K8s Pod/Service CIDRs. |
+| **Overlap with `RESERVED_CIDRS`** | Rejected | Prevents `Address` or `AllowedIPs` from overlapping Docker bridges (`172.30.248.0/24`, `172.30.252.0/22`) or K8s Pod/Service CIDRs. |
 | **Overlap with `Endpoint` IP** | Rejected | Prevents WireGuard from routing its own encrypted UDP packets into the tunnel. |
 | **`Address` CIDR** | Accepts `/32`, `/128`, or private interface subnets (e.g., `/24`) if non-overlapping | Real-world router exports (MikroTik, OPNsense, `wg-easy`) commonly emit `/24`. |
 | **`PersistentKeepalive`** | **Auto-injected as `25` if absent** | WireGuard only handshakes when traffic flows. Without keepalive, idle sites go stale and falsely report `OFFLINE`. |
