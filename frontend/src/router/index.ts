@@ -133,6 +133,16 @@ const router = createRouter({
           name: 'admin-runners',
           component: () => import('../modules/platform-admin/AdminRunnersView.vue'),
         },
+        {
+          path: 'profile',
+          name: 'admin-profile',
+          component: ProfileView,
+        },
+        {
+          path: 'preferences',
+          name: 'admin-preferences',
+          component: PreferencesView,
+        },
       ],
     },
 

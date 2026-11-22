@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useRouter } from 'vue-router'
-import { ArrowLeft, Cpu, LogOut, Server, Shield, Users } from 'lucide-vue-next'
+import { ArrowLeft, Cpu, LogOut, Server, Shield, SlidersHorizontal, User as UserIcon, Users } from 'lucide-vue-next'
 import { useAuthStore } from '../stores/auth'
 
 const auth = useAuthStore()
@@ -51,6 +51,25 @@ async function handleLogout() {
           <Cpu class="h-4 w-4" />
           Tunnel Runners
         </RouterLink>
+
+        <div class="mt-4 border-t border-slate-800/80 pt-4 space-y-1">
+          <RouterLink
+            to="/admin/profile"
+            class="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-slate-300 hover:bg-slate-800 hover:text-white"
+            active-class="bg-indigo-500/20 text-indigo-200 font-medium"
+          >
+            <UserIcon class="h-4 w-4" />
+            Profile & Password
+          </RouterLink>
+          <RouterLink
+            to="/admin/preferences"
+            class="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-slate-300 hover:bg-slate-800 hover:text-white"
+            active-class="bg-indigo-500/20 text-indigo-200 font-medium"
+          >
+            <SlidersHorizontal class="h-4 w-4" />
+            Preferences
+          </RouterLink>
+        </div>
       </nav>
 
       <div class="border-t border-slate-800 p-3 space-y-2">
