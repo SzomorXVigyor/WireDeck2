@@ -1,0 +1,18 @@
+http:
+  middlewares:
+    security-headers:
+      headers:
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+        stsPreload: true
+        contentTypeNosniff: true
+        referrerPolicy: strict-origin-when-cross-origin
+        contentSecurityPolicy: "default-src 'self'; connect-src 'self' wss: https:; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none';"
+        customResponseHeaders:
+          X-Frame-Options: "DENY"
+
+    auth-ratelimit:
+      rateLimit:
+        average: 15
+        burst: 30
+        period: 1m

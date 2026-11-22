@@ -1,0 +1,324 @@
+name: wiredeck2
+
+# Single Docker host deployment (docs/ARCHITECTURE.md v2.2).
+#
+# Prerequisites:
+#   1. Create the two isolated Docker networks (172.21/20 & 172.22/20 — leaves 172.20/20 for WireDeck 1.x):
+#        docker network create --driver bridge --internal --subnet=172.21.0.0/20 --ipv6=false wiredeck-control
+#        docker network create --driver bridge --subnet=172.22.0.0/20 --ipv6=false wiredeck-runners
+#   2. Mount a tmpfs for ephemeral runner configs (site private keys never touch persistent disk):
+#        sudo mkdir -p /var/lib/wiredeck2/runners
+#        sudo mount -t tmpfs -o size=16m,mode=0700 tmpfs /var/lib/wiredeck2/runners
+#      (Add to /etc/fstab; after reboot runner-orchestrator repopulates from core-iam:8081.)
+#   3. cp deploy/.env.example deploy/.env && edit secrets.
+#
+# Start:
+#   docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d
+
+services:
+  # ---------------------------------------------------------------------------
+  # Datastores (Separated OLTP + TSDB on wiredeck-control only)
+  # ---------------------------------------------------------------------------
+  postgres-oltp:
+    image: postgres:18-alpine
+    container_name: wiredeck2-postgres-oltp
+    networks: [wiredeck-control]
+    environment:
+      POSTGRES_USER: ${OLTP_ADMIN_USER}
+      POSTGRES_PASSWORD: ${OLTP_ADMIN_PASSWORD}
+      POSTGRES_DB: wiredeck_oltp
+    volumes:
+      - postgres_oltp_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${OLTP_ADMIN_USER} -d wiredeck_oltp"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  oltp-migrator:
+    build:
+      context: ../db/oltp
+    container_name: wiredeck2-oltp-migrator
+    networks: [wiredeck-control]
+    environment:
+      DATABASE_URL: postgresql://${OLTP_ADMIN_USER}:${OLTP_ADMIN_PASSWORD}@postgres-oltp:5432/wiredeck_oltp?sslmode=disable
+      IAM_DB_PASSWORD: ${IAM_DB_PASSWORD}
+      ORCHESTRATOR_DB_PASSWORD: ${ORCHESTRATOR_DB_PASSWORD}
+      WEBVNC_DB_PASSWORD: ${WEBVNC_DB_PASSWORD}
+      WEBVIEW_DB_PASSWORD: ${WEBVIEW_DB_PASSWORD}
+    depends_on:
+      postgres-oltp:
+        condition: service_healthy
+    restart: "no"
+
+  postgres-tsdb:
+    image: timescale/timescaledb:2.32.0-pg17
+    container_name: wiredeck2-postgres-tsdb
+    networks: [wiredeck-control]
+    environment:
+      POSTGRES_USER: ${TSDB_ADMIN_USER}
+      POSTGRES_PASSWORD: ${TSDB_ADMIN_PASSWORD}
+      POSTGRES_DB: wiredeck_history
+    volumes:
+      - postgres_tsdb_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${TSDB_ADMIN_USER} -d wiredeck_history"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  tsdb-migrator:
+    build:
+      context: ../db/tsdb
+    container_name: wiredeck2-tsdb-migrator
+    networks: [wiredeck-control]
+    environment:
+      TSDB_DATABASE_URL: postgresql://${TSDB_ADMIN_USER}:${TSDB_ADMIN_PASSWORD}@postgres-tsdb:5432/wiredeck_history?sslmode=disable
+      TSDB_HISTORY_PASSWORD: ${TSDB_HISTORY_PASSWORD}
+    depends_on:
+      postgres-tsdb:
+        condition: service_healthy
+    restart: "no"
+
+  # ---------------------------------------------------------------------------
+  # Ingress & Frontend
+  # ---------------------------------------------------------------------------
+  traefik:
+    image: traefik:v3.7
+    container_name: wiredeck2-traefik
+    networks: [wiredeck-control, wiredeck-ingress]
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
+      - traefik_acme:/acme
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      ACME_EMAIL: ${ACME_EMAIL}
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ../frontend
+    container_name: wiredeck2-frontend
+    networks: [wiredeck-control]
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: wiredeck-control
+      traefik.http.routers.frontend.rule: Host(`${ROOT_DOMAIN}`)
+      traefik.http.routers.frontend.entrypoints: websecure
+      traefik.http.routers.frontend.tls.certresolver: le
+      traefik.http.routers.frontend.priority: "1"
+      traefik.http.routers.frontend.middlewares: security-headers@file
+      traefik.http.services.frontend.loadbalancer.server.port: "80"
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Core Go Microservices
+  # ---------------------------------------------------------------------------
+  core-iam:
+    build:
+      context: ..
+      dockerfile: services/core-iam/Dockerfile
+    container_name: wiredeck2-core-iam
+    networks: [wiredeck-control]
+    environment:
+      PUBLIC_ADDR: ":8080"
+      INTERNAL_ADDR: ":8081"
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      ENABLE_OPENAPI_DOCS: ${ENABLE_OPENAPI_DOCS:-false}
+      DATABASE_URL: postgresql://svc_core_iam:${IAM_DB_PASSWORD}@postgres-oltp:5432/wiredeck_oltp?sslmode=disable
+      PUBLIC_BASE_URL: https://${ROOT_DOMAIN}
+      JWT_PRIVATE_KEY_B64: ${JWT_PRIVATE_KEY_B64}
+      JWT_KEY_ID: ${JWT_KEY_ID:-v1}
+      ACCESS_TOKEN_TTL: 15m
+      REFRESH_TOKEN_TTL: 30d
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      WG_CONF_ENCRYPTION_KEY: ${WG_CONF_ENCRYPTION_KEY}
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
+      RESERVED_CIDRS: ${RESERVED_CIDRS:-172.21.0.0/20,172.22.0.0/20}
+      ORCHESTRATOR_URL: http://runner-orchestrator:8081
+      WEBVIEW_INTERNAL_URL: http://webview-engine:8081
+      WEBVNC_INTERNAL_URL: http://webvnc-proxy:8081
+      MAILGOPHER_URL: http://mailgopher:8080
+      INIT_ADMIN_EMAIL: ${INIT_ADMIN_EMAIL}
+      INIT_ADMIN_PASSWORD: ${INIT_ADMIN_PASSWORD}
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: wiredeck-control
+      traefik.http.routers.core-iam-auth.rule: Host(`${ROOT_DOMAIN}`) && PathPrefix(`/api/v1/iam/auth`)
+      traefik.http.routers.core-iam-auth.entrypoints: websecure
+      traefik.http.routers.core-iam-auth.tls.certresolver: le
+      traefik.http.routers.core-iam-auth.priority: "20"
+      traefik.http.routers.core-iam-auth.middlewares: security-headers@file,auth-ratelimit@file
+      traefik.http.routers.core-iam.rule: Host(`${ROOT_DOMAIN}`) && PathPrefix(`/api/v1/iam`)
+      traefik.http.routers.core-iam.entrypoints: websecure
+      traefik.http.routers.core-iam.tls.certresolver: le
+      traefik.http.routers.core-iam.priority: "10"
+      traefik.http.routers.core-iam.middlewares: security-headers@file
+      traefik.http.services.core-iam.loadbalancer.server.port: "8080"
+    healthcheck:
+      test: ["CMD", "/core-iam", "-healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      oltp-migrator:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # Internal only (no Traefik route). Sole holder of docker.sock.
+  # Attached to both wiredeck-control (HTTP API + DB) and wiredeck-runners (gRPC health).
+  # HTTP API binds strictly on the wiredeck-control interface so runners cannot reach it.
+  runner-orchestrator:
+    build:
+      context: ..
+      dockerfile: services/runner-orchestrator/Dockerfile
+    container_name: wiredeck2-runner-orchestrator
+    networks: [wiredeck-control, wiredeck-runners]
+    environment:
+      INTERNAL_ADDR: ":8081"
+      BIND_SUBNET: ${CONTROL_NET_CIDR:-172.21.0.0/20}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DATABASE_URL: postgresql://svc_runner_orchestrator:${ORCHESTRATOR_DB_PASSWORD}@postgres-oltp:5432/wiredeck_oltp?sslmode=disable
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
+      CORE_IAM_INTERNAL_URL: http://core-iam:8081
+      WEBVIEW_INTERNAL_URL: http://webview-engine:8081
+      WEBVNC_INTERNAL_URL: http://webvnc-proxy:8081
+      DOCKER_HOST: unix:///var/run/docker.sock
+      RUNNER_IMAGE: ${WIRERELAY_IMAGE_URL}
+      RUNNER_NETWORK: wiredeck-runners
+      RUNNER_CONF_DIR: /var/lib/wiredeck2/runners
+      RUNNER_TOKEN_ENCRYPTION_KEY: ${RUNNER_TOKEN_ENCRYPTION_KEY}
+      RECONCILE_INTERVAL: 60s
+      HEALTH_INTERVAL: 30s
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/lib/wiredeck2/runners:/var/lib/wiredeck2/runners
+    healthcheck:
+      test: ["CMD", "/runner-orchestrator", "-healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      oltp-migrator:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # Single replica in v1 (D4, OwnershipProvider K8s seam). Do NOT use rolling updates.
+  webview-engine:
+    build:
+      context: ..
+      dockerfile: services/webview-engine/Dockerfile
+    container_name: wiredeck2-webview-engine
+    networks: [wiredeck-control, wiredeck-runners]
+    environment:
+      PUBLIC_ADDR: ":8080"
+      INTERNAL_ADDR: ":8081"
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      ENABLE_OPENAPI_DOCS: ${ENABLE_OPENAPI_DOCS:-false}
+      DATABASE_URL: postgresql://svc_webview_engine:${WEBVIEW_DB_PASSWORD}@postgres-oltp:5432/wiredeck_oltp?sslmode=disable
+      TSDB_DATABASE_URL: postgresql://svc_webview_history:${TSDB_HISTORY_PASSWORD}@postgres-tsdb:5432/wiredeck_history?sslmode=disable
+      CORE_IAM_INTERNAL_URL: http://core-iam:8081
+      ORCHESTRATOR_URL: http://runner-orchestrator:8081
+      JWKS_URL: http://core-iam:8080/api/v1/iam/.well-known/jwks.json
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
+      MAILGOPHER_URL: http://mailgopher:8080
+      HISTORY_FLUSH_MS: "1000"
+      HISTORY_FLUSH_ROWS: "500"
+      INTERACTIVE_GRACE_MS: "30000"
+      DEVICE_IDLE_TEARDOWN_MS: "300000"
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: wiredeck-control
+      traefik.http.routers.webview.rule: Host(`${ROOT_DOMAIN}`) && PathPrefix(`/api/v1/webview`)
+      traefik.http.routers.webview.entrypoints: websecure
+      traefik.http.routers.webview.tls.certresolver: le
+      traefik.http.routers.webview.priority: "10"
+      traefik.http.routers.webview.middlewares: security-headers@file
+      traefik.http.services.webview.loadbalancer.server.port: "8080"
+    healthcheck:
+      test: ["CMD", "/webview-engine", "-healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      oltp-migrator:
+        condition: service_completed_successfully
+      tsdb-migrator:
+        condition: service_completed_successfully
+    deploy:
+      replicas: 1
+    restart: unless-stopped
+
+  webvnc-proxy:
+    build:
+      context: ..
+      dockerfile: services/webvnc-proxy/Dockerfile
+    container_name: wiredeck2-webvnc-proxy
+    networks: [wiredeck-control, wiredeck-runners]
+    environment:
+      PUBLIC_ADDR: ":8080"
+      INTERNAL_ADDR: ":8081"
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      ENABLE_OPENAPI_DOCS: ${ENABLE_OPENAPI_DOCS:-false}
+      DATABASE_URL: postgresql://svc_webvnc_proxy:${WEBVNC_DB_PASSWORD}@postgres-oltp:5432/wiredeck_oltp?sslmode=disable
+      CORE_IAM_INTERNAL_URL: http://core-iam:8081
+      ORCHESTRATOR_URL: http://runner-orchestrator:8081
+      JWKS_URL: http://core-iam:8080/api/v1/iam/.well-known/jwks.json
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
+      VNC_PASSWORD_ENCRYPTION_KEY: ${VNC_PASSWORD_ENCRYPTION_KEY}
+      VNC_IDLE_TIMEOUT: 15m
+      VNC_MAX_SESSION: 8h
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: wiredeck-control
+      traefik.http.routers.webvnc.rule: Host(`${ROOT_DOMAIN}`) && PathPrefix(`/api/v1/vnc`)
+      traefik.http.routers.webvnc.entrypoints: websecure
+      traefik.http.routers.webvnc.tls.certresolver: le
+      traefik.http.routers.webvnc.priority: "10"
+      traefik.http.routers.webvnc.middlewares: security-headers@file
+      traefik.http.services.webvnc.loadbalancer.server.port: "8080"
+    healthcheck:
+      test: ["CMD", "/webvnc-proxy", "-healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      oltp-migrator:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # Internal only — POST /send has no authentication (never route through Traefik).
+  mailgopher:
+    image: ${MAILGOPHER_IMAGE_URL}
+    container_name: wiredeck2-mailgopher
+    networks: [wiredeck-control]
+    environment:
+      NAME: WireDeck2
+      PORT: "8080"
+      LOG_FORMAT: json
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      MAX_RETRIES: "5"
+      WORKER_QUEUE_SIZE: "200"
+      SMTP_ACCOUNTS: ${SMTP_ACCOUNTS}
+    restart: unless-stopped
+
+networks:
+  wiredeck-control:
+    external: true
+    name: wiredeck-control
+  wiredeck-runners:
+    external: true
+    name: wiredeck-runners
+  wiredeck-ingress:
+    driver: bridge
+
+volumes:
+  postgres_oltp_data:
+  postgres_tsdb_data:
+  traefik_acme:
