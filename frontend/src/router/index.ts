@@ -40,9 +40,8 @@ const router = createRouter({
         {
           path: 'sites/:siteId/webview',
           name: 'site-webview',
-          component: FeaturePlaceholderView,
+          component: () => import('../modules/operator/WebView.vue'),
           meta: { requireFlag: 'webviewEnabled' },
-          props: { title: 'Live WebView Dashboard', phase: 'Phase 3', description: 'Demand-driven Modbus telemetry, live widgets, and register controls.' },
         },
         {
           path: 'sites/:siteId/vnc',
@@ -96,8 +95,7 @@ const router = createRouter({
         {
           path: 'webview',
           name: 'site-operator-webview',
-          component: FeaturePlaceholderView,
-          props: { title: 'WebView Elements, Pages & History', phase: 'Phase 3-4', description: 'Configure Modbus devices, register mappings, dashboards, history settings, and alarm rules.' },
+          component: () => import('../modules/site-admin/SiteWebViewManageView.vue'),
         },
       ],
     },
