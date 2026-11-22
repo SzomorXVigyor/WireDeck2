@@ -4,10 +4,15 @@ import { Mail, Plus, Trash2 } from 'lucide-vue-next'
 import { apiRequest } from '../../services/api'
 import type { User } from '../../types/iam'
 import StatusBadge from '../../components/StatusBadge.vue'
+import DeleteConfirmModal from '../../components/DeleteConfirmModal.vue'
+import TablePagination from '../../components/TablePagination.vue'
+import { usePagination } from '../../composables/usePagination'
 
 const users = ref<User[]>([])
+const usersPag = usePagination(users)
 const errBanner = ref<string | null>(null)
 const notice = ref<string | null>(null)
+const userToDelete = ref<User | null>(null)
 
 const showInvite = ref(false)
 const inviteEmail = ref('')
@@ -68,8 +73,14 @@ async function toggleDisabled(u: User) {
   await loadUsers()
 }
 
-async function deleteUser(u: User) {
-  if (!window.confirm(`Permanently delete user ${u.email}?`)) return
+function deleteUser(u: User) {
+  userToDelete.value = u
+}
+
+async function confirmDeleteUser() {
+  const u = userToDelete.value
+  userToDelete.value = null
+  if (!u) return
   await apiRequest(`/api/v1/iam/admin/users/${u.id}`, { method: 'DELETE' })
   await loadUsers()
 }
@@ -95,50 +106,60 @@ async function deleteUser(u: User) {
     <p v-if="errBanner" class="rounded-lg border border-rose-500/40 bg-rose-500/10 p-3 text-xs text-rose-200">{{ errBanner }}</p>
     <p v-if="notice" class="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-200">{{ notice }}</p>
 
-    <div class="overflow-x-auto rounded-xl border border-slate-800 bg-slate-900/60">
-      <table class="w-full text-left text-xs">
-        <thead class="border-b border-slate-800 text-slate-400">
-          <tr>
-            <th class="px-4 py-3">Email</th>
-            <th class="px-4 py-3">Status</th>
-            <th class="px-4 py-3">Role</th>
-            <th class="px-4 py-3 text-right">Actions</th>
-          </tr>
-        </thead>
-        <tbody class="divide-y divide-slate-800/70">
-          <tr v-for="u in users" :key="u.id" class="hover:bg-slate-800/30">
-            <td class="px-4 py-3 font-mono text-slate-200">{{ u.email }}</td>
-            <td class="px-4 py-3"><StatusBadge :status="u.status" size="sm" /></td>
-            <td class="px-4 py-3 text-slate-300">{{ u.isPlatformAdmin ? 'Platform Admin' : 'Standard User' }}</td>
-            <td class="px-4 py-3 text-right space-x-1.5">
-              <button
-                v-if="u.status === 'INVITED'"
-                type="button"
-                class="inline-flex items-center gap-1 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-200"
-                @click="resendInvite(u)"
-              >
-                <Mail class="h-3 w-3" /> Resend Invite
-              </button>
-              <button
-                v-if="u.status !== 'INVITED'"
-                type="button"
-                class="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-slate-200"
-                @click="toggleDisabled(u)"
-              >
-                {{ u.status === 'DISABLED' ? 'Enable' : 'Disable' }}
-              </button>
-              <button
-                type="button"
-                class="inline-flex items-center rounded border border-rose-500/30 bg-rose-500/10 p-1 text-rose-300"
-                title="Delete user"
-                @click="deleteUser(u)"
-              >
-                <Trash2 class="h-3.5 w-3.5" />
-              </button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+    <div class="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60">
+      <div class="overflow-x-auto">
+        <table class="w-full text-left text-xs">
+          <thead class="border-b border-slate-800 text-slate-400">
+            <tr>
+              <th class="px-4 py-3">Email</th>
+              <th class="px-4 py-3">Status</th>
+              <th class="px-4 py-3">Role</th>
+              <th class="px-4 py-3 text-right">Actions</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-800/70">
+            <tr v-for="u in usersPag.paginatedItems.value" :key="u.id" class="hover:bg-slate-800/30">
+              <td class="px-4 py-3 font-mono text-slate-200">{{ u.email }}</td>
+              <td class="px-4 py-3"><StatusBadge :status="u.status" size="sm" /></td>
+              <td class="px-4 py-3 text-slate-300">{{ u.isPlatformAdmin ? 'Platform Admin' : 'Standard User' }}</td>
+              <td class="px-4 py-3 text-right space-x-1.5">
+                <button
+                  v-if="u.status === 'INVITED'"
+                  type="button"
+                  class="inline-flex items-center gap-1 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-200"
+                  @click="resendInvite(u)"
+                >
+                  <Mail class="h-3 w-3" /> Resend Invite
+                </button>
+                <button
+                  v-if="u.status !== 'INVITED'"
+                  type="button"
+                  class="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-slate-200"
+                  @click="toggleDisabled(u)"
+                >
+                  {{ u.status === 'DISABLED' ? 'Enable' : 'Disable' }}
+                </button>
+                <button
+                  type="button"
+                  class="inline-flex items-center rounded border border-rose-500/30 bg-rose-500/10 p-1 text-rose-300"
+                  title="Delete user"
+                  @click="deleteUser(u)"
+                >
+                  <Trash2 class="h-3.5 w-3.5" />
+                </button>
+              </td>
+            </tr>
+            <tr v-if="users.length === 0">
+              <td colspan="4" class="px-4 py-8 text-center text-slate-500">No users found.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <TablePagination
+        v-model:page="usersPag.page.value"
+        v-model:page-size="usersPag.pageSize.value"
+        :total-items="usersPag.totalItems.value"
+      />
     </div>
 
     <div v-if="showInvite" class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
@@ -162,5 +183,14 @@ async function deleteUser(u: User) {
         </form>
       </div>
     </div>
+
+    <DeleteConfirmModal
+      :open="Boolean(userToDelete)"
+      title="Delete User"
+      :item-name="userToDelete?.email || ''"
+      description="This user account and all of its site memberships will be permanently removed."
+      @close="userToDelete = null"
+      @confirm="confirmDeleteUser"
+    />
   </div>
 </template>

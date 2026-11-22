@@ -6,16 +6,21 @@ import { apiRequest } from '../../services/api'
 import { useAuthStore } from '../../stores/auth'
 import type { SiteMember } from '../../types/iam'
 import StatusBadge from '../../components/StatusBadge.vue'
+import DeleteConfirmModal from '../../components/DeleteConfirmModal.vue'
+import TablePagination from '../../components/TablePagination.vue'
+import { usePagination } from '../../composables/usePagination'
 
 const route = useRoute()
 const auth = useAuthStore()
 const siteId = computed(() => String(route.params.siteId || ''))
 
 const members = ref<SiteMember[]>([])
+const memberPag = usePagination(members)
 const inviteEmail = ref('')
 const submitting = ref(false)
 const errMsg = ref<string | null>(null)
 const okMsg = ref<string | null>(null)
+const memberToRemove = ref<SiteMember | null>(null)
 
 async function loadMembers() {
   errMsg.value = null
@@ -60,8 +65,14 @@ async function inviteMember() {
   }
 }
 
-async function removeMember(m: SiteMember) {
-  if (!window.confirm(`Remove ${m.email} from this site?`)) return
+function removeMember(m: SiteMember) {
+  memberToRemove.value = m
+}
+
+async function confirmRemoveMember() {
+  const m = memberToRemove.value
+  memberToRemove.value = null
+  if (!m) return
   errMsg.value = null
   okMsg.value = null
   try {
@@ -106,22 +117,24 @@ async function removeMember(m: SiteMember) {
     </section>
 
     <!-- Current Site Members -->
-    <section class="rounded-xl border border-slate-800 bg-slate-900/60 p-5">
-      <h2 class="text-base font-semibold text-white">Site Members</h2>
-      <div class="mt-3 overflow-x-auto">
+    <section class="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60">
+      <div class="px-5 pt-5 pb-3">
+        <h2 class="text-base font-semibold text-white">Site Members</h2>
+      </div>
+      <div class="overflow-x-auto">
         <table class="w-full text-left text-xs">
           <thead class="border-b border-slate-800 text-slate-400">
             <tr>
-              <th class="py-2 pr-4">Email</th>
-              <th class="py-2 pr-4">Site Role</th>
-              <th class="py-2 pr-4">Account Status</th>
-              <th class="py-2 text-right">Actions</th>
+              <th class="px-5 py-2.5">Email</th>
+              <th class="px-4 py-2.5">Site Role</th>
+              <th class="px-4 py-2.5">Account Status</th>
+              <th class="px-5 py-2.5 text-right">Actions</th>
             </tr>
           </thead>
           <tbody class="divide-y divide-slate-800/70">
-            <tr v-for="m in members" :key="m.userId">
-              <td class="py-2.5 pr-4 font-mono text-slate-200">{{ m.email }}</td>
-              <td class="py-2.5 pr-4">
+            <tr v-for="m in memberPag.paginatedItems.value" :key="m.userId" class="hover:bg-slate-800/30">
+              <td class="px-5 py-2.5 font-mono text-slate-200">{{ m.email }}</td>
+              <td class="px-4 py-2.5">
                 <span
                   class="rounded px-1.5 py-0.5 font-mono text-[11px]"
                   :class="m.role === 'SITE_OPERATOR' ? 'bg-amber-500/15 text-amber-300' : 'bg-slate-800 text-slate-300'"
@@ -129,8 +142,8 @@ async function removeMember(m: SiteMember) {
                   {{ m.role }}
                 </span>
               </td>
-              <td class="py-2.5 pr-4"><StatusBadge :status="m.status" size="sm" /></td>
-              <td class="py-2.5 text-right">
+              <td class="px-4 py-2.5"><StatusBadge :status="m.status" size="sm" /></td>
+              <td class="px-5 py-2.5 text-right">
                 <button
                   v-if="m.role === 'SITE_MEMBER' || auth.isPlatformAdmin"
                   type="button"
@@ -142,11 +155,25 @@ async function removeMember(m: SiteMember) {
               </td>
             </tr>
             <tr v-if="members.length === 0">
-              <td colspan="4" class="py-6 text-center text-slate-500">No members assigned yet.</td>
+              <td colspan="4" class="px-5 py-6 text-center text-slate-500">No members assigned yet.</td>
             </tr>
           </tbody>
         </table>
       </div>
+      <TablePagination
+        v-model:page="memberPag.page.value"
+        v-model:page-size="memberPag.pageSize.value"
+        :total-items="memberPag.totalItems.value"
+      />
     </section>
+
+    <DeleteConfirmModal
+      :open="Boolean(memberToRemove)"
+      title="Remove Site Member"
+      :item-name="memberToRemove?.email || ''"
+      description="This user will lose access to this site immediately."
+      @close="memberToRemove = null"
+      @confirm="confirmRemoveMember"
+    />
   </div>
 </template>

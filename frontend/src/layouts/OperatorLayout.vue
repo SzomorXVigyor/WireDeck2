@@ -10,6 +10,7 @@ import {
   Settings,
   Shield,
   Sliders,
+  SlidersHorizontal,
   User as UserIcon,
   LineChart,
 } from 'lucide-vue-next'
@@ -111,6 +112,14 @@ function dotColor(status: string) {
           >
             <UserIcon class="h-4 w-4" />
             Profile & Password
+          </RouterLink>
+          <RouterLink
+            to="/preferences"
+            class="mt-1 flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-slate-300 hover:bg-slate-800/70 hover:text-white"
+            active-class="bg-sky-500/15 text-sky-300 font-medium"
+          >
+            <SlidersHorizontal class="h-4 w-4" />
+            Preferences
           </RouterLink>
         </div>
       </div>

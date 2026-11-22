@@ -7,12 +7,16 @@ import type { VncSession, VncTarget } from '../../types/vnc'
 import StatusBadge from '../../components/StatusBadge.vue'
 import NumericTextInput from '../../components/NumericTextInput.vue'
 import DeleteConfirmModal from '../../components/DeleteConfirmModal.vue'
+import TablePagination from '../../components/TablePagination.vue'
+import { usePagination } from '../../composables/usePagination'
 
 const route = useRoute()
 const siteId = computed(() => String(route.params.siteId || ''))
 
 const targets = ref<VncTarget[]>([])
 const sessions = ref<VncSession[]>([])
+const targetPag = usePagination(targets)
+const sessionPag = usePagination(sessions)
 const errMsg = ref<string | null>(null)
 const okMsg = ref<string | null>(null)
 
@@ -155,88 +159,102 @@ function formatBytes(n: number): string {
     <p v-if="okMsg" class="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-200">{{ okMsg }}</p>
 
     <!-- Targets Table -->
-    <section class="overflow-x-auto rounded-xl border border-slate-800 bg-slate-900/60">
-      <table class="w-full text-left text-xs">
-        <thead class="border-b border-slate-800 text-slate-400">
-          <tr>
-            <th class="px-4 py-3">Name</th>
-            <th class="px-4 py-3">Endpoint</th>
-            <th class="px-4 py-3">Auth</th>
-            <th class="px-4 py-3">Status</th>
-            <th class="px-4 py-3 text-right">Actions</th>
-          </tr>
-        </thead>
-        <tbody class="divide-y divide-slate-800/70">
-          <tr v-for="t in targets" :key="t.id" class="hover:bg-slate-800/30">
-            <td class="px-4 py-3 font-medium text-white">
-              <span class="inline-flex items-center gap-2">
-                <Monitor class="h-3.5 w-3.5 text-emerald-400" />
-                {{ t.name }}
-              </span>
-            </td>
-            <td class="px-4 py-3 font-mono text-slate-300">{{ t.host }}:{{ t.port }}</td>
-            <td class="px-4 py-3">
-              <span
-                v-if="t.hasPassword"
-                class="inline-flex items-center gap-1 rounded bg-emerald-500/15 px-2 py-0.5 text-[11px] text-emerald-300"
-              >
-                <KeyRound class="h-3 w-3" /> Server-side password set
-              </span>
-              <span v-else class="text-slate-500">No password</span>
-            </td>
-            <td class="px-4 py-3"><StatusBadge :status="t.isActive ? 'ACTIVE' : 'DISABLED'" size="sm" /></td>
-            <td class="px-4 py-3 text-right space-x-1.5">
-              <button
-                type="button"
-                class="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-slate-200 hover:bg-slate-700"
-                @click="openEdit(t)"
-              >
-                <Edit3 class="h-3 w-3" /> Edit
-              </button>
-              <button
-                type="button"
-                class="inline-flex items-center rounded border border-rose-500/30 bg-rose-500/10 p-1 text-rose-300 hover:bg-rose-500/20"
-                @click="removeTarget(t)"
-              >
-                <Trash2 class="h-3.5 w-3.5" />
-              </button>
-            </td>
-          </tr>
-          <tr v-if="targets.length === 0">
-            <td colspan="5" class="px-4 py-8 text-center text-slate-500">No VNC edge points configured yet.</td>
-          </tr>
-        </tbody>
-      </table>
-    </section>
-
-    <!-- Session Visibility Table -->
-    <section class="rounded-xl border border-slate-800 bg-slate-900/60 p-5">
-      <h3 class="text-sm font-semibold text-white">Recent VNC Sessions</h3>
-      <div class="mt-3 overflow-x-auto">
+    <section class="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60">
+      <div class="overflow-x-auto">
         <table class="w-full text-left text-xs">
           <thead class="border-b border-slate-800 text-slate-400">
             <tr>
-              <th class="py-2 pr-4">Target</th>
-              <th class="py-2 pr-4">Started</th>
-              <th class="py-2 pr-4">Ended</th>
-              <th class="py-2 pr-4">Traffic (In / Out)</th>
-              <th class="py-2">Close Reason</th>
+              <th class="px-4 py-3">Name</th>
+              <th class="px-4 py-3">Endpoint</th>
+              <th class="px-4 py-3">Auth</th>
+              <th class="px-4 py-3">Status</th>
+              <th class="px-4 py-3 text-right">Actions</th>
             </tr>
           </thead>
           <tbody class="divide-y divide-slate-800/70">
-            <tr v-for="s in sessions" :key="s.id">
-              <td class="py-2 pr-4 text-slate-200">{{ s.targetName || s.targetId }}</td>
-              <td class="py-2 pr-4 font-mono text-slate-400">{{ new Date(s.startedAt).toLocaleString() }}</td>
-              <td class="py-2 pr-4 font-mono text-slate-400">{{ s.endedAt ? new Date(s.endedAt).toLocaleString() : 'OPEN' }}</td>
-              <td class="py-2 pr-4 font-mono text-slate-300">{{ formatBytes(s.bytesIn) }} / {{ formatBytes(s.bytesOut) }}</td>
-              <td class="py-2 font-mono text-slate-400">{{ s.closeReason || '-' }}</td>
+            <tr v-for="t in targetPag.paginatedItems.value" :key="t.id" class="hover:bg-slate-800/30">
+              <td class="px-4 py-3 font-medium text-white">
+                <span class="inline-flex items-center gap-2">
+                  <Monitor class="h-3.5 w-3.5 text-emerald-400" />
+                  {{ t.name }}
+                </span>
+              </td>
+              <td class="px-4 py-3 font-mono text-slate-300">{{ t.host }}:{{ t.port }}</td>
+              <td class="px-4 py-3">
+                <span
+                  v-if="t.hasPassword"
+                  class="inline-flex items-center gap-1 rounded bg-emerald-500/15 px-2 py-0.5 text-[11px] text-emerald-300"
+                >
+                  <KeyRound class="h-3 w-3" /> Server-side password set
+                </span>
+                <span v-else class="text-slate-500">No password</span>
+              </td>
+              <td class="px-4 py-3"><StatusBadge :status="t.isActive ? 'ACTIVE' : 'DISABLED'" size="sm" /></td>
+              <td class="px-4 py-3 text-right space-x-1.5">
+                <button
+                  type="button"
+                  class="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-slate-200 hover:bg-slate-700"
+                  @click="openEdit(t)"
+                >
+                  <Edit3 class="h-3 w-3" /> Edit
+                </button>
+                <button
+                  type="button"
+                  class="inline-flex items-center rounded border border-rose-500/30 bg-rose-500/10 p-1 text-rose-300 hover:bg-rose-500/20"
+                  @click="removeTarget(t)"
+                >
+                  <Trash2 class="h-3.5 w-3.5" />
+                </button>
+              </td>
             </tr>
-            <tr v-if="sessions.length === 0">
-              <td colspan="5" class="py-4 text-center text-slate-500">No sessions recorded yet.</td>
+            <tr v-if="targets.length === 0">
+              <td colspan="5" class="px-4 py-8 text-center text-slate-500">No VNC edge points configured yet.</td>
             </tr>
           </tbody>
         </table>
       </div>
+      <TablePagination
+        v-model:page="targetPag.page.value"
+        v-model:page-size="targetPag.pageSize.value"
+        :total-items="targetPag.totalItems.value"
+      />
+    </section>
+
+    <!-- Session Visibility Table -->
+    <section class="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60">
+      <div class="px-5 pt-5 pb-3">
+        <h3 class="text-sm font-semibold text-white">Recent VNC Sessions</h3>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-left text-xs">
+          <thead class="border-b border-slate-800 text-slate-400">
+            <tr>
+              <th class="px-5 py-2.5">Target</th>
+              <th class="px-4 py-2.5">Started</th>
+              <th class="px-4 py-2.5">Ended</th>
+              <th class="px-4 py-2.5">Traffic (In / Out)</th>
+              <th class="px-5 py-2.5">Close Reason</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-800/70">
+            <tr v-for="s in sessionPag.paginatedItems.value" :key="s.id" class="hover:bg-slate-800/30">
+              <td class="px-5 py-2.5 text-slate-200">{{ s.targetName || s.targetId }}</td>
+              <td class="px-4 py-2.5 font-mono text-slate-400">{{ new Date(s.startedAt).toLocaleString() }}</td>
+              <td class="px-4 py-2.5 font-mono text-slate-400">{{ s.endedAt ? new Date(s.endedAt).toLocaleString() : 'OPEN' }}</td>
+              <td class="px-4 py-2.5 font-mono text-slate-300">{{ formatBytes(s.bytesIn) }} / {{ formatBytes(s.bytesOut) }}</td>
+              <td class="px-5 py-2.5 font-mono text-slate-400">{{ s.closeReason || '-' }}</td>
+            </tr>
+            <tr v-if="sessions.length === 0">
+              <td colspan="5" class="px-5 py-6 text-center text-slate-500">No sessions recorded yet.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <TablePagination
+        v-model:page="sessionPag.page.value"
+        v-model:page-size="sessionPag.pageSize.value"
+        :total-items="sessionPag.totalItems.value"
+      />
     </section>
 
     <!-- Create / Edit Target Modal -->

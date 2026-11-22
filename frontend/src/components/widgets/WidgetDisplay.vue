@@ -47,19 +47,12 @@ const sizeClass = computed(() => fontSizeMap[(props.widget.style?.fontSize as Fo
       </span>
     </div>
 
-    <div class="my-3 flex items-baseline gap-1">
+    <div class="mt-3 mb-1 flex items-baseline gap-1">
       <span v-if="prefix" :class="sizeClass" class="font-bold leading-none text-slate-300">{{ prefix }}</span>
       <span :class="sizeClass" class="font-mono font-bold tabular-nums leading-none tracking-tight text-white">
         {{ formatted }}
       </span>
       <span v-if="unit" :class="sizeClass" class="ml-0.5 font-bold leading-none text-slate-300">{{ unit }}</span>
-    </div>
-
-    <div class="flex items-center justify-between text-[10px] text-slate-500">
-      <span class="truncate font-mono">{{ mapping ? mapping.name : 'Unbound' }}</span>
-      <span v-if="sample?.timestamp" class="shrink-0">
-        {{ new Date(sample.timestamp).toLocaleTimeString() }}
-      </span>
     </div>
   </div>
 </template>

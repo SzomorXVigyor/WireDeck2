@@ -12,6 +12,7 @@ import OperatorLayout from '../layouts/OperatorLayout.vue'
 import HomeRedirectView from '../modules/operator/HomeRedirectView.vue'
 import SiteOverviewView from '../modules/operator/SiteOverviewView.vue'
 import ProfileView from '../modules/operator/ProfileView.vue'
+import PreferencesView from '../modules/operator/PreferencesView.vue'
 import FeaturePlaceholderView from '../modules/operator/FeaturePlaceholderView.vue'
 
 const router = createRouter({
@@ -32,6 +33,8 @@ const router = createRouter({
       children: [
         { path: '', name: 'home', component: HomeRedirectView },
         { path: 'profile', name: 'profile', component: ProfileView },
+        { path: 'preferences', name: 'preferences', component: PreferencesView },
+        { path: 'profile/preferences', redirect: '/preferences' },
         {
           path: 'alarms',
           name: 'global-alarms',

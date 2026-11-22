@@ -5,6 +5,9 @@ import { ApiError, apiRequest } from '../../services/api'
 import type { Site, SiteMember, SiteRole, User } from '../../types/iam'
 import StatusBadge from '../../components/StatusBadge.vue'
 import WireguardConfEditor from '../../components/WireguardConfEditor.vue'
+import DeleteConfirmModal from '../../components/DeleteConfirmModal.vue'
+import TablePagination from '../../components/TablePagination.vue'
+import { usePagination } from '../../composables/usePagination'
 
 type ServiceKey = 'webviewEnabled' | 'vncEnabled'
 
@@ -32,9 +35,11 @@ const PLATFORM_SERVICES: PlatformServiceDef[] = [
 ]
 
 const sites = ref<Site[]>([])
+const sitesPag = usePagination(sites)
 const users = ref<User[]>([])
 const loading = ref(false)
 const errBanner = ref<string | null>(null)
+const siteToDelete = ref<Site | null>(null)
 
 // Create Site modal state
 const showCreate = ref(false)
@@ -70,6 +75,7 @@ const savingEdit = ref(false)
 // Membership modal state
 const memberSite = ref<Site | null>(null)
 const siteMembers = ref<SiteMember[]>([])
+const siteMembersPag = usePagination(siteMembers)
 const assignUserId = ref('')
 const assignRole = ref<SiteRole>('SITE_MEMBER')
 
@@ -238,8 +244,14 @@ async function toggleActive(site: Site) {
   }
 }
 
-async function deleteSite(site: Site) {
-  if (!window.confirm(`Delete site "${site.name}" and remove its runner container?`)) return
+function deleteSite(site: Site) {
+  siteToDelete.value = site
+}
+
+async function confirmDeleteSite() {
+  const site = siteToDelete.value
+  siteToDelete.value = null
+  if (!site) return
   errBanner.value = null
   try {
     await apiRequest(`/api/v1/iam/admin/sites/${site.id}`, { method: 'DELETE' })
@@ -251,6 +263,7 @@ async function deleteSite(site: Site) {
 
 async function openMembers(site: Site) {
   memberSite.value = site
+  siteMembersPag.resetPage()
   const res = await apiRequest<{ members: SiteMember[] }>(`/api/v1/iam/admin/sites/${site.id}/members`)
   siteMembers.value = res.members || []
 }
@@ -294,76 +307,83 @@ async function removeMember(userId: string) {
 
     <p v-if="errBanner" class="rounded-lg border border-rose-500/40 bg-rose-500/10 p-3 text-xs text-rose-200">{{ errBanner }}</p>
 
-    <div class="overflow-x-auto rounded-xl border border-slate-800 bg-slate-900/60">
-      <table class="w-full text-left text-xs">
-        <thead class="border-b border-slate-800 text-slate-400">
-          <tr>
-            <th class="px-4 py-3">Site</th>
-            <th class="px-4 py-3">Endpoint & Subnets</th>
-            <th class="px-4 py-3">Status</th>
-            <th class="px-4 py-3">Attached Services</th>
-            <th class="px-4 py-3 text-right">Actions</th>
-          </tr>
-        </thead>
-        <tbody class="divide-y divide-slate-800/70">
-          <tr v-for="s in sites" :key="s.id" class="hover:bg-slate-800/30">
-            <td class="px-4 py-3">
-              <p class="font-medium text-white">{{ s.name }}</p>
-              <p class="font-mono text-[11px] text-slate-500">{{ s.slug }}</p>
-            </td>
-            <td class="px-4 py-3 font-mono text-[11px] text-slate-300">
-              <p v-if="s.wireguard">{{ s.wireguard.endpointHost }}:{{ s.wireguard.endpointPort }}</p>
-              <p v-if="s.wireguard" class="text-slate-500">{{ s.wireguard.lanSubnets.join(', ') }}</p>
-            </td>
-            <td class="px-4 py-3 space-y-1">
-              <StatusBadge :status="s.status" size="sm" />
-              <p class="font-mono text-[10px] text-slate-500">{{ s.isActive ? 'ACTIVE' : 'STOPPED' }} · {{ s.handshakeState }}</p>
-            </td>
-            <td class="px-4 py-3 text-[11px]">
-              <template v-for="svc in PLATFORM_SERVICES" :key="svc.key">
-                <span v-if="s[svc.key]" class="mr-1.5 rounded px-1.5 py-0.5" :class="svc.badgeClass">
-                  {{ svc.name }}
-                </span>
-              </template>
-              <span v-if="!PLATFORM_SERVICES.some((svc) => s[svc.key])" class="text-slate-500">None</span>
-            </td>
-            <td class="px-4 py-3 text-right space-x-1.5">
-              <button
-                type="button"
-                class="inline-flex items-center gap-1 rounded border border-indigo-500/40 bg-indigo-500/15 px-2 py-1 text-[11px] text-indigo-200 hover:bg-indigo-500/25"
-                @click="openEditSite(s)"
-              >
-                <Settings class="h-3 w-3" /> Services / WG
-              </button>
-              <button
-                type="button"
-                class="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-slate-200 hover:bg-slate-700"
-                @click="openMembers(s)"
-              >
-                <Users class="h-3 w-3" /> Members
-              </button>
-              <button
-                type="button"
-                class="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-slate-200 hover:bg-slate-700"
-                @click="toggleActive(s)"
-              >
-                <Power class="h-3 w-3" /> {{ s.isActive ? 'Deactivate' : 'Activate' }}
-              </button>
-              <button
-                type="button"
-                class="inline-flex items-center rounded border border-rose-500/30 bg-rose-500/10 p-1 text-rose-300 hover:bg-rose-500/20"
-                title="Delete site"
-                @click="deleteSite(s)"
-              >
-                <Trash2 class="h-3.5 w-3.5" />
-              </button>
-            </td>
-          </tr>
-          <tr v-if="!loading && sites.length === 0">
-            <td colspan="5" class="px-4 py-8 text-center text-slate-500">No sites onboarded yet.</td>
-          </tr>
-        </tbody>
-      </table>
+    <div class="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60">
+      <div class="overflow-x-auto">
+        <table class="w-full text-left text-xs">
+          <thead class="border-b border-slate-800 text-slate-400">
+            <tr>
+              <th class="px-4 py-3">Site</th>
+              <th class="px-4 py-3">Endpoint & Subnets</th>
+              <th class="px-4 py-3">Status</th>
+              <th class="px-4 py-3">Attached Services</th>
+              <th class="px-4 py-3 text-right">Actions</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-800/70">
+            <tr v-for="s in sitesPag.paginatedItems.value" :key="s.id" class="hover:bg-slate-800/30">
+              <td class="px-4 py-3">
+                <p class="font-medium text-white">{{ s.name }}</p>
+                <p class="font-mono text-[11px] text-slate-500">{{ s.slug }}</p>
+              </td>
+              <td class="px-4 py-3 font-mono text-[11px] text-slate-300">
+                <p v-if="s.wireguard">{{ s.wireguard.endpointHost }}:{{ s.wireguard.endpointPort }}</p>
+                <p v-if="s.wireguard" class="text-slate-500">{{ s.wireguard.lanSubnets.join(', ') }}</p>
+              </td>
+              <td class="px-4 py-3 space-y-1">
+                <StatusBadge :status="s.status" size="sm" />
+                <p class="font-mono text-[10px] text-slate-500">{{ s.isActive ? 'ACTIVE' : 'STOPPED' }} · {{ s.handshakeState }}</p>
+              </td>
+              <td class="px-4 py-3 text-[11px]">
+                <template v-for="svc in PLATFORM_SERVICES" :key="svc.key">
+                  <span v-if="s[svc.key]" class="mr-1.5 rounded px-1.5 py-0.5" :class="svc.badgeClass">
+                    {{ svc.name }}
+                  </span>
+                </template>
+                <span v-if="!PLATFORM_SERVICES.some((svc) => s[svc.key])" class="text-slate-500">None</span>
+              </td>
+              <td class="px-4 py-3 text-right space-x-1.5">
+                <button
+                  type="button"
+                  class="inline-flex items-center gap-1 rounded border border-indigo-500/40 bg-indigo-500/15 px-2 py-1 text-[11px] text-indigo-200 hover:bg-indigo-500/25"
+                  @click="openEditSite(s)"
+                >
+                  <Settings class="h-3 w-3" /> Services / WG
+                </button>
+                <button
+                  type="button"
+                  class="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-slate-200 hover:bg-slate-700"
+                  @click="openMembers(s)"
+                >
+                  <Users class="h-3 w-3" /> Members
+                </button>
+                <button
+                  type="button"
+                  class="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-slate-200 hover:bg-slate-700"
+                  @click="toggleActive(s)"
+                >
+                  <Power class="h-3 w-3" /> {{ s.isActive ? 'Deactivate' : 'Activate' }}
+                </button>
+                <button
+                  type="button"
+                  class="inline-flex items-center rounded border border-rose-500/30 bg-rose-500/10 p-1 text-rose-300 hover:bg-rose-500/20"
+                  title="Delete site"
+                  @click="deleteSite(s)"
+                >
+                  <Trash2 class="h-3.5 w-3.5" />
+                </button>
+              </td>
+            </tr>
+            <tr v-if="!loading && sites.length === 0">
+              <td colspan="5" class="px-4 py-8 text-center text-slate-500">No sites onboarded yet.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <TablePagination
+        v-model:page="sitesPag.page.value"
+        v-model:page-size="sitesPag.pageSize.value"
+        :total-items="sitesPag.totalItems.value"
+      />
     </div>
 
     <!-- Create Site Modal -->
@@ -533,17 +553,34 @@ async function removeMember(userId: string) {
           <button type="submit" class="rounded-lg bg-indigo-500 px-3 py-2 text-xs font-medium text-white">Assign</button>
         </form>
 
-        <div class="divide-y divide-slate-800 text-xs">
-          <div v-for="m in siteMembers" :key="m.userId" class="flex items-center justify-between py-2">
-            <div>
-              <p class="font-mono text-slate-200">{{ m.email }}</p>
-              <p class="text-[11px] text-slate-400">{{ m.role }}</p>
+        <div class="overflow-hidden rounded-lg border border-slate-800">
+          <div class="divide-y divide-slate-800 px-3 text-xs">
+            <div v-for="m in siteMembersPag.paginatedItems.value" :key="m.userId" class="flex items-center justify-between py-2">
+              <div>
+                <p class="font-mono text-slate-200">{{ m.email }}</p>
+                <p class="text-[11px] text-slate-400">{{ m.role }}</p>
+              </div>
+              <button type="button" class="text-rose-400 hover:underline" @click="removeMember(m.userId)">Remove</button>
             </div>
-            <button type="button" class="text-rose-400 hover:underline" @click="removeMember(m.userId)">Remove</button>
+            <p v-if="siteMembers.length === 0" class="py-3 text-center text-slate-500">No members assigned.</p>
           </div>
-          <p v-if="siteMembers.length === 0" class="py-3 text-center text-slate-500">No members assigned.</p>
+          <TablePagination
+            v-model:page="siteMembersPag.page.value"
+            v-model:page-size="siteMembersPag.pageSize.value"
+            :total-items="siteMembersPag.totalItems.value"
+            compact
+          />
         </div>
       </div>
     </div>
+
+    <DeleteConfirmModal
+      :open="Boolean(siteToDelete)"
+      title="Delete Site"
+      :item-name="siteToDelete?.name || ''"
+      description="This site, its runner container, and all downstream VNC and WebView data will be permanently deleted."
+      @close="siteToDelete = null"
+      @confirm="confirmDeleteSite"
+    />
   </div>
 </template>

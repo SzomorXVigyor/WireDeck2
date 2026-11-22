@@ -62,7 +62,7 @@ function toggle() {
       </span>
     </div>
 
-    <div class="my-4 flex items-center justify-between gap-3">
+    <div class="mt-3 mb-1 flex items-center justify-between gap-3">
       <span class="text-sm font-semibold" :class="isOn ? 'text-white' : 'text-slate-400'">
         {{ isOn ? onLabel : offLabel }}
       </span>
@@ -81,9 +81,5 @@ function toggle() {
         />
       </button>
     </div>
-
-    <p class="truncate text-[10px] text-slate-500">
-      {{ writable ? (mapping?.name || '') : 'Read-only access' }}
-    </p>
   </div>
 </template>

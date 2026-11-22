@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref } from 'vue'
-import { Zap } from 'lucide-vue-next'
 import type { ColorOption, RegisterMapping, TelemetrySample, WebviewWidget } from '../../types/webview'
 
 const props = defineProps<{
@@ -57,7 +56,7 @@ onUnmounted(() => {
       </span>
     </div>
 
-    <div class="my-3">
+    <div class="mt-3 mb-1">
       <button
         type="button"
         :disabled="!writable || pulsing"
@@ -65,13 +64,8 @@ onUnmounted(() => {
         :class="btnColorMap[color] || btnColorMap.sky"
         @click="trigger"
       >
-        <Zap class="h-3.5 w-3.5" />
         {{ pulsing ? 'Triggered...' : label }}
       </button>
     </div>
-
-    <p class="truncate text-[10px] text-slate-500">
-      {{ writable ? (mapping?.name || '') : 'Read-only access' }}
-    </p>
   </div>
 </template>

@@ -69,7 +69,7 @@ function handleSubmit(rawValue: number) {
     </div>
 
     <!-- Same visual layout as Display card + edit pencil affordance -->
-    <div class="my-3 flex items-baseline justify-between gap-2">
+    <div class="mt-3 mb-1 flex items-baseline justify-between gap-2">
       <div class="flex min-w-0 items-baseline gap-1">
         <span v-if="prefix" :class="sizeClass" class="shrink-0 font-bold leading-none text-slate-300">{{ prefix }}</span>
         <span :class="sizeClass" class="truncate font-mono font-bold tabular-nums leading-none tracking-tight text-white">
@@ -87,13 +87,6 @@ function handleSubmit(rawValue: number) {
       >
         <Pencil class="h-4 w-4" />
       </button>
-    </div>
-
-    <div class="flex items-center justify-between text-[10px] text-slate-500">
-      <span class="truncate font-mono">{{ writable ? (mapping?.name || '') : 'Read-only access' }}</span>
-      <span v-if="sample?.timestamp" class="shrink-0">
-        {{ new Date(sample.timestamp).toLocaleTimeString() }}
-      </span>
     </div>
 
     <NumberInputModal

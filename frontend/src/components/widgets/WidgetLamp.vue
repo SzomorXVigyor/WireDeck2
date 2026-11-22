@@ -78,15 +78,11 @@ const dotClass = computed(() => {
       </span>
     </div>
 
-    <div class="my-4 flex items-center gap-3">
+    <div class="mt-3 mb-1 flex items-center gap-3">
       <div class="h-7 w-7 shrink-0 rounded-full border-2 transition" :class="dotClass" />
       <span class="truncate text-base font-semibold tracking-tight text-white">
         {{ sample ? activeState.text : 'No data' }}
       </span>
     </div>
-
-    <p class="truncate font-mono text-[10px] text-slate-500">
-      {{ mapping ? mapping.name : 'Unbound' }}
-    </p>
   </div>
 </template>

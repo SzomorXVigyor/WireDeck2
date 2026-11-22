@@ -10,6 +10,7 @@ import {
   LayoutGrid,
   Play,
   Plus,
+  ShieldCheck,
   Sliders,
   Trash2,
   X,
@@ -41,12 +42,14 @@ import StatusBadge from '../../components/StatusBadge.vue'
 import DeleteConfirmModal from '../../components/DeleteConfirmModal.vue'
 import NumericTextInput from '../../components/NumericTextInput.vue'
 import RegisterPicker from '../../components/RegisterPicker.vue'
+import TablePagination from '../../components/TablePagination.vue'
+import { usePagination } from '../../composables/usePagination'
 
 const route = useRoute()
 const siteId = computed(() => String(route.params.siteId || ''))
 const webviewStore = useWebviewStore()
 
-type TabKey = 'devices' | 'mappings' | 'dashboards' | 'history'
+type TabKey = 'devices' | 'mappings' | 'dashboards' | 'history' | 'policies'
 const activeTab = ref<TabKey>('devices')
 
 const devices = ref<WebviewDevice[]>([])
@@ -272,10 +275,56 @@ function openEditWidget(w: WebviewWidget) {
   widgetModalOpen.value = true
 }
 
-// --- History Entry Form ---
+// --- History Entry Create / Edit Modal ---
+const histModalOpen = ref(false)
+const editingHistId = ref<string | null>(null)
 const histMappingId = ref('')
 const histPollSec = ref(60)
 const histRetentionDays = ref(30)
+const histActive = ref(true)
+
+const POLL_INTERVAL_LABELS: Record<number, string> = {
+  10: '10s',
+  30: '30s',
+  60: '1 min',
+  300: '5 min',
+  900: '15 min',
+  3600: '1 hour',
+}
+
+const RETENTION_LABELS: Record<number, string> = {
+  1: '1 day',
+  7: '7 days',
+  30: '30 days',
+  90: '90 days',
+  365: '1 year',
+}
+
+function formatPollInterval(sec: number): string {
+  return POLL_INTERVAL_LABELS[sec] || `${sec}s`
+}
+
+function formatRetention(days: number): string {
+  return RETENTION_LABELS[days] || `${days} days`
+}
+
+function openCreateHistoryEntry() {
+  editingHistId.value = null
+  histMappingId.value = availableHistoryMappings.value[0]?.id || ''
+  histPollSec.value = 60
+  histRetentionDays.value = 30
+  histActive.value = true
+  histModalOpen.value = true
+}
+
+function openEditHistoryEntry(he: HistoryEntry) {
+  editingHistId.value = he.id
+  histMappingId.value = he.registerMappingId
+  histPollSec.value = he.pollIntervalSeconds
+  histRetentionDays.value = he.retentionDays
+  histActive.value = he.isActive
+  histModalOpen.value = true
+}
 
 const selectedDash = computed(() => dashboards.value.find((d) => d.id === selectedDashId.value) ?? dashboards.value[0] ?? null)
 const deviceMap = computed<Record<string, WebviewDevice>>(() => {
@@ -297,6 +346,18 @@ const siteMembersOnly = computed(() => members.value.filter((m) => m.role === 'S
 const availableHistoryMappings = computed(() => {
   const used = new Set(historyEntries.value.map((e) => e.registerMappingId))
   return mappings.value.filter((m) => !used.has(m.id))
+})
+
+// Pagination for every list/table (25, 50, 100)
+const devicesPag = usePagination(devices)
+const mappingsPag = usePagination(mappings)
+const dashboardsPag = usePagination(dashboards)
+const widgetsPag = usePagination(() => selectedDash.value?.widgets ?? [])
+const historyPag = usePagination(historyEntries)
+const policiesPag = usePagination(siteMembersOnly)
+
+watch(selectedDashId, () => {
+  widgetsPag.resetPage()
 })
 
 function registerKeyLabel(m: RegisterMapping): string {
@@ -629,37 +690,36 @@ function confirmDeleteWidget(w: WebviewWidget) {
 }
 
 // --- History Entry Actions ---
-async function addHistoryEntry() {
-  if (!histMappingId.value) return
+async function saveHistoryEntry() {
   errMsg.value = null
   okMsg.value = null
   try {
-    await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/history-entries`, {
-      method: 'POST',
-      body: JSON.stringify({
-        registerMappingId: histMappingId.value,
-        pollIntervalSeconds: Number(histPollSec.value),
-        retentionDays: Number(histRetentionDays.value),
-      }),
-    })
-    okMsg.value = 'Added register to history archival.'
-    histMappingId.value = ''
+    if (editingHistId.value) {
+      await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/history-entries/${editingHistId.value}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          pollIntervalSeconds: Number(histPollSec.value),
+          retentionDays: Number(histRetentionDays.value),
+          isActive: histActive.value,
+        }),
+      })
+      okMsg.value = 'Updated history archival key.'
+    } else {
+      if (!histMappingId.value) return
+      await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/history-entries`, {
+        method: 'POST',
+        body: JSON.stringify({
+          registerMappingId: histMappingId.value,
+          pollIntervalSeconds: Number(histPollSec.value),
+          retentionDays: Number(histRetentionDays.value),
+        }),
+      })
+      okMsg.value = 'Added register to history archival.'
+    }
+    histModalOpen.value = false
     await loadAll()
   } catch (err) {
-    errMsg.value = err instanceof Error ? err.message : 'Failed to add history entry'
-  }
-}
-
-async function updateHistoryEntry(he: HistoryEntry, patch: { pollIntervalSeconds?: number; retentionDays?: number; isActive?: boolean }) {
-  errMsg.value = null
-  try {
-    await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/history-entries/${he.id}`, {
-      method: 'PATCH',
-      body: JSON.stringify(patch),
-    })
-    await loadAll()
-  } catch (err) {
-    errMsg.value = err instanceof Error ? err.message : 'Failed to update history entry'
+    errMsg.value = err instanceof Error ? err.message : 'Failed to save history entry'
   }
 }
 
@@ -733,7 +793,15 @@ async function toggleMemberWrite(member: SiteMember, canWrite: boolean) {
         :class="activeTab === 'history' ? 'bg-amber-500/20 text-amber-200' : 'text-slate-400 hover:bg-slate-800 hover:text-white'"
         @click="activeTab = 'history'"
       >
-        <Database class="h-3.5 w-3.5" /> History & Member Policies ({{ historyEntries.length }})
+        <Database class="h-3.5 w-3.5" /> History ({{ historyEntries.length }})
+      </button>
+      <button
+        type="button"
+        class="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium"
+        :class="activeTab === 'policies' ? 'bg-amber-500/20 text-amber-200' : 'text-slate-400 hover:bg-slate-800 hover:text-white'"
+        @click="activeTab = 'policies'"
+      >
+        <ShieldCheck class="h-3.5 w-3.5" /> Member Policies ({{ siteMembersOnly.length }})
       </button>
     </div>
 
@@ -752,45 +820,52 @@ async function toggleMemberWrite(member: SiteMember, canWrite: boolean) {
         </button>
       </div>
 
-      <div class="overflow-x-auto rounded-xl border border-slate-800 bg-slate-900/60">
-        <table class="w-full text-left text-xs">
-          <thead class="border-b border-slate-800 text-slate-400">
-            <tr>
-              <th class="px-4 py-3">Name</th>
-              <th class="px-4 py-3">Endpoint</th>
-              <th class="px-4 py-3">Protocol</th>
-              <th class="px-4 py-3">Status</th>
-              <th class="px-4 py-3 text-right">Actions</th>
-            </tr>
-          </thead>
-          <tbody class="divide-y divide-slate-800/70">
-            <tr v-for="d in devices" :key="d.id" class="hover:bg-slate-800/30">
-              <td class="px-4 py-3 font-medium text-white">{{ d.name }}</td>
-              <td class="px-4 py-3 font-mono text-slate-300">{{ d.host }}:{{ d.port }}</td>
-              <td class="px-4 py-3 font-mono text-slate-400">{{ d.protocol }}</td>
-              <td class="px-4 py-3"><StatusBadge :status="d.isActive ? 'ACTIVE' : 'DISABLED'" size="sm" /></td>
-              <td class="px-4 py-3 text-right space-x-1.5">
-                <button
-                  type="button"
-                  class="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-slate-200 hover:bg-slate-700"
-                  @click="openEditDevice(d)"
-                >
-                  <Edit3 class="h-3 w-3" /> Edit
-                </button>
-                <button
-                  type="button"
-                  class="inline-flex items-center rounded border border-rose-500/30 bg-rose-500/10 p-1 text-rose-300 hover:bg-rose-500/20"
-                  @click="confirmDeleteDevice(d)"
-                >
-                  <Trash2 class="h-3.5 w-3.5" />
-                </button>
-              </td>
-            </tr>
-            <tr v-if="devices.length === 0">
-              <td colspan="5" class="px-4 py-8 text-center text-slate-500">No devices configured yet.</td>
-            </tr>
-          </tbody>
-        </table>
+      <div class="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60">
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-xs">
+            <thead class="border-b border-slate-800 text-slate-400">
+              <tr>
+                <th class="px-4 py-3">Name</th>
+                <th class="px-4 py-3">Endpoint</th>
+                <th class="px-4 py-3">Protocol</th>
+                <th class="px-4 py-3">Status</th>
+                <th class="px-4 py-3 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-800/70">
+              <tr v-for="d in devicesPag.paginatedItems.value" :key="d.id" class="hover:bg-slate-800/30">
+                <td class="px-4 py-3 font-medium text-white">{{ d.name }}</td>
+                <td class="px-4 py-3 font-mono text-slate-300">{{ d.host }}:{{ d.port }}</td>
+                <td class="px-4 py-3 font-mono text-slate-400">{{ d.protocol }}</td>
+                <td class="px-4 py-3"><StatusBadge :status="d.isActive ? 'ACTIVE' : 'DISABLED'" size="sm" /></td>
+                <td class="px-4 py-3 text-right space-x-1.5">
+                  <button
+                    type="button"
+                    class="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-slate-200 hover:bg-slate-700"
+                    @click="openEditDevice(d)"
+                  >
+                    <Edit3 class="h-3 w-3" /> Edit
+                  </button>
+                  <button
+                    type="button"
+                    class="inline-flex items-center rounded border border-rose-500/30 bg-rose-500/10 p-1 text-rose-300 hover:bg-rose-500/20"
+                    @click="confirmDeleteDevice(d)"
+                  >
+                    <Trash2 class="h-3.5 w-3.5" />
+                  </button>
+                </td>
+              </tr>
+              <tr v-if="devices.length === 0">
+                <td colspan="5" class="px-4 py-8 text-center text-slate-500">No devices configured yet.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <TablePagination
+          v-model:page="devicesPag.page.value"
+          v-model:page-size="devicesPag.pageSize.value"
+          :total-items="devicesPag.totalItems.value"
+        />
       </div>
     </div>
 
@@ -807,314 +882,294 @@ async function toggleMemberWrite(member: SiteMember, canWrite: boolean) {
         </button>
       </div>
 
-      <div class="overflow-x-auto rounded-xl border border-slate-800 bg-slate-900/60">
-        <table class="w-full text-left text-xs">
-          <thead class="border-b border-slate-800 text-slate-400">
-            <tr>
-              <th class="px-4 py-3">Name</th>
-              <th class="px-4 py-3">Device</th>
-              <th class="px-4 py-3">Protocol Attributes</th>
-              <th class="px-4 py-3">Access</th>
-              <th class="px-4 py-3">Live Test</th>
-              <th class="px-4 py-3 text-right">Actions</th>
-            </tr>
-          </thead>
-          <tbody class="divide-y divide-slate-800/70">
-            <tr v-for="m in mappings" :key="m.id" class="hover:bg-slate-800/30">
-              <td class="px-4 py-3 font-medium text-white">{{ m.name }}</td>
-              <td class="px-4 py-3 text-slate-300">{{ deviceMap[m.deviceId]?.name || m.deviceId }}</td>
-              <td class="px-4 py-3 font-mono text-slate-300">
-                unit {{ m.protocolAttributes?.slaveAddress ?? 1 }} |
-                {{ m.protocolAttributes?.functionCode }} @ {{ m.protocolAttributes?.registerAddress }}
-                [{{ m.protocolAttributes?.dataType }}/{{ m.protocolAttributes?.wordOrder || 'BIG' }}]
-              </td>
-              <td class="px-4 py-3 font-mono text-slate-400">
-                {{ m.protocolAttributes?.accessMode === 'READ_WRITE' ? 'R/W' : 'R' }}
-              </td>
-              <td class="px-4 py-3 font-mono">
-                <span v-if="testResults[m.id]?.quality === 'GOOD'" class="text-emerald-300">
-                  {{ testResults[m.id].value }}
-                </span>
-                <span v-else-if="testResults[m.id]" class="text-rose-300" :title="testResults[m.id].error">
-                  BAD: {{ testResults[m.id].error }}
-                </span>
-                <span v-else class="text-slate-600">-</span>
-              </td>
-              <td class="px-4 py-3 text-right space-x-1.5">
-                <button
-                  type="button"
-                  :disabled="testingId === m.id"
-                  class="inline-flex items-center gap-1 rounded border border-sky-500/40 bg-sky-500/15 px-2 py-1 text-[11px] text-sky-200 hover:bg-sky-500/25 disabled:opacity-40"
-                  @click="testRead(m)"
-                >
-                  <Play class="h-3 w-3" /> {{ testingId === m.id ? 'Reading...' : 'Test' }}
-                </button>
-                <button
-                  type="button"
-                  class="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-slate-200 hover:bg-slate-700"
-                  @click="openEditRegister(m)"
-                >
-                  <Edit3 class="h-3 w-3" /> Edit
-                </button>
-                <button
-                  type="button"
-                  class="inline-flex items-center rounded border border-rose-500/30 bg-rose-500/10 p-1 text-rose-300 hover:bg-rose-500/20"
-                  @click="confirmDeleteRegister(m)"
-                >
-                  <Trash2 class="h-3.5 w-3.5" />
-                </button>
-              </td>
-            </tr>
-            <tr v-if="mappings.length === 0">
-              <td colspan="6" class="px-4 py-8 text-center text-slate-500">No registers configured yet.</td>
-            </tr>
-          </tbody>
-        </table>
+      <div class="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60">
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-xs">
+            <thead class="border-b border-slate-800 text-slate-400">
+              <tr>
+                <th class="px-4 py-3">Name</th>
+                <th class="px-4 py-3">Device</th>
+                <th class="px-4 py-3">Protocol Attributes</th>
+                <th class="px-4 py-3">Access</th>
+                <th class="px-4 py-3">Live Test</th>
+                <th class="px-4 py-3 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-800/70">
+              <tr v-for="m in mappingsPag.paginatedItems.value" :key="m.id" class="hover:bg-slate-800/30">
+                <td class="px-4 py-3 font-medium text-white">{{ m.name }}</td>
+                <td class="px-4 py-3 text-slate-300">{{ deviceMap[m.deviceId]?.name || m.deviceId }}</td>
+                <td class="px-4 py-3 font-mono text-slate-300">
+                  unit {{ m.protocolAttributes?.slaveAddress ?? 1 }} |
+                  {{ m.protocolAttributes?.functionCode }} @ {{ m.protocolAttributes?.registerAddress }}
+                  [{{ m.protocolAttributes?.dataType }}/{{ m.protocolAttributes?.wordOrder || 'BIG' }}]
+                </td>
+                <td class="px-4 py-3 font-mono text-slate-400">
+                  {{ m.protocolAttributes?.accessMode === 'READ_WRITE' ? 'R/W' : 'R' }}
+                </td>
+                <td class="px-4 py-3 font-mono">
+                  <span v-if="testResults[m.id]?.quality === 'GOOD'" class="text-emerald-300">
+                    {{ testResults[m.id].value }}
+                  </span>
+                  <span v-else-if="testResults[m.id]" class="text-rose-300" :title="testResults[m.id].error">
+                    BAD: {{ testResults[m.id].error }}
+                  </span>
+                  <span v-else class="text-slate-600">-</span>
+                </td>
+                <td class="px-4 py-3 text-right space-x-1.5">
+                  <button
+                    type="button"
+                    :disabled="testingId === m.id"
+                    class="inline-flex items-center gap-1 rounded border border-sky-500/40 bg-sky-500/15 px-2 py-1 text-[11px] text-sky-200 hover:bg-sky-500/25 disabled:opacity-40"
+                    @click="testRead(m)"
+                  >
+                    <Play class="h-3 w-3" /> {{ testingId === m.id ? 'Reading...' : 'Test' }}
+                  </button>
+                  <button
+                    type="button"
+                    class="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-slate-200 hover:bg-slate-700"
+                    @click="openEditRegister(m)"
+                  >
+                    <Edit3 class="h-3 w-3" /> Edit
+                  </button>
+                  <button
+                    type="button"
+                    class="inline-flex items-center rounded border border-rose-500/30 bg-rose-500/10 p-1 text-rose-300 hover:bg-rose-500/20"
+                    @click="confirmDeleteRegister(m)"
+                  >
+                    <Trash2 class="h-3.5 w-3.5" />
+                  </button>
+                </td>
+              </tr>
+              <tr v-if="mappings.length === 0">
+                <td colspan="6" class="px-4 py-8 text-center text-slate-500">No registers configured yet.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <TablePagination
+          v-model:page="mappingsPag.page.value"
+          v-model:page-size="mappingsPag.pageSize.value"
+          :total-items="mappingsPag.totalItems.value"
+        />
       </div>
     </div>
 
     <!-- TAB 3: DASHBOARDS & WIDGETS (Editable + Reorderable) -->
     <div v-if="activeTab === 'dashboards'" class="grid gap-6 lg:grid-cols-3">
       <!-- Dashboards List -->
-      <section class="space-y-3 rounded-xl border border-slate-800 bg-slate-900/60 p-4">
-        <div class="flex items-center justify-between">
-          <h3 class="text-sm font-semibold text-white">Dashboards</h3>
-          <button
-            type="button"
-            class="inline-flex items-center gap-1 rounded-lg bg-amber-500 px-2.5 py-1.5 text-xs font-semibold text-slate-950 hover:bg-amber-400"
-            @click="openCreateDashboard"
-          >
-            <Plus class="h-3.5 w-3.5" /> New
-          </button>
-        </div>
-
-        <div class="space-y-1.5">
-          <div
-            v-for="(d, idx) in dashboards"
-            :key="d.id"
-            class="flex items-center justify-between gap-2 rounded-lg border px-2.5 py-2 text-xs transition"
-            :class="selectedDash?.id === d.id ? 'border-amber-500/50 bg-amber-500/15' : 'border-slate-800 bg-slate-950/60'"
-          >
-            <button type="button" class="flex-1 truncate text-left font-medium text-white" @click="selectedDashId = d.id">
-              {{ d.name }}
-              <span class="ml-1 text-[10px] text-slate-400">({{ d.widgets.length }})</span>
+      <section class="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60">
+        <div class="space-y-3 p-4">
+          <div class="flex items-center justify-between">
+            <h3 class="text-sm font-semibold text-white">Dashboards</h3>
+            <button
+              type="button"
+              class="inline-flex items-center gap-1 rounded-lg bg-amber-500 px-2.5 py-1.5 text-xs font-semibold text-slate-950 hover:bg-amber-400"
+              @click="openCreateDashboard"
+            >
+              <Plus class="h-3.5 w-3.5" /> New
             </button>
-
-            <div class="flex items-center gap-1">
-              <button
-                type="button"
-                :disabled="idx === 0"
-                title="Move up"
-                class="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-white disabled:opacity-30"
-                @click="moveDashboard(idx, -1)"
-              >
-                <ArrowUp class="h-3.5 w-3.5" />
-              </button>
-              <button
-                type="button"
-                :disabled="idx === dashboards.length - 1"
-                title="Move down"
-                class="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-white disabled:opacity-30"
-                @click="moveDashboard(idx, 1)"
-              >
-                <ArrowDown class="h-3.5 w-3.5" />
-              </button>
-              <button
-                type="button"
-                title="Edit dashboard"
-                class="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-white"
-                @click="openEditDashboard(d)"
-              >
-                <Edit3 class="h-3.5 w-3.5" />
-              </button>
-              <button
-                type="button"
-                title="Delete dashboard"
-                class="rounded p-1 text-rose-400 hover:bg-rose-500/15"
-                @click="confirmDeleteDashboard(d)"
-              >
-                <Trash2 class="h-3.5 w-3.5" />
-              </button>
-            </div>
           </div>
-          <p v-if="dashboards.length === 0" class="py-6 text-center text-xs text-slate-500">No dashboards yet.</p>
+
+          <div class="space-y-1.5">
+            <div
+              v-for="(d, idx) in dashboardsPag.paginatedItems.value"
+              :key="d.id"
+              class="flex items-center justify-between gap-2 rounded-lg border px-2.5 py-2 text-xs transition"
+              :class="selectedDash?.id === d.id ? 'border-amber-500/50 bg-amber-500/15' : 'border-slate-800 bg-slate-950/60'"
+            >
+              <button type="button" class="flex-1 truncate text-left font-medium text-white" @click="selectedDashId = d.id">
+                {{ d.name }}
+                <span class="ml-1 text-[10px] text-slate-400">({{ d.widgets.length }})</span>
+              </button>
+
+              <div class="flex items-center gap-1">
+                <button
+                  type="button"
+                  :disabled="dashboardsPag.startIndex.value + idx === 0"
+                  title="Move up"
+                  class="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-white disabled:opacity-30"
+                  @click="moveDashboard(dashboardsPag.startIndex.value + idx, -1)"
+                >
+                  <ArrowUp class="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  :disabled="dashboardsPag.startIndex.value + idx === dashboards.length - 1"
+                  title="Move down"
+                  class="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-white disabled:opacity-30"
+                  @click="moveDashboard(dashboardsPag.startIndex.value + idx, 1)"
+                >
+                  <ArrowDown class="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  title="Edit dashboard"
+                  class="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-white"
+                  @click="openEditDashboard(d)"
+                >
+                  <Edit3 class="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  title="Delete dashboard"
+                  class="rounded p-1 text-rose-400 hover:bg-rose-500/15"
+                  @click="confirmDeleteDashboard(d)"
+                >
+                  <Trash2 class="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </div>
+            <p v-if="dashboards.length === 0" class="py-6 text-center text-xs text-slate-500">No dashboards yet.</p>
+          </div>
         </div>
+        <TablePagination
+          v-model:page="dashboardsPag.page.value"
+          v-model:page-size="dashboardsPag.pageSize.value"
+          :total-items="dashboardsPag.totalItems.value"
+          compact
+        />
       </section>
 
       <!-- Selected Dashboard Widgets -->
-      <section class="space-y-3 rounded-xl border border-slate-800 bg-slate-900/60 p-4 lg:col-span-2">
-        <div class="flex items-center justify-between">
-          <h3 class="text-sm font-semibold text-white">
-            {{ selectedDash ? `Widgets on "${selectedDash.name}"` : 'Select a dashboard' }}
-          </h3>
-          <button
-            v-if="selectedDash"
-            type="button"
-            class="inline-flex items-center gap-1 rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-amber-400"
-            @click="openCreateWidget"
-          >
-            <Plus class="h-3.5 w-3.5" /> Add Widget
-          </button>
-        </div>
-
-        <div v-if="selectedDash" class="divide-y divide-slate-800/70 rounded-lg border border-slate-800">
-          <div
-            v-for="(w, idx) in selectedDash.widgets"
-            :key="w.id"
-            class="flex items-center justify-between gap-3 px-3.5 py-2.5 text-xs"
-          >
-            <div class="min-w-0">
-              <span class="font-medium text-white">{{ w.name }}</span>
-              <span class="ml-2 rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] text-slate-300">{{ w.widgetType }}</span>
-              <p class="mt-0.5 truncate font-mono text-[11px] text-slate-500">
-                {{ w.registerMappingId && mappingMap[w.registerMappingId] ? mappingMap[w.registerMappingId].name : 'Unbound register' }}
-              </p>
-            </div>
-
-            <div class="flex items-center gap-1 shrink-0">
-              <button
-                type="button"
-                :disabled="idx === 0"
-                title="Move up"
-                class="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-white disabled:opacity-30"
-                @click="moveWidget(idx, -1)"
-              >
-                <ArrowUp class="h-3.5 w-3.5" />
-              </button>
-              <button
-                type="button"
-                :disabled="idx === selectedDash.widgets.length - 1"
-                title="Move down"
-                class="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-white disabled:opacity-30"
-                @click="moveWidget(idx, 1)"
-              >
-                <ArrowDown class="h-3.5 w-3.5" />
-              </button>
-              <button
-                type="button"
-                title="Edit widget"
-                class="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-slate-200 hover:bg-slate-700"
-                @click="openEditWidget(w)"
-              >
-                <Edit3 class="h-3 w-3" /> Edit
-              </button>
-              <button
-                type="button"
-                title="Delete widget"
-                class="rounded border border-rose-500/30 bg-rose-500/10 p-1 text-rose-300 hover:bg-rose-500/20"
-                @click="confirmDeleteWidget(w)"
-              >
-                <Trash2 class="h-3.5 w-3.5" />
-              </button>
-            </div>
+      <section class="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60 lg:col-span-2">
+        <div class="space-y-3 p-4">
+          <div class="flex items-center justify-between">
+            <h3 class="text-sm font-semibold text-white">
+              {{ selectedDash ? `Widgets on "${selectedDash.name}"` : 'Select a dashboard' }}
+            </h3>
+            <button
+              v-if="selectedDash"
+              type="button"
+              class="inline-flex items-center gap-1 rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-amber-400"
+              @click="openCreateWidget"
+            >
+              <Plus class="h-3.5 w-3.5" /> Add Widget
+            </button>
           </div>
-          <div v-if="selectedDash.widgets.length === 0" class="px-4 py-8 text-center text-xs text-slate-500">
-            No widgets added to this dashboard yet.
+
+          <div v-if="selectedDash" class="overflow-hidden rounded-lg border border-slate-800">
+            <div class="divide-y divide-slate-800/70">
+              <div
+                v-for="(w, idx) in widgetsPag.paginatedItems.value"
+                :key="w.id"
+                class="flex items-center justify-between gap-3 px-3.5 py-2.5 text-xs"
+              >
+                <div class="min-w-0">
+                  <span class="font-medium text-white">{{ w.name }}</span>
+                  <span class="ml-2 rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] text-slate-300">{{ w.widgetType }}</span>
+                  <p class="mt-0.5 truncate font-mono text-[11px] text-slate-500">
+                    {{ w.registerMappingId && mappingMap[w.registerMappingId] ? mappingMap[w.registerMappingId].name : 'Unbound register' }}
+                  </p>
+                </div>
+
+                <div class="flex items-center gap-1 shrink-0">
+                  <button
+                    type="button"
+                    :disabled="widgetsPag.startIndex.value + idx === 0"
+                    title="Move up"
+                    class="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-white disabled:opacity-30"
+                    @click="moveWidget(widgetsPag.startIndex.value + idx, -1)"
+                  >
+                    <ArrowUp class="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    :disabled="widgetsPag.startIndex.value + idx === selectedDash.widgets.length - 1"
+                    title="Move down"
+                    class="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-white disabled:opacity-30"
+                    @click="moveWidget(widgetsPag.startIndex.value + idx, 1)"
+                  >
+                    <ArrowDown class="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    title="Edit widget"
+                    class="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-slate-200 hover:bg-slate-700"
+                    @click="openEditWidget(w)"
+                  >
+                    <Edit3 class="h-3 w-3" /> Edit
+                  </button>
+                  <button
+                    type="button"
+                    title="Delete widget"
+                    class="rounded border border-rose-500/30 bg-rose-500/10 p-1 text-rose-300 hover:bg-rose-500/20"
+                    @click="confirmDeleteWidget(w)"
+                  >
+                    <Trash2 class="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
+              <div v-if="selectedDash.widgets.length === 0" class="px-4 py-8 text-center text-xs text-slate-500">
+                No widgets added to this dashboard yet.
+              </div>
+            </div>
+            <TablePagination
+              v-model:page="widgetsPag.page.value"
+              v-model:page-size="widgetsPag.pageSize.value"
+              :total-items="widgetsPag.totalItems.value"
+            />
           </div>
         </div>
       </section>
     </div>
 
-    <!-- TAB 4: HISTORY KEYS & MEMBER WRITE POLICIES -->
-    <div v-if="activeTab === 'history'" class="space-y-6">
-      <section class="space-y-4 rounded-xl border border-slate-800 bg-slate-900/60 p-5">
+    <!-- TAB 4: HISTORY KEYS -->
+    <div v-if="activeTab === 'history'" class="space-y-4">
+      <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h3 class="text-sm font-semibold text-white">Scheduled History Archival</h3>
           <p class="mt-0.5 text-xs text-slate-400">
             Select specific register keys to archive on a schedule. Registers without a history entry are only polled while a dashboard is open.
           </p>
         </div>
+        <button
+          type="button"
+          :disabled="availableHistoryMappings.length === 0"
+          class="inline-flex items-center gap-1.5 rounded-lg bg-amber-500 px-3.5 py-2 text-xs font-semibold text-slate-950 hover:bg-amber-400 disabled:opacity-40"
+          @click="openCreateHistoryEntry"
+        >
+          <Plus class="h-4 w-4" /> Add Key
+        </button>
+      </div>
 
-        <form class="space-y-3" @submit.prevent="addHistoryEntry">
-          <RegisterPicker
-            v-model="histMappingId"
-            :devices="devices"
-            :mappings="availableHistoryMappings"
-            register-label="Register Key"
-            placeholder="Search register to archive..."
-          />
-          <div class="grid gap-3 sm:grid-cols-3">
-            <select v-model.number="histPollSec" class="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white">
-              <option :value="10">Poll: 10s</option>
-              <option :value="30">Poll: 30s</option>
-              <option :value="60">Poll: 1 min</option>
-              <option :value="300">Poll: 5 min</option>
-              <option :value="900">Poll: 15 min</option>
-              <option :value="3600">Poll: 1 hour</option>
-            </select>
-
-            <select v-model.number="histRetentionDays" class="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white">
-              <option :value="1">Keep: 1 day</option>
-              <option :value="7">Keep: 7 days</option>
-              <option :value="30">Keep: 30 days</option>
-              <option :value="90">Keep: 90 days</option>
-              <option :value="365">Keep: 1 year</option>
-            </select>
-
-            <button
-              type="submit"
-              :disabled="!histMappingId"
-              class="inline-flex items-center justify-center gap-1 rounded-lg bg-amber-500 px-3 py-2 text-xs font-semibold text-slate-950 hover:bg-amber-400 disabled:opacity-40"
-            >
-              <Plus class="h-3.5 w-3.5" /> Add Key
-            </button>
-          </div>
-        </form>
-
-        <div class="overflow-x-auto rounded-lg border border-slate-800">
+      <div class="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60">
+        <div class="overflow-x-auto">
           <table class="w-full text-left text-xs">
             <thead class="border-b border-slate-800 text-slate-400">
               <tr>
-                <th class="px-4 py-2.5">Register Key</th>
-                <th class="px-4 py-2.5">Poll Interval</th>
-                <th class="px-4 py-2.5">Retention</th>
-                <th class="px-4 py-2.5">Active</th>
-                <th class="px-4 py-2.5 text-right">Actions</th>
+                <th class="px-4 py-3">Register Key</th>
+                <th class="px-4 py-3">Poll Interval</th>
+                <th class="px-4 py-3">Retention</th>
+                <th class="px-4 py-3">Status</th>
+                <th class="px-4 py-3 text-right">Actions</th>
               </tr>
             </thead>
             <tbody class="divide-y divide-slate-800/70">
-              <tr v-for="he in historyEntries" :key="he.id">
-                <td class="px-4 py-2.5 font-mono text-slate-200">
+              <tr v-for="he in historyPag.paginatedItems.value" :key="he.id" class="hover:bg-slate-800/30">
+                <td class="px-4 py-3 font-mono text-slate-200">
                   {{ mappingMap[he.registerMappingId] ? registerKeyLabel(mappingMap[he.registerMappingId]) : he.registerMappingId }}
                 </td>
-                <td class="px-4 py-2.5">
-                  <select
-                    :value="he.pollIntervalSeconds"
-                    class="rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-white"
-                    @change="updateHistoryEntry(he, { pollIntervalSeconds: Number(($event.target as HTMLSelectElement).value) })"
-                  >
-                    <option :value="10">10s</option>
-                    <option :value="30">30s</option>
-                    <option :value="60">1 min</option>
-                    <option :value="300">5 min</option>
-                    <option :value="900">15 min</option>
-                    <option :value="3600">1 hour</option>
-                  </select>
+                <td class="px-4 py-3 font-mono text-slate-300">
+                  {{ formatPollInterval(he.pollIntervalSeconds) }}
                 </td>
-                <td class="px-4 py-2.5">
-                  <select
-                    :value="he.retentionDays"
-                    class="rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-white"
-                    @change="updateHistoryEntry(he, { retentionDays: Number(($event.target as HTMLSelectElement).value) })"
-                  >
-                    <option :value="1">1 day</option>
-                    <option :value="7">7 days</option>
-                    <option :value="30">30 days</option>
-                    <option :value="90">90 days</option>
-                    <option :value="365">1 year</option>
-                  </select>
+                <td class="px-4 py-3 font-mono text-slate-300">
+                  {{ formatRetention(he.retentionDays) }}
                 </td>
-                <td class="px-4 py-2.5">
-                  <input
-                    type="checkbox"
-                    :checked="he.isActive"
-                    @change="updateHistoryEntry(he, { isActive: ($event.target as HTMLInputElement).checked })"
-                  />
+                <td class="px-4 py-3">
+                  <StatusBadge :status="he.isActive ? 'ACTIVE' : 'DISABLED'" size="sm" />
                 </td>
-                <td class="px-4 py-2.5 text-right">
+                <td class="px-4 py-3 text-right space-x-1.5">
                   <button
                     type="button"
-                    class="rounded border border-rose-500/30 bg-rose-500/10 p-1 text-rose-300 hover:bg-rose-500/20"
+                    class="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-slate-200 hover:bg-slate-700"
+                    @click="openEditHistoryEntry(he)"
+                  >
+                    <Edit3 class="h-3 w-3" /> Edit
+                  </button>
+                  <button
+                    type="button"
+                    class="inline-flex items-center rounded border border-rose-500/30 bg-rose-500/10 p-1 text-rose-300 hover:bg-rose-500/20"
                     @click="confirmDeleteHistoryEntry(he)"
                   >
                     <Trash2 class="h-3.5 w-3.5" />
@@ -1122,40 +1177,66 @@ async function toggleMemberWrite(member: SiteMember, canWrite: boolean) {
                 </td>
               </tr>
               <tr v-if="historyEntries.length === 0">
-                <td colspan="5" class="px-4 py-6 text-center text-slate-500">No registers scheduled for history storage yet.</td>
+                <td colspan="5" class="px-4 py-8 text-center text-slate-500">No registers scheduled for history storage yet.</td>
               </tr>
             </tbody>
           </table>
         </div>
-      </section>
+        <TablePagination
+          v-model:page="historyPag.page.value"
+          v-model:page-size="historyPag.pageSize.value"
+          :total-items="historyPag.totalItems.value"
+        />
+      </div>
+    </div>
 
-      <section class="rounded-xl border border-slate-800 bg-slate-900/60 p-5 space-y-3">
-        <div>
+    <!-- TAB 5: MEMBER WRITE POLICIES -->
+    <div v-if="activeTab === 'policies'" class="space-y-4">
+      <section class="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60">
+        <div class="px-5 pt-5 pb-3">
           <h3 class="text-sm font-semibold text-white">Site Member Register Write Policies</h3>
           <p class="mt-0.5 text-xs text-slate-400">
             Site Operators and Platform Admins can always write to writable registers. Grant individual Site Members write access below.
           </p>
         </div>
 
-        <div class="divide-y divide-slate-800/70 rounded-lg border border-slate-800">
-          <div v-for="m in siteMembersOnly" :key="m.userId" class="flex items-center justify-between px-4 py-3 text-xs">
-            <div>
-              <p class="font-medium text-white">{{ m.email }}</p>
-              <p class="text-[11px] text-slate-500">SITE_MEMBER</p>
-            </div>
-            <label class="inline-flex items-center gap-2 text-xs text-slate-200">
-              <input
-                type="checkbox"
-                :checked="Boolean(policyMap[m.userId])"
-                @change="toggleMemberWrite(m, ($event.target as HTMLInputElement).checked)"
-              />
-              Allow register writes
-            </label>
-          </div>
-          <div v-if="siteMembersOnly.length === 0" class="px-4 py-6 text-center text-xs text-slate-500">
-            No Site Members assigned to this site yet.
-          </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-xs">
+            <thead class="border-b border-slate-800 text-slate-400">
+              <tr>
+                <th class="px-5 py-2.5">Member Email</th>
+                <th class="px-4 py-2.5">Role</th>
+                <th class="px-5 py-2.5 text-right">Register Write Permission</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-800/70">
+              <tr v-for="m in policiesPag.paginatedItems.value" :key="m.userId" class="hover:bg-slate-800/30">
+                <td class="px-5 py-3 font-medium text-white">{{ m.email }}</td>
+                <td class="px-4 py-3 font-mono text-[11px] text-slate-400">SITE_MEMBER</td>
+                <td class="px-5 py-3 text-right">
+                  <label class="inline-flex items-center gap-2 text-xs text-slate-200">
+                    <input
+                      type="checkbox"
+                      :checked="Boolean(policyMap[m.userId])"
+                      @change="toggleMemberWrite(m, ($event.target as HTMLInputElement).checked)"
+                    />
+                    Allow register writes
+                  </label>
+                </td>
+              </tr>
+              <tr v-if="siteMembersOnly.length === 0">
+                <td colspan="3" class="px-5 py-6 text-center text-xs text-slate-500">
+                  No Site Members assigned to this site yet.
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </div>
+        <TablePagination
+          v-model:page="policiesPag.page.value"
+          v-model:page-size="policiesPag.pageSize.value"
+          :total-items="policiesPag.totalItems.value"
+        />
       </section>
     </div>
 
@@ -1521,6 +1602,72 @@ async function toggleMemberWrite(member: SiteMember, canWrite: boolean) {
           <div class="flex justify-end gap-2 pt-2">
             <button type="button" class="rounded-lg border border-slate-700 px-3.5 py-2 text-xs text-slate-300" @click="widgetModalOpen = false">Cancel</button>
             <button type="submit" class="rounded-lg bg-amber-500 px-4 py-2 text-xs font-semibold text-slate-950 hover:bg-amber-400">Save Widget</button>
+          </div>
+        </form>
+      </div>
+    </Teleport>
+
+    <!-- MODAL: ADD / EDIT HISTORY KEY -->
+    <Teleport to="body">
+      <div v-if="histModalOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-xs" @click.self="histModalOpen = false">
+        <form class="w-full max-w-lg rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl space-y-4" @submit.prevent="saveHistoryEntry">
+          <div class="flex items-center justify-between">
+            <h3 class="text-sm font-semibold text-white">{{ editingHistId ? 'Edit History Key' : 'Add History Key' }}</h3>
+            <button type="button" class="text-slate-400 hover:text-white" @click="histModalOpen = false"><X class="h-4 w-4" /></button>
+          </div>
+
+          <RegisterPicker
+            v-if="!editingHistId"
+            v-model="histMappingId"
+            :devices="devices"
+            :mappings="availableHistoryMappings"
+            register-label="Register Key"
+            placeholder="Search register to archive..."
+          />
+          <div v-else class="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2.5">
+            <p class="text-[11px] text-slate-400">Register Key</p>
+            <p class="mt-0.5 font-mono text-xs text-slate-200">
+              {{ mappingMap[histMappingId] ? registerKeyLabel(mappingMap[histMappingId]) : histMappingId }}
+            </p>
+          </div>
+
+          <div class="grid gap-3 sm:grid-cols-2">
+            <div>
+              <label class="mb-1 block text-xs text-slate-400">Poll Interval</label>
+              <select v-model.number="histPollSec" class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white">
+                <option :value="10">10s</option>
+                <option :value="30">30s</option>
+                <option :value="60">1 min</option>
+                <option :value="300">5 min</option>
+                <option :value="900">15 min</option>
+                <option :value="3600">1 hour</option>
+              </select>
+            </div>
+            <div>
+              <label class="mb-1 block text-xs text-slate-400">Retention</label>
+              <select v-model.number="histRetentionDays" class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white">
+                <option :value="1">1 day</option>
+                <option :value="7">7 days</option>
+                <option :value="30">30 days</option>
+                <option :value="90">90 days</option>
+                <option :value="365">1 year</option>
+              </select>
+            </div>
+          </div>
+
+          <label v-if="editingHistId" class="inline-flex items-center gap-2 text-xs text-slate-300">
+            <input v-model="histActive" type="checkbox" /> Active
+          </label>
+
+          <div class="flex justify-end gap-2 pt-2">
+            <button type="button" class="rounded-lg border border-slate-700 px-3.5 py-2 text-xs text-slate-300" @click="histModalOpen = false">Cancel</button>
+            <button
+              type="submit"
+              :disabled="!editingHistId && !histMappingId"
+              class="rounded-lg bg-amber-500 px-4 py-2 text-xs font-semibold text-slate-950 hover:bg-amber-400 disabled:opacity-40"
+            >
+              {{ editingHistId ? 'Save Changes' : 'Add Key' }}
+            </button>
           </div>
         </form>
       </div>
