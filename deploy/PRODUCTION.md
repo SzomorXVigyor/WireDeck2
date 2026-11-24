@@ -10,22 +10,66 @@ Production and Staging pull prebuilt images from GitHub Container Registry (`ghc
 
 ---
 
-## 1. Files to Copy to the Target Host
+## 1. Bulk Download Deploy Files (No Git Clone Needed)
+
+Run one of these snippets inside the folder where you want to deploy WireDeck (for a **private repo**, add `-H "Authorization: Bearer <GITHUB_PAT>"` to each `curl` command):
+
+### Production
+```bash
+BASE="https://raw.githubusercontent.com/SzomorXVigyor/WireDeck2/main/deploy"
+mkdir -p traefik
+curl -fsSL "$BASE/docker-compose.prod.yml" -o docker-compose.prod.yml
+curl -fsSL "$BASE/traefik/dynamic.yml"     -o traefik/dynamic.yml
+curl -fsSL "$BASE/.env.prod.example"       -o .env
+chmod 600 .env
+```
+
+### Staging
+```bash
+BASE="https://raw.githubusercontent.com/SzomorXVigyor/WireDeck2/main/deploy"
+mkdir -p traefik
+curl -fsSL "$BASE/docker-compose.staging.yml" -o docker-compose.staging.yml
+curl -fsSL "$BASE/traefik/dynamic.yml"        -o traefik/dynamic.yml
+curl -fsSL "$BASE/.env.staging.example"       -o .env
+chmod 600 .env
+```
+
+### Download All Deploy Files at Once (Prod + Staging + Local)
+```bash
+BASE="https://raw.githubusercontent.com/SzomorXVigyor/WireDeck2/main/deploy"
+mkdir -p traefik
+for f in \
+  docker-compose.prod.yml \
+  docker-compose.staging.yml \
+  docker-compose.local.yml \
+  .env.prod.example \
+  .env.staging.example \
+  .env.local.example \
+  traefik/dynamic.yml \
+  traefik/dynamic.local.yml \
+  PRODUCTION.md; do
+  curl -fsSL "$BASE/$f" -o "$f"
+done
+```
+
+---
+
+## 2. File Layout per Environment
 
 You only need **3 files** from `deploy/` per environment:
 
-### Production (`/opt/wiredeck/`)
+### Production
 ```text
-/opt/wiredeck/
+.
 ├── docker-compose.prod.yml   <- deploy/docker-compose.prod.yml
 ├── .env                      <- deploy/.env.prod.example (filled with secrets)
 └── traefik/
     └── dynamic.yml           <- deploy/traefik/dynamic.yml
 ```
 
-### Staging (`/opt/wiredeck-staging/`)
+### Staging
 ```text
-/opt/wiredeck-staging/
+.
 ├── docker-compose.staging.yml  <- deploy/docker-compose.staging.yml
 ├── .env                        <- deploy/.env.staging.example (filled with secrets)
 └── traefik/
@@ -37,9 +81,9 @@ No copying needed — copy `deploy/.env.local.example` to `deploy/.env.local` an
 
 ---
 
-## 2. Host Setup (Production & Staging)
+## 3. Host Setup (Production & Staging)
 
-> Local testing (`docker-compose.local.yml`) creates its own Docker networks and uses `/tmp/wiredeck-local-runners` automatically — just `mkdir -p /tmp/wiredeck-local-runners` and skip to Step 3.
+> Local testing (`docker-compose.local.yml`) creates its own Docker networks and uses `/tmp/wiredeck-local-runners` automatically — just `mkdir -p /tmp/wiredeck-local-runners` and skip to Step 4.
 
 ### A. Create the Two Isolated Docker Networks (Prod & Staging)
 Leaves `172.21.0.0/16` and `172.22.0.0/16` free for remote site LANs:
@@ -61,7 +105,7 @@ tmpfs /var/lib/wiredeck2/runners tmpfs size=16m,mode=0700 0 0
 
 ---
 
-## 3. Generate Keys & Configure `.env`
+## 4. Generate Keys & Configure `.env`
 
 Generate the RSA signing key and four distinct 32-byte secrets:
 ```bash
@@ -82,7 +126,7 @@ echo "<GITHUB_PAT_WITH_READ_PACKAGES>" | docker login ghcr.io -u <GITHUB_USERNAM
 
 ---
 
-## 4. Upstream Reverse Proxy Config (Staging Only)
+## 5. Upstream Reverse Proxy Config (Staging Only)
 
 Point your outer TLS-terminating proxy (`https://${ROOT_DOMAIN}` on `:443`) to `http://127.0.0.1:8080` (or your `STAGING_HTTP_BIND`). **WebSocket upgrade headers are required** for live WebView telemetry (`/api/v1/webview/stream`) and Browser VNC (`/api/v1/vnc/stream`).
 
@@ -118,18 +162,16 @@ staging.wiredeck.example.com {
 
 ---
 
-## 5. Start & Upgrade Commands
+## 6. Start & Upgrade Commands
 
 **Production:**
 ```bash
-cd /opt/wiredeck
 docker compose -f docker-compose.prod.yml --env-file .env pull
 docker compose -f docker-compose.prod.yml --env-file .env up -d
 ```
 
 **Staging:**
 ```bash
-cd /opt/wiredeck-staging
 docker compose -f docker-compose.staging.yml --env-file .env pull
 docker compose -f docker-compose.staging.yml --env-file .env up -d
 ```
@@ -144,7 +186,7 @@ docker compose -f deploy/docker-compose.local.yml --env-file deploy/.env.local u
 
 ---
 
-## 6. Database Backups (Prod & Staging)
+## 7. Database Backups (Prod & Staging)
 
 ```bash
 # Replace container name prefix with wiredeck-staging-* for staging
