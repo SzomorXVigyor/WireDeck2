@@ -41,15 +41,6 @@ const site = computed(() => siteStore.byId(siteId.value))
     <!-- Enabled Capability Cards -->
     <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
       <RouterLink
-        v-if="site.webviewEnabled"
-        :to="`/sites/${site.id}/webview`"
-        class="rounded-xl border border-slate-800 bg-slate-900/50 p-4 hover:border-sky-500/40"
-      >
-        <Sliders class="h-5 w-5 text-sky-400" />
-        <p class="mt-3 text-sm font-semibold text-white">Live WebView</p>
-        <p class="mt-1 text-xs text-slate-400">Modbus dashboards & controls</p>
-      </RouterLink>
-      <RouterLink
         v-if="site.vncEnabled"
         :to="`/sites/${site.id}/vnc`"
         class="rounded-xl border border-slate-800 bg-slate-900/50 p-4 hover:border-sky-500/40"
@@ -57,6 +48,15 @@ const site = computed(() => siteStore.byId(siteId.value))
         <Monitor class="h-5 w-5 text-emerald-400" />
         <p class="mt-3 text-sm font-semibold text-white">Browser VNC</p>
         <p class="mt-1 text-xs text-slate-400">Server-authenticated HMI access</p>
+      </RouterLink>
+      <RouterLink
+        v-if="site.webviewEnabled"
+        :to="`/sites/${site.id}/webview`"
+        class="rounded-xl border border-slate-800 bg-slate-900/50 p-4 hover:border-sky-500/40"
+      >
+        <Sliders class="h-5 w-5 text-sky-400" />
+        <p class="mt-3 text-sm font-semibold text-white">Live WebView</p>
+        <p class="mt-1 text-xs text-slate-400">Modbus dashboards & controls</p>
       </RouterLink>
       <RouterLink
         v-if="site.webviewEnabled"
@@ -73,7 +73,7 @@ const site = computed(() => siteStore.byId(siteId.value))
         class="rounded-xl border border-slate-800 bg-slate-900/50 p-4 hover:border-sky-500/40"
       >
         <Bell class="h-5 w-5 text-amber-400" />
-        <p class="mt-3 text-sm font-semibold text-white">Alarm Centre</p>
+        <p class="mt-3 text-sm font-semibold text-white">Alarm Center</p>
         <p class="mt-1 text-xs text-slate-400">Latched alerts & acknowledgements</p>
       </RouterLink>
     </div>

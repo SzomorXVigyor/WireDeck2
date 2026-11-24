@@ -10,7 +10,7 @@ import (
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
 
-	pb "github.com/SzomorXVigyor/WireDeck2/pkg/wirerelay/v1"
+	pb "wiredeck/pkg/wirerelay/v1"
 )
 
 // RunnerAddress returns the canonical DNS address for a site's WireRelay runner.

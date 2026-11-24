@@ -2248,7 +2248,7 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
               </span>
             </div>
             <p v-else class="text-[11px] text-slate-500">
-              No email recipients configured. Alarms will still appear in the Alarm Centre.
+              No email recipients configured. Alarms will still appear in the Alarm Center.
             </p>
 
             <div v-if="members.length > 0" class="border-t border-slate-800 pt-2">

@@ -9,10 +9,10 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"github.com/SzomorXVigyor/WireDeck2/pkg/auth"
-	"github.com/SzomorXVigyor/WireDeck2/pkg/internalclient"
-	"github.com/SzomorXVigyor/WireDeck2/pkg/telemetry"
-	"github.com/SzomorXVigyor/WireDeck2/services/runner-orchestrator/internal/orchestrator"
+	"wiredeck/pkg/auth"
+	"wiredeck/pkg/internalclient"
+	"wiredeck/pkg/telemetry"
+	"wiredeck/services/runner-orchestrator/internal/orchestrator"
 )
 
 func NewRouter(svc *orchestrator.Service, internalToken string, readyCheck func(context.Context) error) http.Handler {

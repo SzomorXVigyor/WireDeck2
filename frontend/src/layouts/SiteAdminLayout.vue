@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
-import { ArrowLeft, Monitor, Sliders, Users, Wrench } from 'lucide-vue-next'
+import { ArrowLeft, Monitor, Sliders, Users } from 'lucide-vue-next'
+import WireDeckLogo from '../components/WireDeckLogo.vue'
 import { useSiteStore } from '../stores/sites'
 
 const route = useRoute()
@@ -22,9 +23,7 @@ onMounted(() => {
     <!-- Explicit Site Operator Management Banner -->
     <header class="flex h-14 shrink-0 items-center justify-between border-b border-amber-500/30 bg-amber-950/30 px-6">
       <div class="flex items-center gap-3">
-        <div class="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-500/20 text-amber-300">
-          <Wrench class="h-4 w-4" />
-        </div>
+        <WireDeckLogo size="md" variant="operator" />
         <div>
           <p class="text-xs font-semibold uppercase tracking-wider text-amber-300">Site Operator Workspace</p>
           <p class="text-sm font-semibold text-white">{{ site?.name ?? siteId }}</p>

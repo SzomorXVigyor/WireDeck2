@@ -18,13 +18,13 @@ import (
 	"github.com/google/uuid"
 	"github.com/uptrace/bun"
 
-	wcrypto "github.com/SzomorXVigyor/WireDeck2/pkg/crypto"
-	"github.com/SzomorXVigyor/WireDeck2/pkg/wireguard"
-	"github.com/SzomorXVigyor/WireDeck2/pkg/wirerelay"
-	pb "github.com/SzomorXVigyor/WireDeck2/pkg/wirerelay/v1"
-	"github.com/SzomorXVigyor/WireDeck2/services/webvnc-proxy/internal/models"
-	"github.com/SzomorXVigyor/WireDeck2/services/webvnc-proxy/internal/rfb"
-	"github.com/SzomorXVigyor/WireDeck2/services/webvnc-proxy/internal/sitecache"
+	wcrypto "wiredeck/pkg/crypto"
+	"wiredeck/pkg/wireguard"
+	"wiredeck/pkg/wirerelay"
+	pb "wiredeck/pkg/wirerelay/v1"
+	"wiredeck/services/webvnc-proxy/internal/models"
+	"wiredeck/services/webvnc-proxy/internal/rfb"
+	"wiredeck/services/webvnc-proxy/internal/sitecache"
 )
 
 var (

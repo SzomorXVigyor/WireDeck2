@@ -21,16 +21,16 @@ interface PlatformServiceDef {
 // Dynamic registry of attachable site services - add future platform services here.
 const PLATFORM_SERVICES: PlatformServiceDef[] = [
   {
-    key: 'webviewEnabled',
-    name: 'WebView',
-    description: 'Modbus dashboards, controls, TimescaleDB history, and alarms',
-    badgeClass: 'bg-sky-500/15 text-sky-300',
-  },
-  {
     key: 'vncEnabled',
     name: 'WebVNC',
     description: 'Browser remote VNC access with server-side authentication',
     badgeClass: 'bg-emerald-500/15 text-emerald-300',
+  },
+  {
+    key: 'webviewEnabled',
+    name: 'WebView',
+    description: 'Modbus dashboards, controls, TimescaleDB history, and alarms',
+    badgeClass: 'bg-sky-500/15 text-sky-300',
   },
 ]
 

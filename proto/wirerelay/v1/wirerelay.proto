@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package wirerelay.v1;
 
-option go_package = "github.com/SzomorXVigyor/WireDeck2/pkg/wirerelay/v1;wirerelayv1";
+option go_package = "wiredeck/pkg/wirerelay/v1;wirerelayv1";
 
 // WireRelayService provides health monitoring and network tunnel relaying over WireGuard.
 service WireRelayService {

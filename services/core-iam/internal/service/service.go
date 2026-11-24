@@ -15,13 +15,13 @@ import (
 	"github.com/google/uuid"
 	"github.com/uptrace/bun"
 
-	"github.com/SzomorXVigyor/WireDeck2/pkg/auth"
-	wcrypto "github.com/SzomorXVigyor/WireDeck2/pkg/crypto"
-	"github.com/SzomorXVigyor/WireDeck2/pkg/internalclient"
-	"github.com/SzomorXVigyor/WireDeck2/pkg/mailgopher"
-	"github.com/SzomorXVigyor/WireDeck2/pkg/wireguard"
-	"github.com/SzomorXVigyor/WireDeck2/services/core-iam/internal/models"
-	"github.com/SzomorXVigyor/WireDeck2/services/core-iam/internal/password"
+	"wiredeck/pkg/auth"
+	wcrypto "wiredeck/pkg/crypto"
+	"wiredeck/pkg/internalclient"
+	"wiredeck/pkg/mailgopher"
+	"wiredeck/pkg/wireguard"
+	"wiredeck/services/core-iam/internal/models"
+	"wiredeck/services/core-iam/internal/password"
 )
 
 var (
@@ -393,8 +393,8 @@ func (s *IAMService) RequestPasswordReset(ctx context.Context, email string) {
 		return
 	}
 	link := fmt.Sprintf("%s/reset-password?token=%s", strings.TrimRight(s.cfg.PublicBaseURL, "/"), raw)
-	body := fmt.Sprintf("Hello,\n\nA password reset was requested for your WireDeck2 account.\nOpen the link below within 1 hour to set a new password:\n\n%s\n\nIf you did not request this, you can safely ignore this email.\n", link)
-	if err := s.mailer.Send(ctx, []string{u.Email}, "WireDeck2 - Password Reset", body); err != nil {
+	body := fmt.Sprintf("Hello,\n\nA password reset was requested for your WireDeck account.\nOpen the link below within 1 hour to set a new password:\n\n%s\n\nIf you did not request this, you can safely ignore this email.\n", link)
+	if err := s.mailer.Send(ctx, []string{u.Email}, "WireDeck - Password Reset", body); err != nil {
 		slog.Warn("password_reset_email_failed", "email", u.Email, "error", err)
 	}
 }
@@ -532,8 +532,8 @@ func (s *IAMService) ResendInvite(ctx context.Context, userID uuid.UUID) (bool, 
 
 func (s *IAMService) sendInviteEmail(ctx context.Context, email, rawToken string) bool {
 	link := fmt.Sprintf("%s/accept-invite?token=%s", strings.TrimRight(s.cfg.PublicBaseURL, "/"), rawToken)
-	body := fmt.Sprintf("Welcome to WireDeck2!\n\nAn administrator has created an account for you.\nOpen the link below within 48 hours to set your password and activate your account:\n\n%s\n", link)
-	if err := s.mailer.Send(ctx, []string{email}, "You are invited to WireDeck2", body); err != nil {
+	body := fmt.Sprintf("Welcome to WireDeck!\n\nAn administrator has created an account for you.\nOpen the link below within 48 hours to set your password and activate your account:\n\n%s\n", link)
+	if err := s.mailer.Send(ctx, []string{email}, "You are invited to WireDeck", body); err != nil {
 		slog.Warn("invite_email_failed", "email", email, "error", err)
 		return false
 	}

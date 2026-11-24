@@ -12,7 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/models"
+	"wiredeck/services/webview-engine/internal/models"
 )
 
 func TestModbusTCPProvider_ValidateAndCoalesceBySlave(t *testing.T) {

@@ -15,7 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/uptrace/bun"
 
-	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/models"
+	"wiredeck/services/webview-engine/internal/models"
 )
 
 // Mailer is satisfied by *mailgopher.Client.
@@ -733,7 +733,7 @@ func (e *Engine) emailWorker() {
 
 		var subject, body string
 		if job.isClear {
-			subject = fmt.Sprintf("[WireDeck2][CLEARED] %s - %s", siteName, job.ruleName)
+			subject = fmt.Sprintf("[WireDeck][CLEARED] %s - %s", siteName, job.ruleName)
 			body = fmt.Sprintf(
 				"Alarm Cleared\n\nSite: %s\nRule: %s\nRegister: %s\nSeverity: %s\nCondition: %s %s\nRecovered Value: %s\nCleared At (UTC): %s\n",
 				siteName,
@@ -746,7 +746,7 @@ func (e *Engine) emailWorker() {
 				job.timestamp.UTC().Format(time.RFC3339),
 			)
 		} else {
-			subject = fmt.Sprintf("[WireDeck2][%s] %s - %s", job.severity, siteName, job.ruleName)
+			subject = fmt.Sprintf("[WireDeck][%s] %s - %s", job.severity, siteName, job.ruleName)
 			body = fmt.Sprintf(
 				"Alarm Triggered\n\nSite: %s\nRule: %s\nRegister: %s\nSeverity: %s\nCondition: %s %s\nTriggered Value: %s\nTriggered At (UTC): %s\n",
 				siteName,

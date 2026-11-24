@@ -855,7 +855,7 @@ const file_wirerelay_v1_wirerelay_proto_rawDesc = "" +
 	"\tGetHealth\x12\x1b.wirerelay.v1.HealthRequest\x1a\x1c.wirerelay.v1.HealthResponse\x12C\n" +
 	"\n" +
 	"PingTarget\x12\x19.wirerelay.v1.PingRequest\x1a\x1a.wirerelay.v1.PingResponse\x12H\n" +
-	"\fTunnelStream\x12\x19.wirerelay.v1.TunnelFrame\x1a\x19.wirerelay.v1.TunnelFrame(\x010\x01BAZ?github.com/SzomorXVigyor/WireDeck2/pkg/wirerelay/v1;wirerelayv1b\x06proto3"
+	"\fTunnelStream\x12\x19.wirerelay.v1.TunnelFrame\x1a\x19.wirerelay.v1.TunnelFrame(\x010\x01B'Z%wiredeck/pkg/wirerelay/v1;wirerelayv1b\x06proto3"
 
 var (
 	file_wirerelay_v1_wirerelay_proto_rawDescOnce sync.Once

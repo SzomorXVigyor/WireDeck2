@@ -8,7 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/models"
+	"wiredeck/services/webview-engine/internal/models"
 )
 
 type memRepo struct {

@@ -9,10 +9,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/uptrace/bun"
 
-	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/models"
-	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/ownership"
-	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/provider"
-	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/sitecache"
+	"wiredeck/services/webview-engine/internal/models"
+	"wiredeck/services/webview-engine/internal/ownership"
+	"wiredeck/services/webview-engine/internal/provider"
+	"wiredeck/services/webview-engine/internal/sitecache"
 )
 
 const (

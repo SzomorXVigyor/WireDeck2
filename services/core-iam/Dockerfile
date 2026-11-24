@@ -7,7 +7,11 @@ RUN go mod download
 COPY pkg/ pkg/
 COPY services/core-iam/ services/core-iam/
 
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /bin/core-iam ./services/core-iam
+ARG APP_VERSION=""
+RUN VER="${APP_VERSION:-v$(date -u +%y.%m-%d%H%M)}" && \
+    CGO_ENABLED=0 GOOS=linux go build \
+      -ldflags="-s -w -X wiredeck/pkg/version.Version=${VER}" \
+      -o /bin/core-iam ./services/core-iam
 
 FROM scratch
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/

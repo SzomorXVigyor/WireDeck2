@@ -7,7 +7,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/models"
+	"wiredeck/services/webview-engine/internal/models"
 )
 
 // ReadResult is returned by a protocol Provider for a single register mapping.

@@ -257,7 +257,7 @@ onUnmounted(() => {
       <div>
         <h2 class="flex items-center gap-2 text-lg font-semibold text-white">
           <Bell class="h-5 w-5 text-sky-400" />
-          {{ isGlobal ? 'Global Alarm Centre' : 'Site Alarm Centre' }}
+          {{ isGlobal ? 'Global Alarm Center' : 'Site Alarm Center' }}
         </h2>
         <p class="mt-0.5 text-xs text-slate-400">
           {{

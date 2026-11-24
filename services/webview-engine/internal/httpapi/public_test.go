@@ -11,10 +11,10 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/SzomorXVigyor/WireDeck2/pkg/auth"
-	"github.com/SzomorXVigyor/WireDeck2/pkg/internalclient"
-	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/engine"
-	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/sitecache"
+	"wiredeck/pkg/auth"
+	"wiredeck/pkg/internalclient"
+	"wiredeck/services/webview-engine/internal/engine"
+	"wiredeck/services/webview-engine/internal/sitecache"
 )
 
 func TestWebViewOpenAPI_RoleSeparationAndPreUpgradeWSAuth(t *testing.T) {

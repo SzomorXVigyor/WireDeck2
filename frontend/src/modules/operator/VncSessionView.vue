@@ -23,7 +23,7 @@ type QualityPresetKey = 'high' | 'balanced' | 'low' | 'performance'
 const QUALITY_PRESETS: Record<QualityPresetKey, { label: string; quality: number; compression: number }> = {
   high: { label: 'High', quality: 9, compression: 1 },
   balanced: { label: 'Balanced', quality: 6, compression: 2 },
-  low: { label: 'Low bandwidth', quality: 2, compression: 6 },
+  low: { label: 'Low', quality: 2, compression: 6 },
   performance: { label: 'Performance', quality: 0, compression: 0 },
 }
 

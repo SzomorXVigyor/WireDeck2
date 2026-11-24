@@ -16,14 +16,15 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"github.com/SzomorXVigyor/WireDeck2/pkg/api"
-	"github.com/SzomorXVigyor/WireDeck2/pkg/auth"
-	"github.com/SzomorXVigyor/WireDeck2/pkg/internalclient"
-	"github.com/SzomorXVigyor/WireDeck2/pkg/telemetry"
-	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/engine"
-	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/history"
-	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/models"
-	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/sitecache"
+	"wiredeck/pkg/api"
+	"wiredeck/pkg/auth"
+	"wiredeck/pkg/internalclient"
+	"wiredeck/pkg/telemetry"
+	"wiredeck/pkg/version"
+	"wiredeck/services/webview-engine/internal/engine"
+	"wiredeck/services/webview-engine/internal/history"
+	"wiredeck/services/webview-engine/internal/models"
+	"wiredeck/services/webview-engine/internal/sitecache"
 )
 
 type authzCtxKey struct{}
@@ -281,7 +282,7 @@ func NewPublicRouter(svc *engine.Service, hub *engine.TelemetryHub, verifier *au
 		cw.Flush()
 	})
 
-	humaAPI := api.NewHumaAPI(r, "WireDeck2 WebView Engine API", "2.2.0", "/api/v1/webview", enableDocs)
+	humaAPI := api.NewHumaAPI(r, "WireDeck WebView Engine API", version.Version, "/api/v1/webview", enableDocs)
 
 	type SiteIDInput struct {
 		SiteID uuid.UUID `path:"siteId" format:"uuid"`

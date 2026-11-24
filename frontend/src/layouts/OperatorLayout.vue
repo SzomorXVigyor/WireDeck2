@@ -6,7 +6,6 @@ import {
   Bell,
   LogOut,
   Monitor,
-  Server,
   Settings,
   Shield,
   Sliders,
@@ -14,9 +13,12 @@ import {
   User as UserIcon,
   LineChart,
 } from 'lucide-vue-next'
+import WireDeckLogo from '../components/WireDeckLogo.vue'
 import { useAuthStore } from '../stores/auth'
 import { useSiteStore } from '../stores/sites'
 import { useAlarmStore } from '../stores/alarms'
+
+const appVersion = __APP_VERSION__
 
 const auth = useAuthStore()
 const siteStore = useSiteStore()
@@ -66,11 +68,9 @@ function dotColor(status: string) {
     <!-- Operator Sidebar -->
     <aside class="flex w-64 shrink-0 flex-col border-r border-slate-800/80 bg-slate-900/70">
       <div class="flex h-14 items-center gap-2.5 border-b border-slate-800 px-4">
-        <div class="flex h-8 w-8 items-center justify-center rounded-lg bg-sky-500/20 text-sky-400">
-          <Server class="h-4 w-4" />
-        </div>
+        <WireDeckLogo size="md" />
         <div>
-          <p class="text-sm font-semibold tracking-tight text-white">WireDeck2</p>
+          <p class="text-sm font-semibold tracking-tight text-white">WireDeck</p>
           <p class="text-[10px] uppercase tracking-wider text-slate-400">Operations</p>
         </div>
       </div>
@@ -109,7 +109,7 @@ function dotColor(status: string) {
           >
             <span class="flex items-center gap-2.5">
               <Bell class="h-4 w-4" />
-              Global Alarm Centre
+              Global Alarm Center
             </span>
             <span
               v-if="alarmStore.summary.activeCount > 0"
@@ -162,6 +162,12 @@ function dotColor(status: string) {
             <LogOut class="h-4 w-4" />
           </button>
         </div>
+        <div
+          class="flex items-center justify-between border-t border-slate-800/70 px-1 pt-2 font-mono text-[10px] text-slate-500"
+        >
+          <span>WireDeck</span>
+          <span>{{ appVersion }}</span>
+        </div>
       </div>
     </aside>
 
@@ -183,20 +189,20 @@ function dotColor(status: string) {
               <Activity class="h-3.5 w-3.5" /> Overview
             </RouterLink>
             <RouterLink
-              v-if="activeSite.webviewEnabled"
-              :to="`/sites/${activeSite.id}/webview`"
-              class="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium text-slate-400 hover:bg-slate-800 hover:text-slate-100"
-              active-class="bg-slate-800 text-white"
-            >
-              <Sliders class="h-3.5 w-3.5" /> WebView
-            </RouterLink>
-            <RouterLink
               v-if="activeSite.vncEnabled"
               :to="`/sites/${activeSite.id}/vnc`"
               class="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium text-slate-400 hover:bg-slate-800 hover:text-slate-100"
               active-class="bg-slate-800 text-white"
             >
               <Monitor class="h-3.5 w-3.5" /> VNC
+            </RouterLink>
+            <RouterLink
+              v-if="activeSite.webviewEnabled"
+              :to="`/sites/${activeSite.id}/webview`"
+              class="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+              active-class="bg-slate-800 text-white"
+            >
+              <Sliders class="h-3.5 w-3.5" /> WebView
             </RouterLink>
             <RouterLink
               v-if="activeSite.webviewEnabled"

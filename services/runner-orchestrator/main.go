@@ -11,16 +11,16 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/SzomorXVigyor/WireDeck2/pkg/api"
-	wcrypto "github.com/SzomorXVigyor/WireDeck2/pkg/crypto"
-	"github.com/SzomorXVigyor/WireDeck2/pkg/db"
-	"github.com/SzomorXVigyor/WireDeck2/pkg/internalclient"
-	"github.com/SzomorXVigyor/WireDeck2/pkg/k8s"
-	"github.com/SzomorXVigyor/WireDeck2/pkg/telemetry"
-	"github.com/SzomorXVigyor/WireDeck2/services/runner-orchestrator/internal/backend"
-	"github.com/SzomorXVigyor/WireDeck2/services/runner-orchestrator/internal/httpapi"
-	"github.com/SzomorXVigyor/WireDeck2/services/runner-orchestrator/internal/orchestrator"
-	"github.com/SzomorXVigyor/WireDeck2/services/runner-orchestrator/migrations"
+	"wiredeck/pkg/api"
+	wcrypto "wiredeck/pkg/crypto"
+	"wiredeck/pkg/db"
+	"wiredeck/pkg/internalclient"
+	"wiredeck/pkg/k8s"
+	"wiredeck/pkg/telemetry"
+	"wiredeck/services/runner-orchestrator/internal/backend"
+	"wiredeck/services/runner-orchestrator/internal/httpapi"
+	"wiredeck/services/runner-orchestrator/internal/orchestrator"
+	"wiredeck/services/runner-orchestrator/migrations"
 )
 
 func main() {

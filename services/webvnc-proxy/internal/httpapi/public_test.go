@@ -11,10 +11,10 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/SzomorXVigyor/WireDeck2/pkg/auth"
-	"github.com/SzomorXVigyor/WireDeck2/pkg/internalclient"
-	"github.com/SzomorXVigyor/WireDeck2/services/webvnc-proxy/internal/proxy"
-	"github.com/SzomorXVigyor/WireDeck2/services/webvnc-proxy/internal/sitecache"
+	"wiredeck/pkg/auth"
+	"wiredeck/pkg/internalclient"
+	"wiredeck/services/webvnc-proxy/internal/proxy"
+	"wiredeck/services/webvnc-proxy/internal/sitecache"
 )
 
 func TestWebVNCOpenAPIAndRoleSeparation(t *testing.T) {

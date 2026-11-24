@@ -1,4 +1,4 @@
-module github.com/SzomorXVigyor/WireDeck2
+module wiredeck
 
 go 1.26.2
 

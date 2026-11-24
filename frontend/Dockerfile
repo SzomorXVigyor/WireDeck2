@@ -6,6 +6,8 @@ COPY package.json pnpm-lock.yaml* ./
 RUN pnpm install --frozen-lockfile || pnpm install
 
 COPY . .
+ARG APP_VERSION=""
+ENV APP_VERSION=$APP_VERSION
 RUN pnpm build
 
 FROM nginx:1.27-alpine

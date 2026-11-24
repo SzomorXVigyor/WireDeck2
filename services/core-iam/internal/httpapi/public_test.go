@@ -12,8 +12,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/SzomorXVigyor/WireDeck2/pkg/auth"
-	"github.com/SzomorXVigyor/WireDeck2/services/core-iam/internal/service"
+	"wiredeck/pkg/auth"
+	"wiredeck/services/core-iam/internal/service"
 )
 
 func TestOpenAPISchemaAndAdminSeparation(t *testing.T) {

@@ -11,7 +11,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
 
-	wcrypto "github.com/SzomorXVigyor/WireDeck2/pkg/crypto"
+	wcrypto "wiredeck/pkg/crypto"
 )
 
 const (

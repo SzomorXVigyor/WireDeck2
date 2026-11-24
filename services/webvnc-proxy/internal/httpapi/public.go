@@ -11,13 +11,14 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"github.com/SzomorXVigyor/WireDeck2/pkg/api"
-	"github.com/SzomorXVigyor/WireDeck2/pkg/auth"
-	"github.com/SzomorXVigyor/WireDeck2/pkg/internalclient"
-	"github.com/SzomorXVigyor/WireDeck2/pkg/telemetry"
-	"github.com/SzomorXVigyor/WireDeck2/services/webvnc-proxy/internal/models"
-	"github.com/SzomorXVigyor/WireDeck2/services/webvnc-proxy/internal/proxy"
-	"github.com/SzomorXVigyor/WireDeck2/services/webvnc-proxy/internal/sitecache"
+	"wiredeck/pkg/api"
+	"wiredeck/pkg/auth"
+	"wiredeck/pkg/internalclient"
+	"wiredeck/pkg/telemetry"
+	"wiredeck/pkg/version"
+	"wiredeck/services/webvnc-proxy/internal/models"
+	"wiredeck/services/webvnc-proxy/internal/proxy"
+	"wiredeck/services/webvnc-proxy/internal/sitecache"
 )
 
 type authzCtxKey struct{}
@@ -97,7 +98,7 @@ func NewPublicRouter(svc *proxy.Service, verifier *auth.Verifier, cache *sitecac
 		svc.HandleStream(req.Context(), ws, prep)
 	})
 
-	humaAPI := api.NewHumaAPI(r, "WireDeck2 WebVNC Proxy API", "2.2.0", "/api/v1/vnc", enableDocs)
+	humaAPI := api.NewHumaAPI(r, "WireDeck WebVNC Proxy API", version.Version, "/api/v1/vnc", enableDocs)
 
 	// =========================================================================
 	// 1. Site Member Endpoints (/api/v1/vnc/sites/{siteId}/*)

@@ -7,9 +7,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"github.com/SzomorXVigyor/WireDeck2/pkg/auth"
-	"github.com/SzomorXVigyor/WireDeck2/pkg/telemetry"
-	"github.com/SzomorXVigyor/WireDeck2/services/webvnc-proxy/internal/proxy"
+	"wiredeck/pkg/auth"
+	"wiredeck/pkg/telemetry"
+	"wiredeck/services/webvnc-proxy/internal/proxy"
 )
 
 func NewInternalRouter(svc *proxy.Service, internalToken string, readyCheck func(context.Context) error) http.Handler {

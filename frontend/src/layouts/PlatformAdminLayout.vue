@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { useRouter } from 'vue-router'
-import { ArrowLeft, Cpu, LogOut, Server, Shield, SlidersHorizontal, User as UserIcon, Users } from 'lucide-vue-next'
+import { ArrowLeft, Cpu, LogOut, Server, SlidersHorizontal, User as UserIcon, Users } from 'lucide-vue-next'
+import WireDeckLogo from '../components/WireDeckLogo.vue'
 import { useAuthStore } from '../stores/auth'
 
 const auth = useAuthStore()
 const router = useRouter()
+const appVersion = __APP_VERSION__
 
 async function handleLogout() {
   await auth.logout()
@@ -17,11 +19,9 @@ async function handleLogout() {
     <!-- Dedicated Platform Admin Console Sidebar -->
     <aside class="flex w-64 shrink-0 flex-col border-r border-indigo-500/25 bg-slate-900/90">
       <div class="flex h-14 items-center gap-2.5 border-b border-indigo-500/25 bg-indigo-950/30 px-4">
-        <div class="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-500/25 text-indigo-300">
-          <Shield class="h-4 w-4" />
-        </div>
+        <WireDeckLogo size="md" variant="admin" />
         <div>
-          <p class="text-sm font-semibold text-white">WireDeck2</p>
+          <p class="text-sm font-semibold text-white">WireDeck</p>
           <p class="text-[10px] font-semibold uppercase tracking-wider text-indigo-300">Platform Admin</p>
         </div>
       </div>
@@ -90,6 +90,12 @@ async function handleLogout() {
           >
             <LogOut class="h-4 w-4" />
           </button>
+        </div>
+        <div
+          class="flex items-center justify-between border-t border-slate-800/70 px-1 pt-2 font-mono text-[10px] text-slate-500"
+        >
+          <span>WireDeck</span>
+          <span>{{ appVersion }}</span>
         </div>
       </div>
     </aside>

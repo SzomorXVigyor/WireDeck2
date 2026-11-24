@@ -47,7 +47,7 @@ WireDeck2 is a greenfield rewrite of WireDeck. It replaces the *discrete site ru
 
 ## 1. Scope & Non-Functional Targets
 
-- **In scope (v1):** Identity, admin email invites, password change/reset, per-site RBAC · site onboarding via WG client-config upload & `AllowedIPs` narrowing · automated runner provisioning, reconciliation & health monitoring · server-side-authenticated browser VNC · demand-driven Modbus TCP/UDP polling & REST writes · TimescaleDB sensor/register history with per-site toggle · latch/re-arm Alarm Centre with MailGopher alerts · OpenAPI 3.1 / Swagger docs.
+- **In scope (v1):** Identity, admin email invites, password change/reset, per-site RBAC · site onboarding via WG client-config upload & `AllowedIPs` narrowing · automated runner provisioning, reconciliation & health monitoring · server-side-authenticated browser VNC · demand-driven Modbus TCP/UDP polling & REST writes · TimescaleDB sensor/register history with per-site toggle · latch/re-arm Alarm Center with MailGopher alerts · OpenAPI 3.1 / Swagger docs.
 - **Out of scope (v1):** WireGuard server hosting · end-user VPN configs (D3) · embedded VPN portal (D8) · MFA (D11) · audit table (D16) · multi-tenancy above site level · migration from WireDeck 1.x.
 
 | Target | Value |

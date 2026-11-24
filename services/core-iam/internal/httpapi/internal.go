@@ -9,9 +9,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"github.com/SzomorXVigyor/WireDeck2/pkg/auth"
-	"github.com/SzomorXVigyor/WireDeck2/pkg/telemetry"
-	"github.com/SzomorXVigyor/WireDeck2/services/core-iam/internal/service"
+	"wiredeck/pkg/auth"
+	"wiredeck/pkg/telemetry"
+	"wiredeck/services/core-iam/internal/service"
 )
 
 // NewInternalRouter builds the :8081 internal control-plane router (never routed by Traefik).

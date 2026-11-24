@@ -13,15 +13,15 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/SzomorXVigyor/WireDeck2/pkg/auth"
-	wcrypto "github.com/SzomorXVigyor/WireDeck2/pkg/crypto"
-	"github.com/SzomorXVigyor/WireDeck2/pkg/db"
-	"github.com/SzomorXVigyor/WireDeck2/pkg/internalclient"
-	"github.com/SzomorXVigyor/WireDeck2/pkg/telemetry"
-	"github.com/SzomorXVigyor/WireDeck2/services/webvnc-proxy/internal/httpapi"
-	"github.com/SzomorXVigyor/WireDeck2/services/webvnc-proxy/internal/proxy"
-	"github.com/SzomorXVigyor/WireDeck2/services/webvnc-proxy/internal/sitecache"
-	"github.com/SzomorXVigyor/WireDeck2/services/webvnc-proxy/migrations"
+	"wiredeck/pkg/auth"
+	wcrypto "wiredeck/pkg/crypto"
+	"wiredeck/pkg/db"
+	"wiredeck/pkg/internalclient"
+	"wiredeck/pkg/telemetry"
+	"wiredeck/services/webvnc-proxy/internal/httpapi"
+	"wiredeck/services/webvnc-proxy/internal/proxy"
+	"wiredeck/services/webvnc-proxy/internal/sitecache"
+	"wiredeck/services/webvnc-proxy/migrations"
 )
 
 func main() {

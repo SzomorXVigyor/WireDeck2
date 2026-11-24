@@ -11,17 +11,17 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/SzomorXVigyor/WireDeck2/pkg/auth"
-	wcrypto "github.com/SzomorXVigyor/WireDeck2/pkg/crypto"
-	"github.com/SzomorXVigyor/WireDeck2/pkg/db"
-	"github.com/SzomorXVigyor/WireDeck2/pkg/internalclient"
-	"github.com/SzomorXVigyor/WireDeck2/pkg/k8s"
-	"github.com/SzomorXVigyor/WireDeck2/pkg/mailgopher"
-	"github.com/SzomorXVigyor/WireDeck2/pkg/telemetry"
-	"github.com/SzomorXVigyor/WireDeck2/pkg/wireguard"
-	"github.com/SzomorXVigyor/WireDeck2/services/core-iam/internal/httpapi"
-	"github.com/SzomorXVigyor/WireDeck2/services/core-iam/internal/service"
-	"github.com/SzomorXVigyor/WireDeck2/services/core-iam/migrations"
+	"wiredeck/pkg/auth"
+	wcrypto "wiredeck/pkg/crypto"
+	"wiredeck/pkg/db"
+	"wiredeck/pkg/internalclient"
+	"wiredeck/pkg/k8s"
+	"wiredeck/pkg/mailgopher"
+	"wiredeck/pkg/telemetry"
+	"wiredeck/pkg/wireguard"
+	"wiredeck/services/core-iam/internal/httpapi"
+	"wiredeck/services/core-iam/internal/service"
+	"wiredeck/services/core-iam/migrations"
 )
 
 func main() {

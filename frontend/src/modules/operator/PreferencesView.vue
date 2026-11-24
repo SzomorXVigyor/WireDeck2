@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { Check, Monitor, Moon, Sun } from 'lucide-vue-next'
+import WireDeckLogo from '../../components/WireDeckLogo.vue'
 import { useThemeStore, type ThemeMode } from '../../stores/theme'
 
 const theme = useThemeStore()
+const appVersion = __APP_VERSION__
 
 const systemLabel = computed(() => (theme.systemPrefersDark ? 'Dark' : 'Light'))
 
@@ -40,7 +42,7 @@ const options: ThemeOption[] = [
   <div class="mx-auto max-w-2xl space-y-6">
     <div>
       <h1 class="text-lg font-semibold text-white">Preferences</h1>
-      <p class="mt-0.5 text-xs text-slate-400">Personalize your WireDeck2 workspace settings.</p>
+      <p class="mt-0.5 text-xs text-slate-400">Personalize your WireDeck workspace settings.</p>
     </div>
 
     <section class="rounded-xl border border-slate-800 bg-slate-900/60 p-5 space-y-4">
@@ -48,7 +50,7 @@ const options: ThemeOption[] = [
         <div>
           <h2 class="text-base font-semibold text-white">Appearance</h2>
           <p class="mt-0.5 text-xs text-slate-400">
-            Choose how WireDeck2 looks on this device. System is selected by default.
+            Choose how WireDeck looks on this device. System is selected by default.
           </p>
         </div>
         <span class="rounded-full border border-slate-700 bg-slate-800 px-2.5 py-1 text-[11px] text-slate-300">
@@ -97,6 +99,21 @@ const options: ThemeOption[] = [
       <p class="text-[11px] text-slate-500">
         Your theme preference is saved automatically in this browser.
       </p>
+    </section>
+
+    <section class="rounded-xl border border-slate-800 bg-slate-900/60 p-5">
+      <div class="flex flex-wrap items-center justify-between gap-4">
+        <div class="flex items-center gap-3">
+          <WireDeckLogo size="md" />
+          <div>
+            <h2 class="text-sm font-semibold text-white">WireDeck</h2>
+            <p class="text-xs text-slate-400">Industrial Site Control Plane</p>
+          </div>
+        </div>
+        <div class="text-right font-mono text-xs text-slate-200">
+          {{ appVersion }}
+        </div>
+      </div>
     </section>
   </div>
 </template>

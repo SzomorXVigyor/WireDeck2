@@ -12,13 +12,13 @@ import (
 	"github.com/google/uuid"
 	"github.com/uptrace/bun"
 
-	"github.com/SzomorXVigyor/WireDeck2/pkg/internalclient"
-	"github.com/SzomorXVigyor/WireDeck2/pkg/wireguard"
-	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/alarm"
-	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/history"
-	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/models"
-	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/provider"
-	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/sitecache"
+	"wiredeck/pkg/internalclient"
+	"wiredeck/pkg/wireguard"
+	"wiredeck/services/webview-engine/internal/alarm"
+	"wiredeck/services/webview-engine/internal/history"
+	"wiredeck/services/webview-engine/internal/models"
+	"wiredeck/services/webview-engine/internal/provider"
+	"wiredeck/services/webview-engine/internal/sitecache"
 )
 
 var (

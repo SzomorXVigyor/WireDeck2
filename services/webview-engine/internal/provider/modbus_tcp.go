@@ -19,9 +19,9 @@ import (
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
 
-	"github.com/SzomorXVigyor/WireDeck2/pkg/wirerelay"
-	pb "github.com/SzomorXVigyor/WireDeck2/pkg/wirerelay/v1"
-	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/models"
+	"wiredeck/pkg/wirerelay"
+	pb "wiredeck/pkg/wirerelay/v1"
+	"wiredeck/services/webview-engine/internal/models"
 )
 
 const (

@@ -11,13 +11,14 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"github.com/SzomorXVigyor/WireDeck2/pkg/api"
-	"github.com/SzomorXVigyor/WireDeck2/pkg/auth"
-	"github.com/SzomorXVigyor/WireDeck2/pkg/internalclient"
-	"github.com/SzomorXVigyor/WireDeck2/pkg/telemetry"
-	"github.com/SzomorXVigyor/WireDeck2/pkg/wireguard"
-	"github.com/SzomorXVigyor/WireDeck2/services/core-iam/internal/models"
-	"github.com/SzomorXVigyor/WireDeck2/services/core-iam/internal/service"
+	"wiredeck/pkg/api"
+	"wiredeck/pkg/auth"
+	"wiredeck/pkg/internalclient"
+	"wiredeck/pkg/telemetry"
+	"wiredeck/pkg/version"
+	"wiredeck/pkg/wireguard"
+	"wiredeck/services/core-iam/internal/models"
+	"wiredeck/services/core-iam/internal/service"
 )
 
 const refreshCookieName = "wd2_refresh"
@@ -111,7 +112,7 @@ func NewPublicRouter(svc *service.IAMService, verifier *auth.Verifier, opts Publ
 		_ = json.NewEncoder(w).Encode(svc.Signer().JWKS())
 	})
 
-	humaAPI := api.NewHumaAPI(r, "WireDeck2 Core IAM API", "2.2.0", "/api/v1/iam", opts.EnableDocs)
+	humaAPI := api.NewHumaAPI(r, "WireDeck Core IAM API", version.Version, "/api/v1/iam", opts.EnableDocs)
 
 	makeRefreshCookie := func(raw string, expires time.Time) http.Cookie {
 		return http.Cookie{

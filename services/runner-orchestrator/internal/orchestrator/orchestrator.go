@@ -14,12 +14,12 @@ import (
 	"github.com/uptrace/bun"
 	"google.golang.org/grpc"
 
-	wcrypto "github.com/SzomorXVigyor/WireDeck2/pkg/crypto"
-	"github.com/SzomorXVigyor/WireDeck2/pkg/internalclient"
-	"github.com/SzomorXVigyor/WireDeck2/pkg/wirerelay"
-	pb "github.com/SzomorXVigyor/WireDeck2/pkg/wirerelay/v1"
-	"github.com/SzomorXVigyor/WireDeck2/services/runner-orchestrator/internal/backend"
-	"github.com/SzomorXVigyor/WireDeck2/services/runner-orchestrator/internal/models"
+	wcrypto "wiredeck/pkg/crypto"
+	"wiredeck/pkg/internalclient"
+	"wiredeck/pkg/wirerelay"
+	pb "wiredeck/pkg/wirerelay/v1"
+	"wiredeck/services/runner-orchestrator/internal/backend"
+	"wiredeck/services/runner-orchestrator/internal/models"
 )
 
 var ErrNotFound = errors.New("runner not found")

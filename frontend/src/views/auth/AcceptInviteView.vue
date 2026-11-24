@@ -129,7 +129,7 @@ async function goToLogin() {
           </div>
         </div>
         <p class="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs leading-relaxed text-emerald-200">
-          Your WireDeck2 account is now active. You can sign in using your email and new password.
+          Your WireDeck account is now active. You can sign in using your email and new password.
         </p>
         <button
           type="button"
@@ -148,7 +148,7 @@ async function goToLogin() {
           </div>
           <div>
             <h1 class="text-lg font-semibold text-white">Accept Invitation</h1>
-            <p class="text-xs text-slate-400">Set your WireDeck2 account password</p>
+            <p class="text-xs text-slate-400">Set your WireDeck account password</p>
           </div>
         </div>
 

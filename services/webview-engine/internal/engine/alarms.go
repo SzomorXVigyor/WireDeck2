@@ -12,8 +12,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/uptrace/bun"
 
-	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/alarm"
-	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/models"
+	"wiredeck/services/webview-engine/internal/alarm"
+	"wiredeck/services/webview-engine/internal/models"
 )
 
 type AlarmRuleView struct {

@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Server } from 'lucide-vue-next'
+import WireDeckLogo from '../../components/WireDeckLogo.vue'
 import { useAuthStore } from '../../stores/auth'
+
+const appVersion = __APP_VERSION__
 
 const auth = useAuthStore()
 const route = useRoute()
@@ -32,11 +34,9 @@ async function onSubmit() {
   <div class="flex min-h-screen items-center justify-center bg-slate-950 p-4">
     <div class="w-full max-w-sm rounded-2xl border border-slate-800 bg-slate-900/90 p-7 shadow-2xl">
       <div class="mb-6 flex items-center gap-3">
-        <div class="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-500/20 text-sky-400">
-          <Server class="h-5 w-5" />
-        </div>
+        <WireDeckLogo size="lg" />
         <div>
-          <h1 class="text-lg font-semibold text-white">WireDeck2</h1>
+          <h1 class="text-lg font-semibold text-white">WireDeck</h1>
           <p class="text-xs text-slate-400">Sign in to your control plane</p>
         </div>
       </div>
@@ -81,6 +81,10 @@ async function onSubmit() {
           Forgot your password?
         </RouterLink>
       </div>
+
+      <p class="mt-5 border-t border-slate-800/70 pt-3 text-center font-mono text-[10px] text-slate-500">
+        WireDeck {{ appVersion }}
+      </p>
     </div>
   </div>
 </template>

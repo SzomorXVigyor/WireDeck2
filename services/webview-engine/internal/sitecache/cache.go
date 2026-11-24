@@ -10,7 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/SzomorXVigyor/WireDeck2/pkg/internalclient"
+	"wiredeck/pkg/internalclient"
 )
 
 type authzEntry struct {

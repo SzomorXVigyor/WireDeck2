@@ -6,7 +6,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/uptrace/bun"
 
-	"github.com/SzomorXVigyor/WireDeck2/pkg/wireguard"
+	"wiredeck/pkg/wireguard"
 )
 
 const (
