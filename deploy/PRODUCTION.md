@@ -104,6 +104,14 @@ grep -q '/var/lib/wiredeck2/runners' /etc/fstab || \
   echo 'tmpfs /var/lib/wiredeck2/runners tmpfs size=16m,mode=0700 0 0' | sudo tee -a /etc/fstab
 ```
 
+### C. Load the `wireguard` Kernel Module (Prod & Staging)
+Site runners only receive `NET_ADMIN` (not `SYS_MODULE`), so the host kernel must already have the `wireguard` module loaded:
+```bash
+sudo modprobe wireguard
+echo wireguard | sudo tee /etc/modules-load.d/wireguard.conf
+```
+*(If your server is a Proxmox LXC container, run those two commands on the **Proxmox host**.)*
+
 ---
 
 ## 4. Generate Keys & Configure `.env`
@@ -116,6 +124,11 @@ openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 | base64 -w0; echo
 # Paste into the matching keys
 for k in WG_CONF_ENCRYPTION_KEY VNC_PASSWORD_ENCRYPTION_KEY RUNNER_TOKEN_ENCRYPTION_KEY INTERNAL_API_TOKEN; do
   echo "${k}=$(openssl rand -base64 32)"
+done
+
+# URL-safe DB passwords (hex avoids @, :, /, #, ?, % breaking DATABASE_URL parsing)
+for k in OLTP_ADMIN_PASSWORD IAM_DB_PASSWORD ORCHESTRATOR_DB_PASSWORD WEBVNC_DB_PASSWORD WEBVIEW_DB_PASSWORD TSDB_ADMIN_PASSWORD TSDB_HISTORY_PASSWORD; do
+  echo "${k}=$(openssl rand -hex 24)"
 done
 ```
 Set `chmod 600 .env`, pin `WIREDECK_VERSION` to a GitHub Release tag (e.g. `v26.11-241200`), and fill in `ROOT_DOMAIN`, DB passwords, and `SMTP_ACCOUNTS` (prod/staging).
@@ -153,6 +166,19 @@ server {
 }
 ```
 
+### Nginx Proxy Manager / NPMplus (Separate Host)
+1. On the staging host `.env`, change `STAGING_HTTP_BIND` from `127.0.0.1:8080` to `0.0.0.0:8080` (or `<STAGING_LAN_IP>:8080`), include your NPMplus IP in `TRUSTED_PROXY_IPS` if it is outside RFC1918 private ranges, and restrict port `8080/tcp` on the staging firewall to the NPMplus IP only.
+2. Create a **Proxy Host** in NPMplus:
+   - **Domain Names:** exact `ROOT_DOMAIN` from `.env` (used by `core-iam` for invite/reset links)
+   - **Scheme:** `http` | **Forward Hostname/IP:** `<STAGING_HOST_IP>` | **Forward Port:** `8080`
+   - **Websockets Support:** **Enabled** (required for WebView & VNC streams)
+   - **SSL:** Enable certificate + **Force SSL** + **HTTP/2**
+   - **Advanced tab** (prevents Nginx's 60s timeout from dropping idle VNC/WebView WebSockets):
+     ```nginx
+     proxy_read_timeout 3600s;
+     proxy_send_timeout 3600s;
+     ```
+
 ### Caddy example
 ```caddy
 staging.wiredeck.example.com {
@@ -176,7 +202,7 @@ docker compose -f docker-compose.prod.yml --env-file .env up -d
 docker compose -f docker-compose.staging.yml --env-file .env pull
 docker compose -f docker-compose.staging.yml --env-file .env up -d
 ```
-Staging includes **Watchtower** (`nickfedor/watchtower:1.24.1`, opt-in scoped to `wiredeck-staging`). With `WIREDECK_VERSION=latest`, Watchtower polls GHCR every `WATCHTOWER_POLL_INTERVAL` seconds (default `300s`) and automatically pulls, restarts, and cleans up old images for `frontend`, `core-iam`, `runner-orchestrator`, `webview-engine`, and `webvnc-proxy` whenever GitHub Actions publishes new images — without touching Postgres, TimescaleDB, Traefik, or site runners. Set `DOCKER_CONFIG_DIR` in `.env` to the host `.docker` folder where you ran `docker login ghcr.io` if your GHCR packages are private.
+Staging includes **Watchtower** (`nickfedor/watchtower:1.24.1`, opt-in scoped to `wiredeck-staging` with `INCLUDE_STOPPED` + `REVIVE_STOPPED`). With `WIREDECK_VERSION=latest`, Watchtower polls GHCR every `WATCHTOWER_POLL_INTERVAL` seconds (default `300s`) and automatically pulls, runs/restarts in dependency order, and cleans up old images for all 7 WireDeck containers (`oltp-migrator`, `tsdb-migrator`, `frontend`, `core-iam`, `runner-orchestrator`, `webview-engine`, and `webvnc-proxy`) whenever GitHub Actions publishes new images — without touching Postgres, TimescaleDB, Traefik, or site runners. Set `DOCKER_CONFIG_DIR` in `.env` to the host `.docker` folder where you ran `docker login ghcr.io` if your GHCR packages are private.
 
 **Local (builds from local source):**
 ```bash

@@ -30,7 +30,7 @@ services:
       POSTGRES_PASSWORD: ${OLTP_ADMIN_PASSWORD}
       POSTGRES_DB: wiredeck_oltp
     volumes:
-      - postgres_oltp_data:/var/lib/postgresql/data
+      - postgres_oltp_data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${OLTP_ADMIN_USER} -d wiredeck_oltp"]
       interval: 10s
@@ -150,7 +150,7 @@ services:
   core-iam:
     image: ${WIREDECK_REGISTRY:-ghcr.io/szomorxvigyor/wiredeck2}/core-iam:${WIREDECK_VERSION}
     container_name: wiredeck-core-iam
-    networks: [wiredeck-control]
+    networks: [wiredeck-control, wiredeck-ingress]
     logging: *default-logging
     read_only: true
     security_opt:
@@ -170,9 +170,9 @@ services:
       WG_CONF_ENCRYPTION_KEY: ${WG_CONF_ENCRYPTION_KEY}
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
       RESERVED_CIDRS: ${RESERVED_CIDRS:-172.30.248.0/24,172.30.252.0/22}
-      ORCHESTRATOR_URL: http://runner-orchestrator:8081
-      WEBVIEW_INTERNAL_URL: http://webview-engine:8081
-      WEBVNC_INTERNAL_URL: http://webvnc-proxy:8081
+      ORCHESTRATOR_URL: http://runner-orchestrator-ctrl:8081
+      WEBVIEW_INTERNAL_URL: http://webview-engine-ctrl:8081
+      WEBVNC_INTERNAL_URL: http://webvnc-proxy-ctrl:8081
       MAILGOPHER_URL: http://mailgopher:8080
       INIT_ADMIN_EMAIL: ${INIT_ADMIN_EMAIL}
       INIT_ADMIN_PASSWORD: ${INIT_ADMIN_PASSWORD}
@@ -206,7 +206,11 @@ services:
   runner-orchestrator:
     image: ${WIREDECK_REGISTRY:-ghcr.io/szomorxvigyor/wiredeck2}/runner-orchestrator:${WIREDECK_VERSION}
     container_name: wiredeck-runner-orchestrator
-    networks: [wiredeck-control, wiredeck-runners]
+    networks:
+      wiredeck-control:
+        aliases:
+          - runner-orchestrator-ctrl
+      wiredeck-runners: {}
     logging: *default-logging
     read_only: true
     security_opt:
@@ -218,8 +222,8 @@ services:
       DATABASE_URL: postgresql://svc_runner_orchestrator:${ORCHESTRATOR_DB_PASSWORD}@postgres-oltp:5432/wiredeck_oltp?sslmode=disable
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
       CORE_IAM_INTERNAL_URL: http://core-iam:8081
-      WEBVIEW_INTERNAL_URL: http://webview-engine:8081
-      WEBVNC_INTERNAL_URL: http://webvnc-proxy:8081
+      WEBVIEW_INTERNAL_URL: http://webview-engine-ctrl:8081
+      WEBVNC_INTERNAL_URL: http://webvnc-proxy-ctrl:8081
       DOCKER_HOST: unix:///var/run/docker.sock
       RUNNER_IMAGE: ${WIRERELAY_IMAGE_URL}
       RUNNER_NETWORK: wiredeck-runners
@@ -246,7 +250,11 @@ services:
   webview-engine:
     image: ${WIREDECK_REGISTRY:-ghcr.io/szomorxvigyor/wiredeck2}/webview-engine:${WIREDECK_VERSION}
     container_name: wiredeck-webview-engine
-    networks: [wiredeck-control, wiredeck-runners]
+    networks:
+      wiredeck-control:
+        aliases:
+          - webview-engine-ctrl
+      wiredeck-runners: {}
     logging: *default-logging
     read_only: true
     security_opt:
@@ -259,7 +267,7 @@ services:
       DATABASE_URL: postgresql://svc_webview_engine:${WEBVIEW_DB_PASSWORD}@postgres-oltp:5432/wiredeck_oltp?sslmode=disable
       TSDB_DATABASE_URL: postgresql://svc_webview_history:${TSDB_HISTORY_PASSWORD}@postgres-tsdb:5432/wiredeck_history?sslmode=disable
       CORE_IAM_INTERNAL_URL: http://core-iam:8081
-      ORCHESTRATOR_URL: http://runner-orchestrator:8081
+      ORCHESTRATOR_URL: http://runner-orchestrator-ctrl:8081
       JWKS_URL: http://core-iam:8080/api/v1/iam/.well-known/jwks.json
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
       MAILGOPHER_URL: http://mailgopher:8080
@@ -295,7 +303,11 @@ services:
   webvnc-proxy:
     image: ${WIREDECK_REGISTRY:-ghcr.io/szomorxvigyor/wiredeck2}/webvnc-proxy:${WIREDECK_VERSION}
     container_name: wiredeck-webvnc-proxy
-    networks: [wiredeck-control, wiredeck-runners]
+    networks:
+      wiredeck-control:
+        aliases:
+          - webvnc-proxy-ctrl
+      wiredeck-runners: {}
     logging: *default-logging
     read_only: true
     security_opt:
@@ -307,7 +319,7 @@ services:
       ENABLE_OPENAPI_DOCS: ${ENABLE_OPENAPI_DOCS:-false}
       DATABASE_URL: postgresql://svc_webvnc_proxy:${WEBVNC_DB_PASSWORD}@postgres-oltp:5432/wiredeck_oltp?sslmode=disable
       CORE_IAM_INTERNAL_URL: http://core-iam:8081
-      ORCHESTRATOR_URL: http://runner-orchestrator:8081
+      ORCHESTRATOR_URL: http://runner-orchestrator-ctrl:8081
       JWKS_URL: http://core-iam:8080/api/v1/iam/.well-known/jwks.json
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
       VNC_PASSWORD_ENCRYPTION_KEY: ${VNC_PASSWORD_ENCRYPTION_KEY}
@@ -338,7 +350,7 @@ services:
   mailgopher:
     image: ${MAILGOPHER_IMAGE_URL}
     container_name: wiredeck-mailgopher
-    networks: [wiredeck-control]
+    networks: [wiredeck-control, wiredeck-ingress]
     logging: *default-logging
     read_only: true
     security_opt:

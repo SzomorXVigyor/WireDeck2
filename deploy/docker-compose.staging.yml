@@ -31,7 +31,7 @@ services:
       POSTGRES_PASSWORD: ${OLTP_ADMIN_PASSWORD}
       POSTGRES_DB: wiredeck_oltp
     volumes:
-      - postgres_oltp_data:/var/lib/postgresql/data
+      - postgres_oltp_data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${OLTP_ADMIN_USER} -d wiredeck_oltp"]
       interval: 10s
@@ -55,6 +55,9 @@ services:
     depends_on:
       postgres-oltp:
         condition: service_healthy
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
+      com.centurylinklabs.watchtower.scope: "wiredeck-staging"
     restart: "no"
 
   postgres-tsdb:
@@ -90,6 +93,9 @@ services:
     depends_on:
       postgres-tsdb:
         condition: service_healthy
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
+      com.centurylinklabs.watchtower.scope: "wiredeck-staging"
     restart: "no"
 
   # ---------------------------------------------------------------------------
@@ -130,7 +136,7 @@ services:
     labels:
       traefik.enable: "true"
       traefik.docker.network: wiredeck-control
-      traefik.http.routers.frontend.rule: Host(`${ROOT_DOMAIN}`)
+      traefik.http.routers.frontend.rule: PathPrefix(`/`)
       traefik.http.routers.frontend.entrypoints: web
       traefik.http.routers.frontend.priority: "1"
       traefik.http.routers.frontend.middlewares: security-headers@file
@@ -145,7 +151,7 @@ services:
   core-iam:
     image: ${WIREDECK_REGISTRY:-ghcr.io/szomorxvigyor/wiredeck2}/core-iam:${WIREDECK_VERSION}
     container_name: wiredeck-staging-core-iam
-    networks: [wiredeck-control]
+    networks: [wiredeck-control, wiredeck-ingress]
     logging: *default-logging
     read_only: true
     security_opt:
@@ -165,26 +171,27 @@ services:
       WG_CONF_ENCRYPTION_KEY: ${WG_CONF_ENCRYPTION_KEY}
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
       RESERVED_CIDRS: ${RESERVED_CIDRS:-172.30.248.0/24,172.30.252.0/22}
-      ORCHESTRATOR_URL: http://runner-orchestrator:8081
-      WEBVIEW_INTERNAL_URL: http://webview-engine:8081
-      WEBVNC_INTERNAL_URL: http://webvnc-proxy:8081
+      ORCHESTRATOR_URL: http://runner-orchestrator-ctrl:8081
+      WEBVIEW_INTERNAL_URL: http://webview-engine-ctrl:8081
+      WEBVNC_INTERNAL_URL: http://webvnc-proxy-ctrl:8081
       MAILGOPHER_URL: http://mailgopher:8080
       INIT_ADMIN_EMAIL: ${INIT_ADMIN_EMAIL}
       INIT_ADMIN_PASSWORD: ${INIT_ADMIN_PASSWORD}
     labels:
       traefik.enable: "true"
       traefik.docker.network: wiredeck-control
-      traefik.http.routers.core-iam-auth.rule: Host(`${ROOT_DOMAIN}`) && PathPrefix(`/api/v1/iam/auth`)
+      traefik.http.routers.core-iam-auth.rule: PathPrefix(`/api/v1/iam/auth`)
       traefik.http.routers.core-iam-auth.entrypoints: web
       traefik.http.routers.core-iam-auth.priority: "20"
       traefik.http.routers.core-iam-auth.middlewares: security-headers@file,auth-ratelimit@file
-      traefik.http.routers.core-iam.rule: Host(`${ROOT_DOMAIN}`) && PathPrefix(`/api/v1/iam`)
+      traefik.http.routers.core-iam.rule: PathPrefix(`/api/v1/iam`)
       traefik.http.routers.core-iam.entrypoints: web
       traefik.http.routers.core-iam.priority: "10"
       traefik.http.routers.core-iam.middlewares: security-headers@file
       traefik.http.services.core-iam.loadbalancer.server.port: "8080"
       com.centurylinklabs.watchtower.enable: "true"
       com.centurylinklabs.watchtower.scope: "wiredeck-staging"
+      com.centurylinklabs.watchtower.depends-on: "wiredeck-staging-oltp-migrator"
     healthcheck:
       test: ["CMD", "/core-iam", "-healthcheck"]
       interval: 15s
@@ -200,7 +207,11 @@ services:
   runner-orchestrator:
     image: ${WIREDECK_REGISTRY:-ghcr.io/szomorxvigyor/wiredeck2}/runner-orchestrator:${WIREDECK_VERSION}
     container_name: wiredeck-staging-runner-orchestrator
-    networks: [wiredeck-control, wiredeck-runners]
+    networks:
+      wiredeck-control:
+        aliases:
+          - runner-orchestrator-ctrl
+      wiredeck-runners: {}
     logging: *default-logging
     read_only: true
     security_opt:
@@ -212,8 +223,8 @@ services:
       DATABASE_URL: postgresql://svc_runner_orchestrator:${ORCHESTRATOR_DB_PASSWORD}@postgres-oltp:5432/wiredeck_oltp?sslmode=disable
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
       CORE_IAM_INTERNAL_URL: http://core-iam:8081
-      WEBVIEW_INTERNAL_URL: http://webview-engine:8081
-      WEBVNC_INTERNAL_URL: http://webvnc-proxy:8081
+      WEBVIEW_INTERNAL_URL: http://webview-engine-ctrl:8081
+      WEBVNC_INTERNAL_URL: http://webvnc-proxy-ctrl:8081
       DOCKER_HOST: unix:///var/run/docker.sock
       RUNNER_IMAGE: ${WIRERELAY_IMAGE_URL}
       RUNNER_NETWORK: wiredeck-runners
@@ -227,6 +238,7 @@ services:
     labels:
       com.centurylinklabs.watchtower.enable: "true"
       com.centurylinklabs.watchtower.scope: "wiredeck-staging"
+      com.centurylinklabs.watchtower.depends-on: "wiredeck-staging-oltp-migrator,wiredeck-staging-core-iam"
     healthcheck:
       test: ["CMD", "/runner-orchestrator", "-healthcheck"]
       interval: 15s
@@ -242,7 +254,11 @@ services:
   webview-engine:
     image: ${WIREDECK_REGISTRY:-ghcr.io/szomorxvigyor/wiredeck2}/webview-engine:${WIREDECK_VERSION}
     container_name: wiredeck-staging-webview-engine
-    networks: [wiredeck-control, wiredeck-runners]
+    networks:
+      wiredeck-control:
+        aliases:
+          - webview-engine-ctrl
+      wiredeck-runners: {}
     logging: *default-logging
     read_only: true
     security_opt:
@@ -255,7 +271,7 @@ services:
       DATABASE_URL: postgresql://svc_webview_engine:${WEBVIEW_DB_PASSWORD}@postgres-oltp:5432/wiredeck_oltp?sslmode=disable
       TSDB_DATABASE_URL: postgresql://svc_webview_history:${TSDB_HISTORY_PASSWORD}@postgres-tsdb:5432/wiredeck_history?sslmode=disable
       CORE_IAM_INTERNAL_URL: http://core-iam:8081
-      ORCHESTRATOR_URL: http://runner-orchestrator:8081
+      ORCHESTRATOR_URL: http://runner-orchestrator-ctrl:8081
       JWKS_URL: http://core-iam:8080/api/v1/iam/.well-known/jwks.json
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
       MAILGOPHER_URL: http://mailgopher:8080
@@ -266,13 +282,14 @@ services:
     labels:
       traefik.enable: "true"
       traefik.docker.network: wiredeck-control
-      traefik.http.routers.webview.rule: Host(`${ROOT_DOMAIN}`) && PathPrefix(`/api/v1/webview`)
+      traefik.http.routers.webview.rule: PathPrefix(`/api/v1/webview`)
       traefik.http.routers.webview.entrypoints: web
       traefik.http.routers.webview.priority: "10"
       traefik.http.routers.webview.middlewares: security-headers@file
       traefik.http.services.webview.loadbalancer.server.port: "8080"
       com.centurylinklabs.watchtower.enable: "true"
       com.centurylinklabs.watchtower.scope: "wiredeck-staging"
+      com.centurylinklabs.watchtower.depends-on: "wiredeck-staging-oltp-migrator,wiredeck-staging-tsdb-migrator,wiredeck-staging-core-iam"
     healthcheck:
       test: ["CMD", "/webview-engine", "-healthcheck"]
       interval: 15s
@@ -292,7 +309,11 @@ services:
   webvnc-proxy:
     image: ${WIREDECK_REGISTRY:-ghcr.io/szomorxvigyor/wiredeck2}/webvnc-proxy:${WIREDECK_VERSION}
     container_name: wiredeck-staging-webvnc-proxy
-    networks: [wiredeck-control, wiredeck-runners]
+    networks:
+      wiredeck-control:
+        aliases:
+          - webvnc-proxy-ctrl
+      wiredeck-runners: {}
     logging: *default-logging
     read_only: true
     security_opt:
@@ -304,7 +325,7 @@ services:
       ENABLE_OPENAPI_DOCS: ${ENABLE_OPENAPI_DOCS:-true}
       DATABASE_URL: postgresql://svc_webvnc_proxy:${WEBVNC_DB_PASSWORD}@postgres-oltp:5432/wiredeck_oltp?sslmode=disable
       CORE_IAM_INTERNAL_URL: http://core-iam:8081
-      ORCHESTRATOR_URL: http://runner-orchestrator:8081
+      ORCHESTRATOR_URL: http://runner-orchestrator-ctrl:8081
       JWKS_URL: http://core-iam:8080/api/v1/iam/.well-known/jwks.json
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
       VNC_PASSWORD_ENCRYPTION_KEY: ${VNC_PASSWORD_ENCRYPTION_KEY}
@@ -313,13 +334,14 @@ services:
     labels:
       traefik.enable: "true"
       traefik.docker.network: wiredeck-control
-      traefik.http.routers.webvnc.rule: Host(`${ROOT_DOMAIN}`) && PathPrefix(`/api/v1/vnc`)
+      traefik.http.routers.webvnc.rule: PathPrefix(`/api/v1/vnc`)
       traefik.http.routers.webvnc.entrypoints: web
       traefik.http.routers.webvnc.priority: "10"
       traefik.http.routers.webvnc.middlewares: security-headers@file
       traefik.http.services.webvnc.loadbalancer.server.port: "8080"
       com.centurylinklabs.watchtower.enable: "true"
       com.centurylinklabs.watchtower.scope: "wiredeck-staging"
+      com.centurylinklabs.watchtower.depends-on: "wiredeck-staging-oltp-migrator,wiredeck-staging-core-iam"
     healthcheck:
       test: ["CMD", "/webvnc-proxy", "-healthcheck"]
       interval: 15s
@@ -335,7 +357,7 @@ services:
   mailgopher:
     image: ${MAILGOPHER_IMAGE_URL}
     container_name: wiredeck-staging-mailgopher
-    networks: [wiredeck-control]
+    networks: [wiredeck-control, wiredeck-ingress]
     logging: *default-logging
     read_only: true
     security_opt:
@@ -364,6 +386,8 @@ services:
     environment:
       WATCHTOWER_LABEL_ENABLE: "true"
       WATCHTOWER_SCOPE: "wiredeck-staging"
+      WATCHTOWER_INCLUDE_STOPPED: "true"
+      WATCHTOWER_REVIVE_STOPPED: "true"
       WATCHTOWER_CLEANUP: "true"
       WATCHTOWER_POLL_INTERVAL: "${WATCHTOWER_POLL_INTERVAL:-300}"
       WATCHTOWER_TIMEOUT: "30s"

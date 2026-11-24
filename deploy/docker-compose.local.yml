@@ -18,7 +18,7 @@ services:
       POSTGRES_PASSWORD: ${OLTP_ADMIN_PASSWORD:-localoltpadmin}
       POSTGRES_DB: wiredeck_oltp
     volumes:
-      - postgres_oltp_local:/var/lib/postgresql/data
+      - postgres_oltp_local:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${OLTP_ADMIN_USER:-postgres} -d wiredeck_oltp"]
       interval: 5s
@@ -142,7 +142,7 @@ services:
       dockerfile: services/core-iam/Dockerfile
     image: wiredeck-local/core-iam:local
     container_name: wiredeck-local-core-iam
-    networks: [wiredeck-control]
+    networks: [wiredeck-control, wiredeck-ingress]
     environment:
       PUBLIC_ADDR: ":8080"
       INTERNAL_ADDR: ":8081"
@@ -158,9 +158,9 @@ services:
       WG_CONF_ENCRYPTION_KEY: ${WG_CONF_ENCRYPTION_KEY}
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
       RESERVED_CIDRS: ${RESERVED_CIDRS:-172.30.248.0/24,172.30.252.0/22}
-      ORCHESTRATOR_URL: http://runner-orchestrator:8081
-      WEBVIEW_INTERNAL_URL: http://webview-engine:8081
-      WEBVNC_INTERNAL_URL: http://webvnc-proxy:8081
+      ORCHESTRATOR_URL: http://runner-orchestrator-ctrl:8081
+      WEBVIEW_INTERNAL_URL: http://webview-engine-ctrl:8081
+      WEBVNC_INTERNAL_URL: http://webvnc-proxy-ctrl:8081
       MAILGOPHER_URL: http://mailgopher:8080
       INIT_ADMIN_EMAIL: ${INIT_ADMIN_EMAIL:-admin@wiredeck.local}
       INIT_ADMIN_PASSWORD: ${INIT_ADMIN_PASSWORD:-AdminPassword!2026}
@@ -190,7 +190,11 @@ services:
       dockerfile: services/runner-orchestrator/Dockerfile
     image: wiredeck-local/runner-orchestrator:local
     container_name: wiredeck-local-runner-orchestrator
-    networks: [wiredeck-control, wiredeck-runners]
+    networks:
+      wiredeck-control:
+        aliases:
+          - runner-orchestrator-ctrl
+      wiredeck-runners: {}
     environment:
       INTERNAL_ADDR: ":8081"
       BIND_SUBNET: ${CONTROL_NET_CIDR:-172.30.248.0/24}
@@ -198,8 +202,8 @@ services:
       DATABASE_URL: postgresql://svc_runner_orchestrator:${ORCHESTRATOR_DB_PASSWORD:-orchpass}@postgres-oltp:5432/wiredeck_oltp?sslmode=disable
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
       CORE_IAM_INTERNAL_URL: http://core-iam:8081
-      WEBVIEW_INTERNAL_URL: http://webview-engine:8081
-      WEBVNC_INTERNAL_URL: http://webvnc-proxy:8081
+      WEBVIEW_INTERNAL_URL: http://webview-engine-ctrl:8081
+      WEBVNC_INTERNAL_URL: http://webvnc-proxy-ctrl:8081
       DOCKER_HOST: unix:///var/run/docker.sock
       RUNNER_IMAGE: ${WIRERELAY_IMAGE_URL:-ghcr.io/szomorxvigyor/wirerelay:v1.1.0}
       RUNNER_NETWORK: wiredeck-local-runners
@@ -228,7 +232,11 @@ services:
       dockerfile: services/webview-engine/Dockerfile
     image: wiredeck-local/webview-engine:local
     container_name: wiredeck-local-webview-engine
-    networks: [wiredeck-control, wiredeck-runners]
+    networks:
+      wiredeck-control:
+        aliases:
+          - webview-engine-ctrl
+      wiredeck-runners: {}
     environment:
       PUBLIC_ADDR: ":8080"
       INTERNAL_ADDR: ":8081"
@@ -237,7 +245,7 @@ services:
       DATABASE_URL: postgresql://svc_webview_engine:${WEBVIEW_DB_PASSWORD:-viewpass}@postgres-oltp:5432/wiredeck_oltp?sslmode=disable
       TSDB_DATABASE_URL: postgresql://svc_webview_history:${TSDB_HISTORY_PASSWORD:-historypass}@postgres-tsdb:5432/wiredeck_history?sslmode=disable
       CORE_IAM_INTERNAL_URL: http://core-iam:8081
-      ORCHESTRATOR_URL: http://runner-orchestrator:8081
+      ORCHESTRATOR_URL: http://runner-orchestrator-ctrl:8081
       JWKS_URL: http://core-iam:8080/api/v1/iam/.well-known/jwks.json
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
       MAILGOPHER_URL: http://mailgopher:8080
@@ -274,7 +282,11 @@ services:
       dockerfile: services/webvnc-proxy/Dockerfile
     image: wiredeck-local/webvnc-proxy:local
     container_name: wiredeck-local-webvnc-proxy
-    networks: [wiredeck-control, wiredeck-runners]
+    networks:
+      wiredeck-control:
+        aliases:
+          - webvnc-proxy-ctrl
+      wiredeck-runners: {}
     environment:
       PUBLIC_ADDR: ":8080"
       INTERNAL_ADDR: ":8081"
@@ -282,7 +294,7 @@ services:
       ENABLE_OPENAPI_DOCS: ${ENABLE_OPENAPI_DOCS:-true}
       DATABASE_URL: postgresql://svc_webvnc_proxy:${WEBVNC_DB_PASSWORD:-vncpass}@postgres-oltp:5432/wiredeck_oltp?sslmode=disable
       CORE_IAM_INTERNAL_URL: http://core-iam:8081
-      ORCHESTRATOR_URL: http://runner-orchestrator:8081
+      ORCHESTRATOR_URL: http://runner-orchestrator-ctrl:8081
       JWKS_URL: http://core-iam:8080/api/v1/iam/.well-known/jwks.json
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
       VNC_PASSWORD_ENCRYPTION_KEY: ${VNC_PASSWORD_ENCRYPTION_KEY}
