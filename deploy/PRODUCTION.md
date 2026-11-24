@@ -98,9 +98,10 @@ Keeps site WireGuard private keys in RAM only (`runner-orchestrator` repopulates
 sudo mkdir -p /var/lib/wiredeck2/runners
 sudo mount -t tmpfs -o size=16m,mode=0700 tmpfs /var/lib/wiredeck2/runners
 ```
-Persist in `/etc/fstab`:
-```text
-tmpfs /var/lib/wiredeck2/runners tmpfs size=16m,mode=0700 0 0
+Persist across reboots in `/etc/fstab`:
+```bash
+grep -q '/var/lib/wiredeck2/runners' /etc/fstab || \
+  echo 'tmpfs /var/lib/wiredeck2/runners tmpfs size=16m,mode=0700 0 0' | sudo tee -a /etc/fstab
 ```
 
 ---
