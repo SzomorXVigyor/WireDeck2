@@ -1,0 +1,337 @@
+name: wiredeck-local
+
+# =============================================================================
+# WireDeck Local Testing Docker Compose (Local Builds, Plain HTTP, No Certs)
+#
+# Builds all 7 WireDeck images directly from local source code.
+# Serves everything over plain HTTP at http://localhost:${LOCAL_HTTP_PORT:-8080}
+# with Mailpit inbox at http://localhost:18025. No TLS, no ACME, no HSTS.
+# =============================================================================
+
+services:
+  postgres-oltp:
+    image: postgres:18-alpine
+    container_name: wiredeck-local-postgres-oltp
+    networks: [wiredeck-control]
+    environment:
+      POSTGRES_USER: ${OLTP_ADMIN_USER:-postgres}
+      POSTGRES_PASSWORD: ${OLTP_ADMIN_PASSWORD:-localoltpadmin}
+      POSTGRES_DB: wiredeck_oltp
+    volumes:
+      - postgres_oltp_local:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${OLTP_ADMIN_USER:-postgres} -d wiredeck_oltp"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  oltp-migrator:
+    build:
+      context: ../db/oltp
+    image: wiredeck-local/oltp-migrator:local
+    container_name: wiredeck-local-oltp-migrator
+    networks: [wiredeck-control]
+    environment:
+      DATABASE_URL: postgresql://${OLTP_ADMIN_USER:-postgres}:${OLTP_ADMIN_PASSWORD:-localoltpadmin}@postgres-oltp:5432/wiredeck_oltp?sslmode=disable
+      IAM_DB_PASSWORD: ${IAM_DB_PASSWORD:-iampass}
+      ORCHESTRATOR_DB_PASSWORD: ${ORCHESTRATOR_DB_PASSWORD:-orchpass}
+      WEBVNC_DB_PASSWORD: ${WEBVNC_DB_PASSWORD:-vncpass}
+      WEBVIEW_DB_PASSWORD: ${WEBVIEW_DB_PASSWORD:-viewpass}
+    depends_on:
+      postgres-oltp:
+        condition: service_healthy
+    restart: "no"
+
+  postgres-tsdb:
+    image: timescale/timescaledb:2.32.0-pg17
+    container_name: wiredeck-local-postgres-tsdb
+    networks: [wiredeck-control]
+    environment:
+      POSTGRES_USER: ${TSDB_ADMIN_USER:-postgres}
+      POSTGRES_PASSWORD: ${TSDB_ADMIN_PASSWORD:-localtsdbadmin}
+      POSTGRES_DB: wiredeck_history
+    volumes:
+      - postgres_tsdb_local:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${TSDB_ADMIN_USER:-postgres} -d wiredeck_history"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  tsdb-migrator:
+    build:
+      context: ../db/tsdb
+    image: wiredeck-local/tsdb-migrator:local
+    container_name: wiredeck-local-tsdb-migrator
+    networks: [wiredeck-control]
+    environment:
+      TSDB_DATABASE_URL: postgresql://${TSDB_ADMIN_USER:-postgres}:${TSDB_ADMIN_PASSWORD:-localtsdbadmin}@postgres-tsdb:5432/wiredeck_history?sslmode=disable
+      TSDB_HISTORY_PASSWORD: ${TSDB_HISTORY_PASSWORD:-historypass}
+    depends_on:
+      postgres-tsdb:
+        condition: service_healthy
+    restart: "no"
+
+  # Local SMTP sink + Web UI (http://localhost:18025)
+  mailpit:
+    image: axllent/mailpit:v1.24
+    container_name: wiredeck-local-mailpit
+    networks: [wiredeck-control, wiredeck-ingress]
+    ports:
+      - "127.0.0.1:18025:8025"
+    restart: unless-stopped
+
+  mailgopher:
+    image: ${MAILGOPHER_IMAGE_URL:-ghcr.io/szomorxvigyor/mailgopher:v1.2.0}
+    container_name: wiredeck-local-mailgopher
+    networks: [wiredeck-control]
+    environment:
+      NAME: WireDeck Local
+      PORT: "8080"
+      LOG_FORMAT: json
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      MAX_RETRIES: "3"
+      WORKER_QUEUE_SIZE: "100"
+      SMTP_ACCOUNTS: '[{"host":"mailpit","port":"1025","user":"noreply@wiredeck.local","pass":"","limit_per_hour":1000,"ssl":false}]'
+    depends_on:
+      - mailpit
+    restart: unless-stopped
+
+  # Plain HTTP Traefik on localhost:${LOCAL_HTTP_PORT:-8080} (no TLS/certs/HSTS)
+  traefik:
+    image: traefik:v3.7
+    container_name: wiredeck-local-traefik
+    networks: [wiredeck-control, wiredeck-ingress]
+    command:
+      - "--api.dashboard=false"
+      - "--entrypoints.web.address=:80"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--providers.docker.network=wiredeck-local-control"
+      - "--providers.file.filename=/etc/traefik/dynamic.yml"
+      - "--providers.file.watch=true"
+      - "--log.level=${LOG_LEVEL:-INFO}"
+    ports:
+      - "127.0.0.1:${LOCAL_HTTP_PORT:-8080}:80"
+    volumes:
+      - ./traefik/dynamic.local.yml:/etc/traefik/dynamic.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ../frontend
+    image: wiredeck-local/frontend:local
+    container_name: wiredeck-local-frontend
+    networks: [wiredeck-control]
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: wiredeck-local-control
+      traefik.http.routers.local-frontend.rule: PathPrefix(`/`)
+      traefik.http.routers.local-frontend.entrypoints: web
+      traefik.http.routers.local-frontend.priority: "1"
+      traefik.http.routers.local-frontend.middlewares: security-headers@file
+      traefik.http.services.local-frontend.loadbalancer.server.port: "80"
+    restart: unless-stopped
+
+  core-iam:
+    build:
+      context: ..
+      dockerfile: services/core-iam/Dockerfile
+    image: wiredeck-local/core-iam:local
+    container_name: wiredeck-local-core-iam
+    networks: [wiredeck-control]
+    environment:
+      PUBLIC_ADDR: ":8080"
+      INTERNAL_ADDR: ":8081"
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      ENABLE_OPENAPI_DOCS: ${ENABLE_OPENAPI_DOCS:-true}
+      DATABASE_URL: postgresql://svc_core_iam:${IAM_DB_PASSWORD:-iampass}@postgres-oltp:5432/wiredeck_oltp?sslmode=disable
+      PUBLIC_BASE_URL: http://localhost:${LOCAL_HTTP_PORT:-8080}
+      JWT_PRIVATE_KEY_B64: ${JWT_PRIVATE_KEY_B64}
+      JWT_KEY_ID: ${JWT_KEY_ID:-v1}
+      ACCESS_TOKEN_TTL: 15m
+      REFRESH_TOKEN_TTL: 30d
+      COOKIE_SECURE: "false"
+      WG_CONF_ENCRYPTION_KEY: ${WG_CONF_ENCRYPTION_KEY}
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
+      RESERVED_CIDRS: ${RESERVED_CIDRS:-172.30.248.0/24,172.30.252.0/22}
+      ORCHESTRATOR_URL: http://runner-orchestrator:8081
+      WEBVIEW_INTERNAL_URL: http://webview-engine:8081
+      WEBVNC_INTERNAL_URL: http://webvnc-proxy:8081
+      MAILGOPHER_URL: http://mailgopher:8080
+      INIT_ADMIN_EMAIL: ${INIT_ADMIN_EMAIL:-admin@wiredeck.local}
+      INIT_ADMIN_PASSWORD: ${INIT_ADMIN_PASSWORD:-AdminPassword!2026}
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: wiredeck-local-control
+      traefik.http.routers.local-core-iam.rule: PathPrefix(`/api/v1/iam`)
+      traefik.http.routers.local-core-iam.entrypoints: web
+      traefik.http.routers.local-core-iam.priority: "10"
+      traefik.http.routers.local-core-iam.middlewares: security-headers@file
+      traefik.http.services.local-core-iam.loadbalancer.server.port: "8080"
+    healthcheck:
+      test: ["CMD", "/core-iam", "-healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      oltp-migrator:
+        condition: service_completed_successfully
+      mailgopher:
+        condition: service_started
+    restart: unless-stopped
+
+  runner-orchestrator:
+    build:
+      context: ..
+      dockerfile: services/runner-orchestrator/Dockerfile
+    image: wiredeck-local/runner-orchestrator:local
+    container_name: wiredeck-local-runner-orchestrator
+    networks: [wiredeck-control, wiredeck-runners]
+    environment:
+      INTERNAL_ADDR: ":8081"
+      BIND_SUBNET: ${CONTROL_NET_CIDR:-172.30.248.0/24}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DATABASE_URL: postgresql://svc_runner_orchestrator:${ORCHESTRATOR_DB_PASSWORD:-orchpass}@postgres-oltp:5432/wiredeck_oltp?sslmode=disable
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
+      CORE_IAM_INTERNAL_URL: http://core-iam:8081
+      WEBVIEW_INTERNAL_URL: http://webview-engine:8081
+      WEBVNC_INTERNAL_URL: http://webvnc-proxy:8081
+      DOCKER_HOST: unix:///var/run/docker.sock
+      RUNNER_IMAGE: ${WIRERELAY_IMAGE_URL:-ghcr.io/szomorxvigyor/wirerelay:v1.1.0}
+      RUNNER_NETWORK: wiredeck-local-runners
+      RUNNER_CONF_DIR: ${LOCAL_RUNNER_CONF_DIR:-/tmp/wiredeck-local-runners}
+      RUNNER_TOKEN_ENCRYPTION_KEY: ${RUNNER_TOKEN_ENCRYPTION_KEY}
+      RECONCILE_INTERVAL: 30s
+      HEALTH_INTERVAL: 15s
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${LOCAL_RUNNER_CONF_DIR:-/tmp/wiredeck-local-runners}:${LOCAL_RUNNER_CONF_DIR:-/tmp/wiredeck-local-runners}
+    healthcheck:
+      test: ["CMD", "/runner-orchestrator", "-healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      oltp-migrator:
+        condition: service_completed_successfully
+      core-iam:
+        condition: service_healthy
+    restart: unless-stopped
+
+  webview-engine:
+    build:
+      context: ..
+      dockerfile: services/webview-engine/Dockerfile
+    image: wiredeck-local/webview-engine:local
+    container_name: wiredeck-local-webview-engine
+    networks: [wiredeck-control, wiredeck-runners]
+    environment:
+      PUBLIC_ADDR: ":8080"
+      INTERNAL_ADDR: ":8081"
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      ENABLE_OPENAPI_DOCS: ${ENABLE_OPENAPI_DOCS:-true}
+      DATABASE_URL: postgresql://svc_webview_engine:${WEBVIEW_DB_PASSWORD:-viewpass}@postgres-oltp:5432/wiredeck_oltp?sslmode=disable
+      TSDB_DATABASE_URL: postgresql://svc_webview_history:${TSDB_HISTORY_PASSWORD:-historypass}@postgres-tsdb:5432/wiredeck_history?sslmode=disable
+      CORE_IAM_INTERNAL_URL: http://core-iam:8081
+      ORCHESTRATOR_URL: http://runner-orchestrator:8081
+      JWKS_URL: http://core-iam:8080/api/v1/iam/.well-known/jwks.json
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
+      MAILGOPHER_URL: http://mailgopher:8080
+      HISTORY_FLUSH_MS: "1000"
+      HISTORY_FLUSH_ROWS: "500"
+      INTERACTIVE_GRACE_MS: "30000"
+      DEVICE_IDLE_TEARDOWN_MS: "300000"
+      DEV_DIRECT_DIAL: ${DEV_DIRECT_DIAL:-false}
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: wiredeck-local-control
+      traefik.http.routers.local-webview.rule: PathPrefix(`/api/v1/webview`)
+      traefik.http.routers.local-webview.entrypoints: web
+      traefik.http.routers.local-webview.priority: "10"
+      traefik.http.routers.local-webview.middlewares: security-headers@file
+      traefik.http.services.local-webview.loadbalancer.server.port: "8080"
+    healthcheck:
+      test: ["CMD", "/webview-engine", "-healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      oltp-migrator:
+        condition: service_completed_successfully
+      tsdb-migrator:
+        condition: service_completed_successfully
+      core-iam:
+        condition: service_healthy
+    restart: unless-stopped
+
+  webvnc-proxy:
+    build:
+      context: ..
+      dockerfile: services/webvnc-proxy/Dockerfile
+    image: wiredeck-local/webvnc-proxy:local
+    container_name: wiredeck-local-webvnc-proxy
+    networks: [wiredeck-control, wiredeck-runners]
+    environment:
+      PUBLIC_ADDR: ":8080"
+      INTERNAL_ADDR: ":8081"
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      ENABLE_OPENAPI_DOCS: ${ENABLE_OPENAPI_DOCS:-true}
+      DATABASE_URL: postgresql://svc_webvnc_proxy:${WEBVNC_DB_PASSWORD:-vncpass}@postgres-oltp:5432/wiredeck_oltp?sslmode=disable
+      CORE_IAM_INTERNAL_URL: http://core-iam:8081
+      ORCHESTRATOR_URL: http://runner-orchestrator:8081
+      JWKS_URL: http://core-iam:8080/api/v1/iam/.well-known/jwks.json
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
+      VNC_PASSWORD_ENCRYPTION_KEY: ${VNC_PASSWORD_ENCRYPTION_KEY}
+      VNC_IDLE_TIMEOUT: 15m
+      VNC_MAX_SESSION: 8h
+      DEV_DIRECT_DIAL: ${DEV_DIRECT_DIAL:-false}
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: wiredeck-local-control
+      traefik.http.routers.local-webvnc.rule: PathPrefix(`/api/v1/vnc`)
+      traefik.http.routers.local-webvnc.entrypoints: web
+      traefik.http.routers.local-webvnc.priority: "10"
+      traefik.http.routers.local-webvnc.middlewares: security-headers@file
+      traefik.http.services.local-webvnc.loadbalancer.server.port: "8080"
+    healthcheck:
+      test: ["CMD", "/webvnc-proxy", "-healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      oltp-migrator:
+        condition: service_completed_successfully
+      core-iam:
+        condition: service_healthy
+    restart: unless-stopped
+
+networks:
+  wiredeck-control:
+    name: wiredeck-local-control
+    driver: bridge
+    internal: true
+    enable_ipv6: false
+    ipam:
+      config:
+        - subnet: ${CONTROL_NET_CIDR:-172.30.248.0/24}
+  wiredeck-runners:
+    name: wiredeck-local-runners
+    driver: bridge
+    enable_ipv6: false
+    ipam:
+      config:
+        - subnet: ${RUNNERS_NET_CIDR:-172.30.252.0/22}
+  wiredeck-ingress:
+    name: wiredeck-local-ingress
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${INGRESS_NET_CIDR:-172.30.249.0/24}
+
+volumes:
+  postgres_oltp_local:
+  postgres_tsdb_local:

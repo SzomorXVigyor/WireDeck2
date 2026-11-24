@@ -1,0 +1,10 @@
+http:
+  middlewares:
+    # Local HTTP testing middleware (no HSTS so localhost stays plain HTTP)
+    security-headers:
+      headers:
+        contentTypeNosniff: true
+        referrerPolicy: strict-origin-when-cross-origin
+        contentSecurityPolicy: "default-src 'self'; script-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss: http: https:; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none';"
+        customResponseHeaders:
+          X-Frame-Options: "DENY"
