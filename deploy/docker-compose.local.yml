@@ -42,6 +42,10 @@ services:
       postgres-oltp:
         condition: service_healthy
     restart: "no"
+    develop:
+      watch:
+        - action: rebuild
+          path: ../db/oltp
 
   postgres-tsdb:
     image: timescale/timescaledb:2.32.0-pg17
@@ -73,6 +77,10 @@ services:
       postgres-tsdb:
         condition: service_healthy
     restart: "no"
+    develop:
+      watch:
+        - action: rebuild
+          path: ../db/tsdb
 
   # Local SMTP sink + Web UI (http://localhost:18025)
   mailpit:
@@ -114,7 +122,7 @@ services:
       - "--providers.file.watch=true"
       - "--log.level=${LOG_LEVEL:-INFO}"
     ports:
-      - "127.0.0.1:${LOCAL_HTTP_PORT:-8080}:80"
+      - "${LOCAL_HTTP_BIND:-0.0.0.0}:${LOCAL_HTTP_PORT:-8080}:80"
     volumes:
       - ./traefik/dynamic.local.yml:/etc/traefik/dynamic.yml:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -135,6 +143,14 @@ services:
       traefik.http.routers.local-frontend.middlewares: security-headers@file
       traefik.http.services.local-frontend.loadbalancer.server.port: "80"
     restart: unless-stopped
+    develop:
+      watch:
+        - action: rebuild
+          path: ../frontend
+          ignore:
+            - node_modules/
+            - dist/
+            - .vite/
 
   core-iam:
     build:
@@ -183,6 +199,16 @@ services:
       mailgopher:
         condition: service_started
     restart: unless-stopped
+    develop:
+      watch:
+        - action: rebuild
+          path: ../services/core-iam
+        - action: rebuild
+          path: ../pkg
+        - action: rebuild
+          path: ../go.mod
+        - action: rebuild
+          path: ../go.sum
 
   runner-orchestrator:
     build:
@@ -225,6 +251,16 @@ services:
       core-iam:
         condition: service_healthy
     restart: unless-stopped
+    develop:
+      watch:
+        - action: rebuild
+          path: ../services/runner-orchestrator
+        - action: rebuild
+          path: ../pkg
+        - action: rebuild
+          path: ../go.mod
+        - action: rebuild
+          path: ../go.sum
 
   webview-engine:
     build:
@@ -275,6 +311,16 @@ services:
       core-iam:
         condition: service_healthy
     restart: unless-stopped
+    develop:
+      watch:
+        - action: rebuild
+          path: ../services/webview-engine
+        - action: rebuild
+          path: ../pkg
+        - action: rebuild
+          path: ../go.mod
+        - action: rebuild
+          path: ../go.sum
 
   webvnc-proxy:
     build:
@@ -320,6 +366,16 @@ services:
       core-iam:
         condition: service_healthy
     restart: unless-stopped
+    develop:
+      watch:
+        - action: rebuild
+          path: ../services/webvnc-proxy
+        - action: rebuild
+          path: ../pkg
+        - action: rebuild
+          path: ../go.mod
+        - action: rebuild
+          path: ../go.sum
 
 networks:
   wiredeck-control:

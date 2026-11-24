@@ -17,7 +17,7 @@ watchEffect(() => {
 </script>
 
 <template>
-  <div class="mx-auto mt-20 max-w-md rounded-2xl border border-slate-800 bg-slate-900/60 p-8 text-center">
+  <div class="mx-auto mt-10 max-w-md rounded-2xl border border-slate-800 bg-slate-900/60 p-6 text-center sm:mt-20 sm:p-8">
     <Server class="mx-auto h-10 w-10 text-slate-600" />
     <h2 class="mt-4 text-lg font-semibold text-white">No Sites Available</h2>
     <p class="mt-2 text-sm text-slate-400">
@@ -26,7 +26,7 @@ watchEffect(() => {
     <RouterLink
       v-if="auth.isPlatformAdmin"
       to="/admin/sites"
-      class="mt-6 inline-flex items-center gap-2 rounded-lg bg-indigo-500 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-400"
+      class="mt-6 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-indigo-500 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-indigo-400 sm:w-auto sm:py-2"
     >
       <Shield class="h-4 w-4" />
       Onboard First Site in Admin Console

@@ -60,7 +60,7 @@ onUnmounted(() => {
       <button
         type="button"
         :disabled="!writable || pulsing"
-        class="inline-flex w-full items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
+        class="inline-flex min-h-[40px] w-full items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
         :class="btnColorMap[color] || btnColorMap.sky"
         @click="trigger"
       >

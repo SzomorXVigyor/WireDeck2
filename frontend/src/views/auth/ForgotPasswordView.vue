@@ -20,8 +20,8 @@ async function onSubmit() {
 </script>
 
 <template>
-  <div class="flex min-h-screen items-center justify-center bg-slate-950 p-4">
-    <div class="w-full max-w-sm rounded-2xl border border-slate-800 bg-slate-900/90 p-7 shadow-2xl">
+  <div class="safe-top safe-bottom flex min-h-dvh items-center justify-center bg-slate-950 p-4">
+    <div class="w-full max-w-sm rounded-2xl border border-slate-800 bg-slate-900/90 p-6 shadow-2xl sm:p-7">
       <div class="mb-5 flex items-center gap-3">
         <div class="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-500/20 text-sky-400">
           <Mail class="h-5 w-5" />

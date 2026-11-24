@@ -29,19 +29,11 @@ export default defineConfig({
     },
   },
   server: {
+    host: '0.0.0.0',
     port: 5173,
     proxy: {
-      '/api/v1/iam': {
-        target: 'http://127.0.0.1:8081',
-        changeOrigin: true,
-      },
-      '/api/v1/webview': {
-        target: 'http://127.0.0.1:8082',
-        changeOrigin: true,
-        ws: true,
-      },
-      '/api/v1/vnc': {
-        target: 'http://127.0.0.1:8083',
+      '/api': {
+        target: process.env.VITE_API_TARGET || 'http://127.0.0.1:8080',
         changeOrigin: true,
         ws: true,
       },

@@ -100,18 +100,18 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="space-y-5">
+  <div class="w-full space-y-5">
     <!-- Horizontal Dashboard Selector Bar (above the title) -->
     <nav
       v-if="workspace && workspace.dashboards.length > 0"
       aria-label="Site dashboards"
-      class="flex items-center gap-2 overflow-x-auto border-b border-slate-800/80 pb-3"
+      class="no-scrollbar -mx-4 flex items-center gap-2 overflow-x-auto border-b border-slate-800/80 px-4 pb-3 sm:mx-0 sm:px-0"
     >
       <RouterLink
         v-for="d in workspace.dashboards"
         :key="d.id"
         :to="`/sites/${siteId}/webview/${d.id}`"
-        class="inline-flex shrink-0 items-center gap-2 rounded-lg border px-3.5 py-2 text-xs font-medium transition"
+        class="inline-flex min-h-[38px] shrink-0 items-center gap-2 rounded-lg border px-3.5 py-2 text-xs font-medium transition"
         :class="
           activeDashboard?.id === d.id
             ? 'border-sky-500/60 bg-sky-500/15 text-sky-200'
@@ -124,14 +124,14 @@ onUnmounted(() => {
     </nav>
 
     <!-- Dashboard Title & Live Connection Header -->
-    <div class="flex flex-wrap items-center justify-between gap-3">
-      <h2 class="text-lg font-semibold text-white">
+    <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <h2 class="truncate text-lg font-semibold tracking-tight text-white sm:text-xl">
         {{ activeDashboard?.name || 'WebView' }}
       </h2>
 
       <div class="flex flex-wrap items-center gap-2 text-xs">
         <span
-          class="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px]"
+          class="inline-flex h-8 items-center gap-1.5 rounded-full border px-2.5 text-[11px] font-medium"
           :class="
             webviewStore.connectionState === 'connected'
               ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
@@ -148,7 +148,7 @@ onUnmounted(() => {
 
         <button
           type="button"
-          class="inline-flex items-center gap-1 rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-1.5 text-xs text-slate-200 hover:bg-slate-800"
+          class="hidden h-9 items-center justify-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3 text-xs font-medium leading-none text-slate-200 transition hover:bg-slate-800 sm:inline-flex"
           @click="loadWorkspace"
         >
           <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': loading }" />

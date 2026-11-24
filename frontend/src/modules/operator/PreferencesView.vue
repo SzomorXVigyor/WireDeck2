@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Check, Monitor, Moon, Sun } from 'lucide-vue-next'
 import WireDeckLogo from '../../components/WireDeckLogo.vue'
 import { useThemeStore, type ThemeMode } from '../../stores/theme'
 
@@ -9,100 +8,44 @@ const appVersion = __APP_VERSION__
 
 const systemLabel = computed(() => (theme.systemPrefersDark ? 'Dark' : 'Light'))
 
-interface ThemeOption {
-  value: ThemeMode
-  label: string
-  description: string
-  icon: typeof Monitor
+function onThemeChange(e: Event) {
+  const val = (e.target as HTMLSelectElement).value as ThemeMode
+  theme.setMode(val)
 }
-
-const options: ThemeOption[] = [
-  {
-    value: 'system',
-    label: 'System',
-    description: 'Automatically match your operating system light or dark appearance.',
-    icon: Monitor,
-  },
-  {
-    value: 'light',
-    label: 'Light',
-    description: 'Clean high-contrast light surfaces for bright workspaces.',
-    icon: Sun,
-  },
-  {
-    value: 'dark',
-    label: 'Dark',
-    description: 'Low-glare dark surfaces designed for control rooms.',
-    icon: Moon,
-  },
-]
 </script>
 
 <template>
-  <div class="mx-auto max-w-2xl space-y-6">
+  <div class="w-full space-y-5 sm:space-y-6">
     <div>
-      <h1 class="text-lg font-semibold text-white">Preferences</h1>
+      <h1 class="text-lg font-semibold tracking-tight text-white sm:text-xl">Preferences</h1>
       <p class="mt-0.5 text-xs text-slate-400">Personalize your WireDeck workspace settings.</p>
     </div>
 
-    <section class="rounded-xl border border-slate-800 bg-slate-900/60 p-5 space-y-4">
-      <div class="flex flex-wrap items-center justify-between gap-2">
+    <section class="rounded-xl border border-slate-800 bg-slate-900/60 p-4 sm:p-5">
+      <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 class="text-base font-semibold text-white">Appearance</h2>
+          <h2 class="text-sm font-semibold text-white">Color Theme</h2>
           <p class="mt-0.5 text-xs text-slate-400">
-            Choose how WireDeck looks on this device. System is selected by default.
+            Choose how WireDeck looks on this device. Active:
+            <span class="font-medium text-slate-200">{{ theme.resolvedTheme === 'dark' ? 'Dark' : 'Light' }}</span>.
           </p>
         </div>
-        <span class="rounded-full border border-slate-700 bg-slate-800 px-2.5 py-1 text-[11px] text-slate-300">
-          Active: {{ theme.resolvedTheme === 'dark' ? 'Dark' : 'Light' }}
-        </span>
-      </div>
 
-      <div class="grid gap-3 sm:grid-cols-3">
-        <button
-          v-for="opt in options"
-          :key="opt.value"
-          type="button"
-          class="relative flex flex-col items-start rounded-xl border p-4 text-left transition"
-          :class="
-            theme.mode === opt.value
-              ? 'border-sky-500/70 bg-sky-500/15'
-              : 'border-slate-800 bg-slate-950/60 hover:border-slate-700 hover:bg-slate-800/40'
-          "
-          @click="theme.setMode(opt.value)"
+        <select
+          :value="theme.mode"
+          aria-label="Color theme"
+          class="h-9 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 text-xs font-medium text-white focus:border-sky-500 focus:outline-none sm:w-48"
+          @change="onThemeChange"
         >
-          <div class="flex w-full items-center justify-between">
-            <div
-              class="flex h-8 w-8 items-center justify-center rounded-lg"
-              :class="theme.mode === opt.value ? 'bg-sky-500/20 text-sky-300' : 'bg-slate-800 text-slate-400'"
-            >
-              <component :is="opt.icon" class="h-4 w-4" />
-            </div>
-            <span
-              v-if="theme.mode === opt.value"
-              class="flex h-5 w-5 items-center justify-center rounded-full bg-sky-500 text-slate-950"
-            >
-              <Check class="h-3 w-3" />
-            </span>
-          </div>
-
-          <p class="mt-3 text-sm font-semibold text-white">
-            {{ opt.label }}
-            <span v-if="opt.value === 'system'" class="ml-1 text-[11px] font-normal text-slate-400">
-              ({{ systemLabel }})
-            </span>
-          </p>
-          <p class="mt-1 text-xs leading-relaxed text-slate-400">{{ opt.description }}</p>
-        </button>
+          <option value="system">System ({{ systemLabel }})</option>
+          <option value="light">Light</option>
+          <option value="dark">Dark</option>
+        </select>
       </div>
-
-      <p class="text-[11px] text-slate-500">
-        Your theme preference is saved automatically in this browser.
-      </p>
     </section>
 
-    <section class="rounded-xl border border-slate-800 bg-slate-900/60 p-5">
-      <div class="flex flex-wrap items-center justify-between gap-4">
+    <section class="rounded-xl border border-slate-800 bg-slate-900/60 p-4 sm:p-5">
+      <div class="flex items-center justify-between gap-4">
         <div class="flex items-center gap-3">
           <WireDeckLogo size="md" />
           <div>
@@ -110,7 +53,7 @@ const options: ThemeOption[] = [
             <p class="text-xs text-slate-400">Industrial Site Control Plane</p>
           </div>
         </div>
-        <div class="text-right font-mono text-xs text-slate-200">
+        <div class="shrink-0 font-mono text-xs text-slate-200">
           {{ appVersion }}
         </div>
       </div>

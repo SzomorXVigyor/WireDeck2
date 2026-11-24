@@ -87,26 +87,32 @@ async function confirmRemoveMember() {
 </script>
 
 <template>
-  <div class="mx-auto max-w-4xl space-y-6">
+  <div class="w-full space-y-5 sm:space-y-6">
+    <div>
+      <h1 class="text-lg font-semibold tracking-tight text-white sm:text-xl">Site Members & Invites</h1>
+      <p class="mt-0.5 text-xs text-slate-400">
+        Grant <code class="font-mono text-slate-200">SITE_MEMBER</code> access or send account activation invites for this site.
+      </p>
+    </div>
+
     <!-- Invite or Add Member as SITE_MEMBER -->
-    <section class="rounded-xl border border-slate-800 bg-slate-900/60 p-5">
-      <h2 class="text-base font-semibold text-white">Add or Invite Site Member</h2>
+    <section class="rounded-xl border border-slate-800 bg-slate-900/60 p-4 sm:p-5">
+      <h2 class="text-sm font-semibold text-white">Add or Invite Site Member</h2>
       <p class="mt-1 text-xs text-slate-400">
-        Enter an email address to grant <code class="font-mono text-slate-200">SITE_MEMBER</code> access.
         New email addresses automatically receive an account activation link via email.
       </p>
-      <form class="mt-4 flex flex-wrap gap-3" @submit.prevent="inviteMember">
+      <form class="mt-4 flex flex-col gap-2.5 sm:flex-row sm:items-center" @submit.prevent="inviteMember">
         <input
           v-model="inviteEmail"
           type="email"
           required
           placeholder="member@company.com"
-          class="flex-1 min-w-[240px] rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white focus:border-amber-400 focus:outline-none"
+          class="h-10 w-full min-w-0 rounded-lg border border-slate-700 bg-slate-950 px-3 text-sm text-white focus:border-amber-400 focus:outline-none sm:flex-1"
         />
         <button
           type="submit"
           :disabled="submitting"
-          class="inline-flex items-center gap-1.5 rounded-lg bg-amber-500 px-4 py-2 text-xs font-semibold text-slate-950 hover:bg-amber-400 disabled:opacity-50"
+          class="inline-flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-lg bg-amber-500 px-4 text-xs font-semibold leading-none text-slate-950 transition hover:bg-amber-400 disabled:opacity-50"
         >
           <MailPlus class="h-4 w-4" />
           {{ submitting ? 'Adding...' : 'Add / Invite Member' }}
@@ -118,10 +124,39 @@ async function confirmRemoveMember() {
 
     <!-- Current Site Members -->
     <section class="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60">
-      <div class="px-5 pt-5 pb-3">
-        <h2 class="text-base font-semibold text-white">Site Members</h2>
+      <div class="px-4 pt-4 pb-3 sm:px-5 sm:pt-5">
+        <h2 class="text-sm font-semibold text-white">Site Members</h2>
       </div>
-      <div class="overflow-x-auto">
+
+      <!-- Mobile Cards -->
+      <div class="divide-y divide-slate-800/70 md:hidden">
+        <div v-for="m in memberPag.paginatedItems.value" :key="m.userId" class="space-y-2.5 p-4 text-xs">
+          <div class="flex items-start justify-between gap-2">
+            <p class="break-all font-mono text-sm text-slate-100">{{ m.email }}</p>
+            <StatusBadge :status="m.status" size="sm" />
+          </div>
+          <div class="flex items-center justify-between gap-2">
+            <span
+              class="rounded px-2 py-0.5 font-mono text-[11px]"
+              :class="m.role === 'SITE_OPERATOR' ? 'bg-amber-500/15 text-amber-300' : 'bg-slate-800 text-slate-300'"
+            >
+              {{ m.role }}
+            </span>
+            <button
+              v-if="m.role === 'SITE_MEMBER' || auth.isPlatformAdmin"
+              type="button"
+              class="inline-flex h-8 items-center gap-1 rounded-lg border border-rose-500/30 bg-rose-500/10 px-2.5 text-[11px] font-medium text-rose-300 hover:bg-rose-500/20"
+              @click="removeMember(m)"
+            >
+              <Trash2 class="h-3 w-3" /> Remove
+            </button>
+          </div>
+        </div>
+        <div v-if="members.length === 0" class="px-4 py-6 text-center text-xs text-slate-500">No members assigned yet.</div>
+      </div>
+
+      <!-- Desktop Table -->
+      <div class="hidden overflow-x-auto md:block">
         <table class="w-full text-left text-xs">
           <thead class="border-b border-slate-800 text-slate-400">
             <tr>
@@ -147,7 +182,7 @@ async function confirmRemoveMember() {
                 <button
                   v-if="m.role === 'SITE_MEMBER' || auth.isPlatformAdmin"
                   type="button"
-                  class="inline-flex items-center gap-1 rounded border border-rose-500/30 bg-rose-500/10 px-2 py-1 text-[11px] text-rose-300 hover:bg-rose-500/20"
+                  class="inline-flex items-center gap-1 rounded border border-rose-500/30 bg-rose-500/10 px-2 py-1 text-[11px] text-rose-300 transition hover:bg-rose-500/20"
                   @click="removeMember(m)"
                 >
                   <Trash2 class="h-3 w-3" /> Remove

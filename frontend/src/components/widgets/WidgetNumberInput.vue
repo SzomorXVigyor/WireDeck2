@@ -33,12 +33,12 @@ const formatted = computed(() => formatPrecisionValue(props.sample?.value, preci
 const writable = computed(() => props.canWrite && props.mapping && props.mapping.protocolAttributes?.accessMode === 'READ_WRITE')
 
 const fontSizeMap: Record<FontSizeOption, string> = {
-  sm: 'text-xl',
-  md: 'text-2xl',
-  lg: 'text-3xl',
-  xl: 'text-4xl',
+  sm: 'text-lg sm:text-xl',
+  md: 'text-xl sm:text-2xl',
+  lg: 'text-2xl sm:text-3xl',
+  xl: 'text-3xl sm:text-4xl',
 }
-const sizeClass = computed(() => fontSizeMap[(props.widget.style?.fontSize as FontSizeOption) || 'lg'] || 'text-3xl')
+const sizeClass = computed(() => fontSizeMap[(props.widget.style?.fontSize as FontSizeOption) || 'lg'] || 'text-2xl sm:text-3xl')
 
 function openModal() {
   if (!writable.value) return

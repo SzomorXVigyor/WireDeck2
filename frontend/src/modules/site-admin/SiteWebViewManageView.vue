@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   ArrowDown,
@@ -555,7 +555,23 @@ async function loadAll() {
   }
 }
 
-onMounted(loadAll)
+function onKeydown(e: KeyboardEvent) {
+  if (e.key !== 'Escape') return
+  if (alarmModalOpen.value) alarmModalOpen.value = false
+  else if (histModalOpen.value) histModalOpen.value = false
+  else if (widgetModalOpen.value) widgetModalOpen.value = false
+  else if (dashModalOpen.value) dashModalOpen.value = false
+  else if (regModalOpen.value) regModalOpen.value = false
+  else if (deviceModalOpen.value) deviceModalOpen.value = false
+}
+
+onMounted(() => {
+  document.addEventListener('keydown', onKeydown)
+  void loadAll()
+})
+onUnmounted(() => {
+  document.removeEventListener('keydown', onKeydown)
+})
 watch(siteId, loadAll)
 
 // --- Device Actions ---
@@ -1011,19 +1027,19 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
 </script>
 
 <template>
-  <div class="mx-auto max-w-6xl space-y-6">
+  <div class="w-full space-y-5 sm:space-y-6">
     <div>
-      <h2 class="text-lg font-semibold text-white">WebView Configuration</h2>
-      <p class="text-xs text-slate-400">
+      <h1 class="text-lg font-semibold tracking-tight text-white sm:text-xl">WebView Configuration</h1>
+      <p class="mt-0.5 text-xs text-slate-400">
         Manage devices, protocol-defined registers, dashboards, widgets, scheduled history keys, alarm rules, and site member write policies.
       </p>
     </div>
 
-    <!-- Tabs -->
-    <div class="flex flex-wrap gap-2 border-b border-slate-800 pb-3">
+    <!-- Tabs (horizontally scrollable strip on mobile, wrapped on sm+) -->
+    <div class="no-scrollbar -mx-4 flex items-center gap-1.5 overflow-x-auto border-b border-slate-800 px-4 pb-3 sm:mx-0 sm:flex-wrap sm:gap-2 sm:px-0">
       <button
         type="button"
-        class="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium"
+        class="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg px-3 text-xs font-medium transition sm:h-8"
         :class="activeTab === 'devices' ? 'bg-amber-500/20 text-amber-200' : 'text-slate-400 hover:bg-slate-800 hover:text-white'"
         @click="activeTab = 'devices'"
       >
@@ -1031,7 +1047,7 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
       </button>
       <button
         type="button"
-        class="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium"
+        class="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg px-3 text-xs font-medium transition sm:h-8"
         :class="activeTab === 'mappings' ? 'bg-amber-500/20 text-amber-200' : 'text-slate-400 hover:bg-slate-800 hover:text-white'"
         @click="activeTab = 'mappings'"
       >
@@ -1039,7 +1055,7 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
       </button>
       <button
         type="button"
-        class="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium"
+        class="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg px-3 text-xs font-medium transition sm:h-8"
         :class="activeTab === 'dashboards' ? 'bg-amber-500/20 text-amber-200' : 'text-slate-400 hover:bg-slate-800 hover:text-white'"
         @click="activeTab = 'dashboards'"
       >
@@ -1047,7 +1063,7 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
       </button>
       <button
         type="button"
-        class="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium"
+        class="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg px-3 text-xs font-medium transition sm:h-8"
         :class="activeTab === 'history' ? 'bg-amber-500/20 text-amber-200' : 'text-slate-400 hover:bg-slate-800 hover:text-white'"
         @click="activeTab = 'history'"
       >
@@ -1055,7 +1071,7 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
       </button>
       <button
         type="button"
-        class="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium"
+        class="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg px-3 text-xs font-medium transition sm:h-8"
         :class="activeTab === 'alarms' ? 'bg-amber-500/20 text-amber-200' : 'text-slate-400 hover:bg-slate-800 hover:text-white'"
         @click="activeTab = 'alarms'"
       >
@@ -1063,7 +1079,7 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
       </button>
       <button
         type="button"
-        class="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium"
+        class="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg px-3 text-xs font-medium transition sm:h-8"
         :class="activeTab === 'policies' ? 'bg-amber-500/20 text-amber-200' : 'text-slate-400 hover:bg-slate-800 hover:text-white'"
         @click="activeTab = 'policies'"
       >
@@ -1079,7 +1095,7 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
       <div class="flex justify-end">
         <button
           type="button"
-          class="inline-flex items-center gap-1.5 rounded-lg bg-amber-500 px-3.5 py-2 text-xs font-semibold text-slate-950 hover:bg-amber-400"
+          class="inline-flex h-9 items-center gap-1.5 rounded-lg bg-amber-500 px-3.5 text-xs font-semibold text-slate-950 transition hover:bg-amber-400"
           @click="openCreateDevice"
         >
           <Plus class="h-4 w-4" /> Add Device
@@ -1087,7 +1103,42 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
       </div>
 
       <div class="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60">
-        <div class="overflow-x-auto">
+        <!-- Mobile Cards -->
+        <div class="divide-y divide-slate-800/70 md:hidden">
+          <div v-for="d in devicesPag.paginatedItems.value" :key="d.id" class="space-y-2.5 p-4 text-xs">
+            <div class="flex items-start justify-between gap-2">
+              <div class="min-w-0">
+                <p class="truncate text-sm font-semibold text-white">{{ d.name }}</p>
+                <p class="mt-0.5 font-mono text-slate-300">{{ d.host }}:{{ d.port }}</p>
+              </div>
+              <StatusBadge :status="d.isActive ? 'ACTIVE' : 'DISABLED'" size="sm" />
+            </div>
+            <p class="font-mono text-[11px] text-slate-400">{{ d.protocol }}</p>
+            <div class="flex items-center gap-2">
+              <button
+                type="button"
+                class="inline-flex h-8 flex-1 items-center justify-center gap-1 rounded-lg border border-slate-700 bg-slate-800 px-2.5 text-[11px] font-medium text-slate-200 hover:bg-slate-700"
+                @click="openEditDevice(d)"
+              >
+                <Edit3 class="h-3 w-3" /> Edit
+              </button>
+              <button
+                type="button"
+                aria-label="Delete device"
+                class="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-rose-500/30 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20"
+                @click="confirmDeleteDevice(d)"
+              >
+                <Trash2 class="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
+          <div v-if="devices.length === 0" class="px-4 py-8 text-center text-xs text-slate-500">
+            No devices configured yet.
+          </div>
+        </div>
+
+        <!-- Desktop Table -->
+        <div class="hidden overflow-x-auto md:block">
           <table class="w-full text-left text-xs">
             <thead class="border-b border-slate-800 text-slate-400">
               <tr>
@@ -1104,21 +1155,24 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
                 <td class="px-4 py-3 font-mono text-slate-300">{{ d.host }}:{{ d.port }}</td>
                 <td class="px-4 py-3 font-mono text-slate-400">{{ d.protocol }}</td>
                 <td class="px-4 py-3"><StatusBadge :status="d.isActive ? 'ACTIVE' : 'DISABLED'" size="sm" /></td>
-                <td class="px-4 py-3 text-right space-x-1.5">
-                  <button
-                    type="button"
-                    class="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-slate-200 hover:bg-slate-700"
-                    @click="openEditDevice(d)"
-                  >
-                    <Edit3 class="h-3 w-3" /> Edit
-                  </button>
-                  <button
-                    type="button"
-                    class="inline-flex items-center rounded border border-rose-500/30 bg-rose-500/10 p-1 text-rose-300 hover:bg-rose-500/20"
-                    @click="confirmDeleteDevice(d)"
-                  >
-                    <Trash2 class="h-3.5 w-3.5" />
-                  </button>
+                <td class="px-4 py-3 text-right">
+                  <div class="inline-flex items-center justify-end gap-1.5">
+                    <button
+                      type="button"
+                      class="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-slate-200 transition hover:bg-slate-700"
+                      @click="openEditDevice(d)"
+                    >
+                      <Edit3 class="h-3 w-3" /> Edit
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Delete device"
+                      class="inline-flex items-center rounded border border-rose-500/30 bg-rose-500/10 p-1 text-rose-300 transition hover:bg-rose-500/20"
+                      @click="confirmDeleteDevice(d)"
+                    >
+                      <Trash2 class="h-3.5 w-3.5" />
+                    </button>
+                  </div>
                 </td>
               </tr>
               <tr v-if="devices.length === 0">
@@ -1141,7 +1195,7 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
         <button
           type="button"
           :disabled="devices.length === 0"
-          class="inline-flex items-center gap-1.5 rounded-lg bg-amber-500 px-3.5 py-2 text-xs font-semibold text-slate-950 hover:bg-amber-400 disabled:opacity-40"
+          class="inline-flex h-9 items-center gap-1.5 rounded-lg bg-amber-500 px-3.5 text-xs font-semibold text-slate-950 transition hover:bg-amber-400 disabled:opacity-40"
           @click="openCreateRegister"
         >
           <Plus class="h-4 w-4" /> Add Register
@@ -1149,7 +1203,67 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
       </div>
 
       <div class="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60">
-        <div class="overflow-x-auto">
+        <!-- Mobile Cards -->
+        <div class="divide-y divide-slate-800/70 md:hidden">
+          <div v-for="m in mappingsPag.paginatedItems.value" :key="m.id" class="space-y-2.5 p-4 text-xs">
+            <div class="flex items-start justify-between gap-2">
+              <div class="min-w-0">
+                <p class="truncate text-sm font-semibold text-white">{{ m.name }}</p>
+                <p class="text-[11px] text-slate-400">{{ deviceMap[m.deviceId]?.name || m.deviceId }}</p>
+              </div>
+              <span class="shrink-0 rounded bg-slate-800 px-2 py-0.5 font-mono text-[10px] text-slate-300">
+                {{ m.protocolAttributes?.accessMode === 'READ_WRITE' ? 'R/W' : 'R' }}
+              </span>
+            </div>
+
+            <div class="rounded-lg border border-slate-800/80 bg-slate-950/60 p-2.5 font-mono text-[11px] text-slate-300 space-y-1">
+              <p class="break-words">
+                unit {{ m.protocolAttributes?.slaveAddress ?? 1 }} |
+                {{ m.protocolAttributes?.functionCode }} @ {{ m.protocolAttributes?.registerAddress }}
+                [{{ m.protocolAttributes?.dataType }}/{{ m.protocolAttributes?.wordOrder || 'BIG' }}]
+              </p>
+              <p v-if="m.protocolAttributes?.unit || m.protocolAttributes?.precision !== undefined" class="text-sky-300">
+                {{ m.protocolAttributes?.unit || '' }}{{ m.protocolAttributes?.unit && m.protocolAttributes?.precision !== undefined ? ' ' : '' }}{{ m.protocolAttributes?.precision !== undefined ? `10^${-m.protocolAttributes.precision}` : '' }}
+              </p>
+              <p v-if="testResults[m.id]" class="pt-0.5">
+                <span v-if="testResults[m.id]?.quality === 'GOOD'" class="text-emerald-300">Test: {{ testResults[m.id].value }}</span>
+                <span v-else class="break-words text-rose-300">BAD: {{ testResults[m.id].error }}</span>
+              </p>
+            </div>
+
+            <div class="flex items-center gap-2">
+              <button
+                type="button"
+                :disabled="testingId === m.id"
+                class="inline-flex h-8 flex-1 items-center justify-center gap-1 rounded-lg border border-sky-500/40 bg-sky-500/15 px-2.5 text-[11px] font-medium text-sky-200 hover:bg-sky-500/25 disabled:opacity-40"
+                @click="testRead(m)"
+              >
+                <Play class="h-3 w-3" /> {{ testingId === m.id ? 'Reading...' : 'Test' }}
+              </button>
+              <button
+                type="button"
+                class="inline-flex h-8 flex-1 items-center justify-center gap-1 rounded-lg border border-slate-700 bg-slate-800 px-2.5 text-[11px] font-medium text-slate-200 hover:bg-slate-700"
+                @click="openEditRegister(m)"
+              >
+                <Edit3 class="h-3 w-3" /> Edit
+              </button>
+              <button
+                type="button"
+                aria-label="Delete register"
+                class="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-rose-500/30 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20"
+                @click="confirmDeleteRegister(m)"
+              >
+                <Trash2 class="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
+          <div v-if="mappings.length === 0" class="px-4 py-8 text-center text-xs text-slate-500">
+            No registers configured yet.
+          </div>
+        </div>
+
+        <!-- Desktop Table -->
+        <div class="hidden overflow-x-auto md:block">
           <table class="w-full text-left text-xs">
             <thead class="border-b border-slate-800 text-slate-400">
               <tr>
@@ -1188,29 +1302,32 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
                   </span>
                   <span v-else class="text-slate-600">-</span>
                 </td>
-                <td class="px-4 py-3 text-right space-x-1.5">
-                  <button
-                    type="button"
-                    :disabled="testingId === m.id"
-                    class="inline-flex items-center gap-1 rounded border border-sky-500/40 bg-sky-500/15 px-2 py-1 text-[11px] text-sky-200 hover:bg-sky-500/25 disabled:opacity-40"
-                    @click="testRead(m)"
-                  >
-                    <Play class="h-3 w-3" /> {{ testingId === m.id ? 'Reading...' : 'Test' }}
-                  </button>
-                  <button
-                    type="button"
-                    class="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-slate-200 hover:bg-slate-700"
-                    @click="openEditRegister(m)"
-                  >
-                    <Edit3 class="h-3 w-3" /> Edit
-                  </button>
-                  <button
-                    type="button"
-                    class="inline-flex items-center rounded border border-rose-500/30 bg-rose-500/10 p-1 text-rose-300 hover:bg-rose-500/20"
-                    @click="confirmDeleteRegister(m)"
-                  >
-                    <Trash2 class="h-3.5 w-3.5" />
-                  </button>
+                <td class="px-4 py-3 text-right">
+                  <div class="inline-flex items-center justify-end gap-1.5">
+                    <button
+                      type="button"
+                      :disabled="testingId === m.id"
+                      class="inline-flex items-center gap-1 rounded border border-sky-500/40 bg-sky-500/15 px-2 py-1 text-[11px] text-sky-200 transition hover:bg-sky-500/25 disabled:opacity-40"
+                      @click="testRead(m)"
+                    >
+                      <Play class="h-3 w-3" /> {{ testingId === m.id ? 'Reading...' : 'Test' }}
+                    </button>
+                    <button
+                      type="button"
+                      class="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-slate-200 transition hover:bg-slate-700"
+                      @click="openEditRegister(m)"
+                    >
+                      <Edit3 class="h-3 w-3" /> Edit
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Delete register"
+                      class="inline-flex items-center rounded border border-rose-500/30 bg-rose-500/10 p-1 text-rose-300 transition hover:bg-rose-500/20"
+                      @click="confirmDeleteRegister(m)"
+                    >
+                      <Trash2 class="h-3.5 w-3.5" />
+                    </button>
+                  </div>
                 </td>
               </tr>
               <tr v-if="mappings.length === 0">
@@ -1228,15 +1345,15 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
     </div>
 
     <!-- TAB 3: DASHBOARDS & WIDGETS (Editable + Reorderable) -->
-    <div v-if="activeTab === 'dashboards'" class="grid gap-6 lg:grid-cols-3">
+    <div v-if="activeTab === 'dashboards'" class="grid gap-5 lg:grid-cols-3 lg:gap-6">
       <!-- Dashboards List -->
       <section class="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60">
         <div class="space-y-3 p-4">
-          <div class="flex items-center justify-between">
+          <div class="flex items-center justify-between gap-2">
             <h3 class="text-sm font-semibold text-white">Dashboards</h3>
             <button
               type="button"
-              class="inline-flex items-center gap-1 rounded-lg bg-amber-500 px-2.5 py-1.5 text-xs font-semibold text-slate-950 hover:bg-amber-400"
+              class="inline-flex h-8 items-center gap-1 rounded-lg bg-amber-500 px-2.5 text-xs font-semibold text-slate-950 transition hover:bg-amber-400"
               @click="openCreateDashboard"
             >
               <Plus class="h-3.5 w-3.5" /> New
@@ -1250,17 +1367,18 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
               class="flex items-center justify-between gap-2 rounded-lg border px-2.5 py-2 text-xs transition"
               :class="selectedDash?.id === d.id ? 'border-amber-500/50 bg-amber-500/15' : 'border-slate-800 bg-slate-950/60'"
             >
-              <button type="button" class="flex-1 truncate text-left font-medium text-white" @click="selectedDashId = d.id">
+              <button type="button" class="min-w-0 flex-1 truncate py-0.5 text-left font-medium text-white" @click="selectedDashId = d.id">
                 {{ d.name }}
                 <span class="ml-1 text-[10px] text-slate-400">({{ d.widgets.length }})</span>
               </button>
 
-              <div class="flex items-center gap-1">
+              <div class="flex shrink-0 items-center gap-0.5">
                 <button
                   type="button"
                   :disabled="dashboardsPag.startIndex.value + idx === 0"
                   title="Move up"
-                  class="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-white disabled:opacity-30"
+                  aria-label="Move dashboard up"
+                  class="flex h-7 w-7 items-center justify-center rounded text-slate-400 hover:bg-slate-800 hover:text-white disabled:opacity-30"
                   @click="moveDashboard(dashboardsPag.startIndex.value + idx, -1)"
                 >
                   <ArrowUp class="h-3.5 w-3.5" />
@@ -1269,7 +1387,8 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
                   type="button"
                   :disabled="dashboardsPag.startIndex.value + idx === dashboards.length - 1"
                   title="Move down"
-                  class="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-white disabled:opacity-30"
+                  aria-label="Move dashboard down"
+                  class="flex h-7 w-7 items-center justify-center rounded text-slate-400 hover:bg-slate-800 hover:text-white disabled:opacity-30"
                   @click="moveDashboard(dashboardsPag.startIndex.value + idx, 1)"
                 >
                   <ArrowDown class="h-3.5 w-3.5" />
@@ -1277,7 +1396,8 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
                 <button
                   type="button"
                   title="Edit dashboard"
-                  class="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-white"
+                  aria-label="Edit dashboard"
+                  class="flex h-7 w-7 items-center justify-center rounded text-slate-400 hover:bg-slate-800 hover:text-white"
                   @click="openEditDashboard(d)"
                 >
                   <Edit3 class="h-3.5 w-3.5" />
@@ -1285,7 +1405,8 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
                 <button
                   type="button"
                   title="Delete dashboard"
-                  class="rounded p-1 text-rose-400 hover:bg-rose-500/15"
+                  aria-label="Delete dashboard"
+                  class="flex h-7 w-7 items-center justify-center rounded text-rose-400 hover:bg-rose-500/15"
                   @click="confirmDeleteDashboard(d)"
                 >
                   <Trash2 class="h-3.5 w-3.5" />
@@ -1306,14 +1427,14 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
       <!-- Selected Dashboard Widgets -->
       <section class="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60 lg:col-span-2">
         <div class="space-y-3 p-4">
-          <div class="flex items-center justify-between">
-            <h3 class="text-sm font-semibold text-white">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <h3 class="min-w-0 truncate text-sm font-semibold text-white">
               {{ selectedDash ? `Widgets on "${selectedDash.name}"` : 'Select a dashboard' }}
             </h3>
             <button
               v-if="selectedDash"
               type="button"
-              class="inline-flex items-center gap-1 rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-amber-400"
+              class="inline-flex h-8 shrink-0 items-center gap-1 rounded-lg bg-amber-500 px-3 text-xs font-semibold text-slate-950 transition hover:bg-amber-400"
               @click="openCreateWidget"
             >
               <Plus class="h-3.5 w-3.5" /> Add Widget
@@ -1325,22 +1446,25 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
               <div
                 v-for="(w, idx) in widgetsPag.paginatedItems.value"
                 :key="w.id"
-                class="flex items-center justify-between gap-3 px-3.5 py-2.5 text-xs"
+                class="flex flex-col gap-2.5 px-3.5 py-3 text-xs sm:flex-row sm:items-center sm:justify-between"
               >
                 <div class="min-w-0">
-                  <span class="font-medium text-white">{{ w.name }}</span>
-                  <span class="ml-2 rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] text-slate-300">{{ w.widgetType }}</span>
+                  <div class="flex flex-wrap items-center gap-1.5">
+                    <span class="font-medium text-white">{{ w.name }}</span>
+                    <span class="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] text-slate-300">{{ w.widgetType }}</span>
+                  </div>
                   <p class="mt-0.5 truncate font-mono text-[11px] text-slate-500">
                     {{ w.registerMappingId && mappingMap[w.registerMappingId] ? mappingMap[w.registerMappingId].name : 'Unbound register' }}
                   </p>
                 </div>
 
-                <div class="flex items-center gap-1 shrink-0">
+                <div class="flex shrink-0 items-center justify-end gap-1">
                   <button
                     type="button"
                     :disabled="widgetsPag.startIndex.value + idx === 0"
                     title="Move up"
-                    class="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-white disabled:opacity-30"
+                    aria-label="Move widget up"
+                    class="flex h-7 w-7 items-center justify-center rounded text-slate-400 hover:bg-slate-800 hover:text-white disabled:opacity-30"
                     @click="moveWidget(widgetsPag.startIndex.value + idx, -1)"
                   >
                     <ArrowUp class="h-3.5 w-3.5" />
@@ -1349,7 +1473,8 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
                     type="button"
                     :disabled="widgetsPag.startIndex.value + idx === selectedDash.widgets.length - 1"
                     title="Move down"
-                    class="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-white disabled:opacity-30"
+                    aria-label="Move widget down"
+                    class="flex h-7 w-7 items-center justify-center rounded text-slate-400 hover:bg-slate-800 hover:text-white disabled:opacity-30"
                     @click="moveWidget(widgetsPag.startIndex.value + idx, 1)"
                   >
                     <ArrowDown class="h-3.5 w-3.5" />
@@ -1357,7 +1482,7 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
                   <button
                     type="button"
                     title="Edit widget"
-                    class="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-slate-200 hover:bg-slate-700"
+                    class="inline-flex h-7 items-center gap-1 rounded border border-slate-700 bg-slate-800 px-2 text-[11px] text-slate-200 hover:bg-slate-700"
                     @click="openEditWidget(w)"
                   >
                     <Edit3 class="h-3 w-3" /> Edit
@@ -1365,7 +1490,8 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
                   <button
                     type="button"
                     title="Delete widget"
-                    class="rounded border border-rose-500/30 bg-rose-500/10 p-1 text-rose-300 hover:bg-rose-500/20"
+                    aria-label="Delete widget"
+                    class="flex h-7 w-7 items-center justify-center rounded border border-rose-500/30 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20"
                     @click="confirmDeleteWidget(w)"
                   >
                     <Trash2 class="h-3.5 w-3.5" />
@@ -1388,7 +1514,7 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
 
     <!-- TAB 4: HISTORY KEYS -->
     <div v-if="activeTab === 'history'" class="space-y-4">
-      <div class="flex flex-wrap items-center justify-between gap-3">
+      <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h3 class="text-sm font-semibold text-white">Scheduled History Archival</h3>
           <p class="mt-0.5 text-xs text-slate-400">
@@ -1398,7 +1524,7 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
         <button
           type="button"
           :disabled="availableHistoryMappings.length === 0"
-          class="inline-flex items-center gap-1.5 rounded-lg bg-amber-500 px-3.5 py-2 text-xs font-semibold text-slate-950 hover:bg-amber-400 disabled:opacity-40"
+          class="inline-flex h-9 shrink-0 items-center justify-center gap-1.5 self-start rounded-lg bg-amber-500 px-3.5 text-xs font-semibold text-slate-950 transition hover:bg-amber-400 disabled:opacity-40 sm:self-auto"
           @click="openCreateHistoryEntry"
         >
           <Plus class="h-4 w-4" /> Add Key
@@ -1406,7 +1532,45 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
       </div>
 
       <div class="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60">
-        <div class="overflow-x-auto">
+        <!-- Mobile Cards -->
+        <div class="divide-y divide-slate-800/70 md:hidden">
+          <div v-for="he in historyPag.paginatedItems.value" :key="he.id" class="space-y-2.5 p-4 text-xs">
+            <div class="flex items-start justify-between gap-2">
+              <p class="min-w-0 break-words font-mono text-slate-200">
+                {{ mappingMap[he.registerMappingId] ? registerKeyLabel(mappingMap[he.registerMappingId]) : he.registerMappingId }}
+              </p>
+              <StatusBadge :status="he.isActive ? 'ACTIVE' : 'DISABLED'" size="sm" />
+            </div>
+            <div class="flex items-center gap-3 font-mono text-[11px] text-slate-400">
+              <span>Poll: {{ formatPollInterval(he.pollIntervalSeconds) }}</span>
+              <span>|</span>
+              <span>Keep: {{ formatRetention(he.retentionDays) }}</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <button
+                type="button"
+                class="inline-flex h-8 flex-1 items-center justify-center gap-1 rounded-lg border border-slate-700 bg-slate-800 px-2.5 text-[11px] font-medium text-slate-200 hover:bg-slate-700"
+                @click="openEditHistoryEntry(he)"
+              >
+                <Edit3 class="h-3 w-3" /> Edit
+              </button>
+              <button
+                type="button"
+                aria-label="Remove history entry"
+                class="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-rose-500/30 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20"
+                @click="confirmDeleteHistoryEntry(he)"
+              >
+                <Trash2 class="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
+          <div v-if="historyEntries.length === 0" class="px-4 py-8 text-center text-xs text-slate-500">
+            No registers scheduled for history storage yet.
+          </div>
+        </div>
+
+        <!-- Desktop Table -->
+        <div class="hidden overflow-x-auto md:block">
           <table class="w-full text-left text-xs">
             <thead class="border-b border-slate-800 text-slate-400">
               <tr>
@@ -1422,30 +1586,33 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
                 <td class="px-4 py-3 font-mono text-slate-200">
                   {{ mappingMap[he.registerMappingId] ? registerKeyLabel(mappingMap[he.registerMappingId]) : he.registerMappingId }}
                 </td>
-                <td class="px-4 py-3 font-mono text-slate-300">
+                <td class="whitespace-nowrap px-4 py-3 font-mono text-slate-300">
                   {{ formatPollInterval(he.pollIntervalSeconds) }}
                 </td>
-                <td class="px-4 py-3 font-mono text-slate-300">
+                <td class="whitespace-nowrap px-4 py-3 font-mono text-slate-300">
                   {{ formatRetention(he.retentionDays) }}
                 </td>
                 <td class="px-4 py-3">
                   <StatusBadge :status="he.isActive ? 'ACTIVE' : 'DISABLED'" size="sm" />
                 </td>
-                <td class="px-4 py-3 text-right space-x-1.5">
-                  <button
-                    type="button"
-                    class="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-slate-200 hover:bg-slate-700"
-                    @click="openEditHistoryEntry(he)"
-                  >
-                    <Edit3 class="h-3 w-3" /> Edit
-                  </button>
-                  <button
-                    type="button"
-                    class="inline-flex items-center rounded border border-rose-500/30 bg-rose-500/10 p-1 text-rose-300 hover:bg-rose-500/20"
-                    @click="confirmDeleteHistoryEntry(he)"
-                  >
-                    <Trash2 class="h-3.5 w-3.5" />
-                  </button>
+                <td class="px-4 py-3 text-right">
+                  <div class="inline-flex items-center justify-end gap-1.5">
+                    <button
+                      type="button"
+                      class="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-slate-200 transition hover:bg-slate-700"
+                      @click="openEditHistoryEntry(he)"
+                    >
+                      <Edit3 class="h-3 w-3" /> Edit
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Remove history entry"
+                      class="inline-flex items-center rounded border border-rose-500/30 bg-rose-500/10 p-1 text-rose-300 transition hover:bg-rose-500/20"
+                      @click="confirmDeleteHistoryEntry(he)"
+                    >
+                      <Trash2 class="h-3.5 w-3.5" />
+                    </button>
+                  </div>
                 </td>
               </tr>
               <tr v-if="historyEntries.length === 0">
@@ -1464,7 +1631,7 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
 
     <!-- TAB 5: ALARM RULES -->
     <div v-if="activeTab === 'alarms'" class="space-y-4">
-      <div class="flex flex-wrap items-center justify-between gap-3">
+      <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h3 class="text-sm font-semibold text-white">Alarm Rules</h3>
           <p class="mt-0.5 text-xs text-slate-400">
@@ -1474,7 +1641,7 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
         <button
           type="button"
           :disabled="mappings.length === 0"
-          class="inline-flex items-center gap-1.5 rounded-lg bg-amber-500 px-3.5 py-2 text-xs font-semibold text-slate-950 hover:bg-amber-400 disabled:opacity-40"
+          class="inline-flex h-9 shrink-0 items-center justify-center gap-1.5 self-start rounded-lg bg-amber-500 px-3.5 text-xs font-semibold text-slate-950 transition hover:bg-amber-400 disabled:opacity-40 sm:self-auto"
           @click="openCreateAlarmRule"
         >
           <Plus class="h-4 w-4" /> Add Alarm Rule
@@ -1482,7 +1649,72 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
       </div>
 
       <div class="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60">
-        <div class="overflow-x-auto">
+        <!-- Mobile Cards -->
+        <div class="divide-y divide-slate-800/70 md:hidden">
+          <div v-for="r in alarmsPag.paginatedItems.value" :key="r.id" class="space-y-2.5 p-4 text-xs">
+            <div class="flex items-start justify-between gap-2">
+              <div class="min-w-0">
+                <p class="truncate text-sm font-semibold text-white">{{ r.name }}</p>
+                <p class="text-[11px] text-slate-400">
+                  {{ r.registerName || r.registerMappingId }}
+                  <span v-if="r.deviceName"> ({{ r.deviceName }})</span>
+                </p>
+              </div>
+              <span
+                class="shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase"
+                :class="alarmSeverityBadgeClass(r.severity)"
+              >
+                {{ r.severity }}
+              </span>
+            </div>
+
+            <div class="flex flex-wrap items-center gap-2">
+              <span
+                class="inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase"
+                :class="alarmRuntimeBadgeClass(r)"
+              >
+                {{ r.isActive ? r.runtimeStatus : 'PAUSED' }}
+              </span>
+              <span class="font-mono text-[11px] text-slate-200">
+                {{ alarmConditionSymbol(r.condition) }} {{ r.threshold }}{{ r.unit ? ` ${r.unit}` : '' }}
+              </span>
+              <span v-if="r.clearDeadband > 0" class="font-mono text-[10px] text-slate-400">
+                (deadband {{ r.clearDeadband }})
+              </span>
+            </div>
+
+            <div class="flex items-center justify-between text-[11px] text-slate-400">
+              <span class="font-mono">Hold {{ r.holdSeconds }}s | Poll {{ r.pollIntervalSeconds }}s</span>
+              <span v-if="r.notifyEmails.length > 0" class="inline-flex items-center gap-1 text-sky-300">
+                <Mail class="h-3.5 w-3.5" /> {{ r.notifyEmails.length }}
+              </span>
+            </div>
+
+            <div class="flex items-center gap-2 pt-0.5">
+              <button
+                type="button"
+                class="inline-flex h-8 flex-1 items-center justify-center gap-1 rounded-lg border border-slate-700 bg-slate-800 px-2.5 text-[11px] font-medium text-slate-200 hover:bg-slate-700"
+                @click="openEditAlarmRule(r)"
+              >
+                <Edit3 class="h-3 w-3" /> Edit
+              </button>
+              <button
+                type="button"
+                aria-label="Delete alarm rule"
+                class="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-rose-500/30 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20"
+                @click="confirmDeleteAlarmRule(r)"
+              >
+                <Trash2 class="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
+          <div v-if="alarmRules.length === 0" class="px-4 py-8 text-center text-xs text-slate-500">
+            No alarm rules configured for this site yet.
+          </div>
+        </div>
+
+        <!-- Desktop Table -->
+        <div class="hidden overflow-x-auto md:block">
           <table class="w-full text-left text-xs">
             <thead class="border-b border-slate-800 text-slate-400">
               <tr>
@@ -1503,16 +1735,16 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
                   <p>{{ r.registerName || r.registerMappingId }}</p>
                   <p v-if="r.deviceName" class="text-[11px] text-slate-500">{{ r.deviceName }}</p>
                 </td>
-                <td class="px-4 py-3 font-mono text-slate-200 whitespace-nowrap">
+                <td class="whitespace-nowrap px-4 py-3 font-mono text-slate-200">
                   <span>{{ alarmConditionSymbol(r.condition) }} {{ r.threshold }}{{ r.unit ? ` ${r.unit}` : '' }}</span>
                   <span v-if="r.clearDeadband > 0" class="block text-[10px] text-slate-400">
                     deadband: {{ r.clearDeadband }}{{ r.unit ? ` ${r.unit}` : '' }}
                   </span>
                 </td>
-                <td class="px-4 py-3 font-mono text-slate-300 whitespace-nowrap">
+                <td class="whitespace-nowrap px-4 py-3 font-mono text-slate-300">
                   {{ r.holdSeconds }}s / {{ r.pollIntervalSeconds }}s
                 </td>
-                <td class="px-4 py-3 whitespace-nowrap">
+                <td class="whitespace-nowrap px-4 py-3">
                   <span
                     class="inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase"
                     :class="alarmSeverityBadgeClass(r.severity)"
@@ -1520,7 +1752,7 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
                     {{ r.severity }}
                   </span>
                 </td>
-                <td class="px-4 py-3 whitespace-nowrap">
+                <td class="whitespace-nowrap px-4 py-3">
                   <span
                     class="inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase"
                     :class="alarmRuntimeBadgeClass(r)"
@@ -1528,7 +1760,7 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
                     {{ r.isActive ? r.runtimeStatus : 'PAUSED' }}
                   </span>
                 </td>
-                <td class="px-4 py-3 text-slate-300 whitespace-nowrap">
+                <td class="whitespace-nowrap px-4 py-3 text-slate-300">
                   <span
                     v-if="r.notifyEmails.length > 0"
                     class="inline-flex items-center gap-1 text-[11px]"
@@ -1539,21 +1771,24 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
                   </span>
                   <span v-else class="text-slate-500">-</span>
                 </td>
-                <td class="px-4 py-3 text-right space-x-1.5 whitespace-nowrap">
-                  <button
-                    type="button"
-                    class="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-slate-200 hover:bg-slate-700"
-                    @click="openEditAlarmRule(r)"
-                  >
-                    <Edit3 class="h-3 w-3" /> Edit
-                  </button>
-                  <button
-                    type="button"
-                    class="inline-flex items-center rounded border border-rose-500/30 bg-rose-500/10 p-1 text-rose-300 hover:bg-rose-500/20"
-                    @click="confirmDeleteAlarmRule(r)"
-                  >
-                    <Trash2 class="h-3.5 w-3.5" />
-                  </button>
+                <td class="whitespace-nowrap px-4 py-3 text-right">
+                  <div class="inline-flex items-center justify-end gap-1.5">
+                    <button
+                      type="button"
+                      class="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-slate-200 transition hover:bg-slate-700"
+                      @click="openEditAlarmRule(r)"
+                    >
+                      <Edit3 class="h-3 w-3" /> Edit
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Delete alarm rule"
+                      class="inline-flex items-center rounded border border-rose-500/30 bg-rose-500/10 p-1 text-rose-300 transition hover:bg-rose-500/20"
+                      @click="confirmDeleteAlarmRule(r)"
+                    >
+                      <Trash2 class="h-3.5 w-3.5" />
+                    </button>
+                  </div>
                 </td>
               </tr>
               <tr v-if="alarmRules.length === 0">
@@ -1575,14 +1810,36 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
     <!-- TAB 6: MEMBER WRITE POLICIES -->
     <div v-if="activeTab === 'policies'" class="space-y-4">
       <section class="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60">
-        <div class="px-5 pt-5 pb-3">
+        <div class="px-4 pt-4 pb-3 sm:px-5 sm:pt-5">
           <h3 class="text-sm font-semibold text-white">Site Member Register Write Policies</h3>
           <p class="mt-0.5 text-xs text-slate-400">
             Site Operators and Platform Admins can always write to writable registers. Grant individual Site Members write access below.
           </p>
         </div>
 
-        <div class="overflow-x-auto">
+        <!-- Mobile Cards -->
+        <div class="divide-y divide-slate-800/70 md:hidden">
+          <div v-for="m in policiesPag.paginatedItems.value" :key="m.userId" class="flex items-center justify-between gap-3 p-4 text-xs">
+            <div class="min-w-0">
+              <p class="break-all font-medium text-white">{{ m.email }}</p>
+              <p class="mt-0.5 font-mono text-[10px] text-slate-400">SITE_MEMBER</p>
+            </div>
+            <label class="inline-flex shrink-0 items-center gap-2 text-xs text-slate-200">
+              <input
+                type="checkbox"
+                :checked="Boolean(policyMap[m.userId])"
+                @change="toggleMemberWrite(m, ($event.target as HTMLInputElement).checked)"
+              />
+              Write
+            </label>
+          </div>
+          <div v-if="siteMembersOnly.length === 0" class="px-4 py-6 text-center text-xs text-slate-500">
+            No Site Members assigned to this site yet.
+          </div>
+        </div>
+
+        <!-- Desktop Table -->
+        <div class="hidden overflow-x-auto md:block">
           <table class="w-full text-left text-xs">
             <thead class="border-b border-slate-800 text-slate-400">
               <tr>
@@ -1625,10 +1882,10 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
     <!-- MODAL: CREATE / EDIT DEVICE -->
     <Teleport to="body">
       <div v-if="deviceModalOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-xs" @click.self="deviceModalOpen = false">
-        <form class="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl space-y-4" @submit.prevent="saveDevice">
+        <form class="max-h-[90dvh] w-full max-w-md overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl space-y-4 sm:p-6" @submit.prevent="saveDevice">
           <div class="flex items-center justify-between">
             <h3 class="text-sm font-semibold text-white">{{ editingDeviceId ? 'Edit Device' : 'Add Device' }}</h3>
-            <button type="button" class="text-slate-400 hover:text-white" @click="deviceModalOpen = false"><X class="h-4 w-4" /></button>
+            <button type="button" aria-label="Close modal" class="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white" @click="deviceModalOpen = false"><X class="h-4 w-4" /></button>
           </div>
           <div>
             <label class="mb-1 block text-xs text-slate-400">Device Name</label>
@@ -1664,10 +1921,10 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
     <!-- MODAL: CREATE / EDIT REGISTER (Dynamic Protocol Attributes) -->
     <Teleport to="body">
       <div v-if="regModalOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-xs" @click.self="regModalOpen = false">
-        <form class="w-full max-w-lg rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl space-y-4" @submit.prevent="saveRegister">
+        <form class="max-h-[90dvh] w-full max-w-lg overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl space-y-4 sm:p-6" @submit.prevent="saveRegister">
           <div class="flex items-center justify-between">
             <h3 class="text-sm font-semibold text-white">{{ editingRegId ? 'Edit Register' : 'Add Register' }}</h3>
-            <button type="button" class="text-slate-400 hover:text-white" @click="regModalOpen = false"><X class="h-4 w-4" /></button>
+            <button type="button" aria-label="Close modal" class="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white" @click="regModalOpen = false"><X class="h-4 w-4" /></button>
           </div>
 
           <div class="grid gap-3 sm:grid-cols-2">
@@ -1761,10 +2018,10 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
     <!-- MODAL: CREATE / EDIT DASHBOARD -->
     <Teleport to="body">
       <div v-if="dashModalOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-xs" @click.self="dashModalOpen = false">
-        <form class="w-full max-w-sm rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl space-y-4" @submit.prevent="saveDashboard">
+        <form class="max-h-[90dvh] w-full max-w-sm overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl space-y-4 sm:p-6" @submit.prevent="saveDashboard">
           <div class="flex items-center justify-between">
             <h3 class="text-sm font-semibold text-white">{{ editingDashId ? 'Edit Dashboard' : 'New Dashboard' }}</h3>
-            <button type="button" class="text-slate-400 hover:text-white" @click="dashModalOpen = false"><X class="h-4 w-4" /></button>
+            <button type="button" aria-label="Close modal" class="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white" @click="dashModalOpen = false"><X class="h-4 w-4" /></button>
           </div>
           <div>
             <label class="mb-1 block text-xs text-slate-400">Dashboard Name</label>
@@ -1791,10 +2048,10 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
     <!-- MODAL: CREATE / EDIT WIDGET -->
     <Teleport to="body">
       <div v-if="widgetModalOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-xs" @click.self="widgetModalOpen = false">
-        <form class="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl space-y-4" @submit.prevent="saveWidget">
+        <form class="max-h-[90dvh] w-full max-w-lg overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl space-y-4 sm:p-6" @submit.prevent="saveWidget">
           <div class="flex items-center justify-between">
             <h3 class="text-sm font-semibold text-white">{{ editingWidgetId ? 'Edit Widget' : 'Add Widget' }}</h3>
-            <button type="button" class="text-slate-400 hover:text-white" @click="widgetModalOpen = false"><X class="h-4 w-4" /></button>
+            <button type="button" aria-label="Close modal" class="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white" @click="widgetModalOpen = false"><X class="h-4 w-4" /></button>
           </div>
 
           <div class="grid gap-3 sm:grid-cols-2">
@@ -2017,10 +2274,10 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
     <!-- MODAL: ADD / EDIT HISTORY KEY -->
     <Teleport to="body">
       <div v-if="histModalOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-xs" @click.self="histModalOpen = false">
-        <form class="w-full max-w-lg rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl space-y-4" @submit.prevent="saveHistoryEntry">
+        <form class="max-h-[90dvh] w-full max-w-lg overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl space-y-4 sm:p-6" @submit.prevent="saveHistoryEntry">
           <div class="flex items-center justify-between">
             <h3 class="text-sm font-semibold text-white">{{ editingHistId ? 'Edit History Key' : 'Add History Key' }}</h3>
-            <button type="button" class="text-slate-400 hover:text-white" @click="histModalOpen = false"><X class="h-4 w-4" /></button>
+            <button type="button" aria-label="Close modal" class="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white" @click="histModalOpen = false"><X class="h-4 w-4" /></button>
           </div>
 
           <RegisterPicker
@@ -2088,12 +2345,17 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
         @click.self="alarmModalOpen = false"
       >
         <form
-          class="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl space-y-4"
+          class="max-h-[90dvh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl space-y-4 sm:p-6"
           @submit.prevent="saveAlarmRule"
         >
           <div class="flex items-center justify-between">
             <h3 class="text-sm font-semibold text-white">{{ editingAlarmId ? 'Edit Alarm Rule' : 'Add Alarm Rule' }}</h3>
-            <button type="button" class="text-slate-400 hover:text-white" @click="alarmModalOpen = false">
+            <button
+              type="button"
+              aria-label="Close modal"
+              class="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white"
+              @click="alarmModalOpen = false"
+            >
               <X class="h-4 w-4" />
             </button>
           </div>

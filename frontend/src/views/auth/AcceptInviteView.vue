@@ -85,8 +85,8 @@ async function goToLogin() {
 </script>
 
 <template>
-  <div class="flex min-h-screen items-center justify-center bg-slate-950 p-4">
-    <div class="w-full max-w-sm rounded-2xl border border-slate-800 bg-slate-900/90 p-7 shadow-2xl">
+  <div class="safe-top safe-bottom flex min-h-dvh items-center justify-center bg-slate-950 p-4">
+    <div class="w-full max-w-sm rounded-2xl border border-slate-800 bg-slate-900/90 p-6 shadow-2xl sm:p-7">
       <!-- Checking token -->
       <div v-if="stage === 'checking'" class="flex flex-col items-center py-6 text-center">
         <Loader2 class="mb-3 h-8 w-8 animate-spin text-sky-400" />

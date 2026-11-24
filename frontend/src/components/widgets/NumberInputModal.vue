@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { Pencil, X } from 'lucide-vue-next'
 import type { RegisterMapping, TelemetrySample, WebviewWidget } from '../../types/webview'
 import {
@@ -92,6 +92,15 @@ function handleSave() {
   emit('submit', rawValue)
   emit('close')
 }
+
+function onKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && props.open) {
+    emit('close')
+  }
+}
+
+onMounted(() => document.addEventListener('keydown', onKeydown))
+onUnmounted(() => document.removeEventListener('keydown', onKeydown))
 </script>
 
 <template>
@@ -102,7 +111,7 @@ function handleSave() {
       @click.self="emit('close')"
     >
       <form
-        class="w-full max-w-sm overflow-hidden rounded-2xl border border-slate-700 bg-slate-900 text-slate-100 shadow-2xl"
+        class="max-h-[90dvh] w-full max-w-sm overflow-hidden rounded-2xl border border-slate-700 bg-slate-900 text-slate-100 shadow-2xl"
         @submit.prevent="handleSave"
       >
         <div class="flex items-center justify-between border-b border-slate-800 px-5 py-4">

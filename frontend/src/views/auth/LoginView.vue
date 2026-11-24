@@ -31,8 +31,8 @@ async function onSubmit() {
 </script>
 
 <template>
-  <div class="flex min-h-screen items-center justify-center bg-slate-950 p-4">
-    <div class="w-full max-w-sm rounded-2xl border border-slate-800 bg-slate-900/90 p-7 shadow-2xl">
+  <div class="safe-top safe-bottom flex min-h-dvh items-center justify-center bg-slate-950 p-4">
+    <div class="w-full max-w-sm rounded-2xl border border-slate-800 bg-slate-900/90 p-6 shadow-2xl sm:p-7">
       <div class="mb-6 flex items-center gap-3">
         <WireDeckLogo size="lg" />
         <div>

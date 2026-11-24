@@ -103,8 +103,20 @@ function onDocClick(e: MouseEvent) {
   }
 }
 
-onMounted(() => document.addEventListener('click', onDocClick))
-onUnmounted(() => document.removeEventListener('click', onDocClick))
+function onDocKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && dropdownOpen.value) {
+    dropdownOpen.value = false
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('click', onDocClick)
+  document.addEventListener('keydown', onDocKeydown)
+})
+onUnmounted(() => {
+  document.removeEventListener('click', onDocClick)
+  document.removeEventListener('keydown', onDocKeydown)
+})
 </script>
 
 <template>

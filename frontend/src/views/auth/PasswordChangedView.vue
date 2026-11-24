@@ -15,8 +15,8 @@ async function goToLogin() {
 </script>
 
 <template>
-  <div class="flex min-h-screen items-center justify-center bg-slate-950 p-4">
-    <div class="w-full max-w-sm rounded-2xl border border-slate-800 bg-slate-900/90 p-7 shadow-2xl space-y-5">
+  <div class="safe-top safe-bottom flex min-h-dvh items-center justify-center bg-slate-950 p-4">
+    <div class="w-full max-w-sm rounded-2xl border border-slate-800 bg-slate-900/90 p-6 shadow-2xl space-y-5 sm:p-7">
       <div class="flex items-center gap-3">
         <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-500/20 text-emerald-400">
           <CheckCircle2 class="h-5 w-5" />

@@ -88,7 +88,12 @@ const router = createRouter({
       component: () => import('../layouts/SiteAdminLayout.vue'),
       meta: { requiresAuth: true, requiresSiteOperator: true },
       children: [
-        { path: '', redirect: (to) => `/sites/${to.params.siteId}/manage/members` },
+        { path: '', redirect: (to) => `/sites/${to.params.siteId}/manage/tunnel` },
+        {
+          path: 'tunnel',
+          name: 'site-operator-tunnel',
+          component: () => import('../modules/site-admin/SiteTunnelView.vue'),
+        },
         {
           path: 'members',
           name: 'site-operator-members',

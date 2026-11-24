@@ -60,10 +60,10 @@ function go(next: number) {
 
 <template>
   <div
-    class="flex flex-wrap items-center justify-between gap-2 border-t border-slate-800 px-4 py-2.5 text-xs text-slate-400"
+    class="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-t border-slate-800 px-3.5 py-2.5 text-xs text-slate-400 sm:px-4"
     :class="compact ? 'px-2.5 py-2' : ''"
   >
-    <div class="text-[11px] text-slate-400">
+    <div class="text-[11px] tabular-nums text-slate-400">
       <template v-if="totalItems > 0">
         Showing <span class="font-medium text-slate-200">{{ rangeStart }}-{{ rangeEnd }}</span> of
         <span class="font-medium text-slate-200">{{ totalItems }}</span>
@@ -71,12 +71,12 @@ function go(next: number) {
       <template v-else>0 items</template>
     </div>
 
-    <div class="flex flex-wrap items-center gap-3">
+    <div class="flex flex-wrap items-center gap-2.5 sm:gap-3">
       <label class="inline-flex items-center gap-1.5 text-[11px] text-slate-400">
         <span>Rows</span>
         <select
           :value="pageSize"
-          class="rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+          class="h-8 rounded-md border border-slate-700 bg-slate-950 px-2 text-xs text-slate-200 focus:border-sky-500 focus:outline-none sm:h-7"
           @change="onSizeChange"
         >
           <option v-for="opt in pageSizeOptions" :key="opt" :value="opt">{{ opt }}</option>
@@ -88,22 +88,29 @@ function go(next: number) {
           type="button"
           :disabled="page <= 1"
           title="Previous page"
-          class="inline-flex h-7 w-7 items-center justify-center rounded border border-slate-700 bg-slate-900 text-slate-300 hover:bg-slate-800 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+          aria-label="Previous page"
+          class="inline-flex h-8 w-8 items-center justify-center rounded-md border border-slate-700 bg-slate-900 text-slate-300 transition hover:bg-slate-800 hover:text-white disabled:cursor-not-allowed disabled:opacity-40 sm:h-7 sm:w-7"
           @click="go(page - 1)"
         >
           <ChevronLeft class="h-3.5 w-3.5" />
         </button>
 
-        <template v-if="compact">
-          <span class="px-1.5 font-mono text-[11px] text-slate-300">{{ page }} / {{ totalPages }}</span>
-        </template>
-        <template v-else>
+        <!-- Compact page readout on mobile or when compact prop is enabled -->
+        <span
+          class="px-1.5 font-mono text-[11px] tabular-nums text-slate-300"
+          :class="compact ? 'inline' : 'inline sm:hidden'"
+        >
+          {{ page }} / {{ totalPages }}
+        </span>
+
+        <!-- Numbered page pills on tablet/desktop -->
+        <div v-if="!compact" class="hidden items-center gap-1 sm:inline-flex">
           <template v-for="(item, idx) in visiblePages" :key="idx">
             <span v-if="item === 'ellipsis'" class="px-1 text-slate-500">...</span>
             <button
               v-else
               type="button"
-              class="inline-flex h-7 min-w-[28px] items-center justify-center rounded border px-2 text-xs font-medium transition"
+              class="inline-flex h-7 min-w-[28px] items-center justify-center rounded-md border px-2 text-xs font-medium tabular-nums transition"
               :class="
                 item === page
                   ? 'border-sky-500/60 bg-sky-500/20 text-sky-200'
@@ -114,13 +121,14 @@ function go(next: number) {
               {{ item }}
             </button>
           </template>
-        </template>
+        </div>
 
         <button
           type="button"
           :disabled="page >= totalPages"
           title="Next page"
-          class="inline-flex h-7 w-7 items-center justify-center rounded border border-slate-700 bg-slate-900 text-slate-300 hover:bg-slate-800 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+          aria-label="Next page"
+          class="inline-flex h-8 w-8 items-center justify-center rounded-md border border-slate-700 bg-slate-900 text-slate-300 transition hover:bg-slate-800 hover:text-white disabled:cursor-not-allowed disabled:opacity-40 sm:h-7 sm:w-7"
           @click="go(page + 1)"
         >
           <ChevronRight class="h-3.5 w-3.5" />

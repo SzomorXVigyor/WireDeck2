@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import * as echarts from 'echarts'
-import { Calendar, Download, LineChart, RefreshCw, Search } from 'lucide-vue-next'
+import { Calendar, ChevronDown, Download, LineChart, PanelLeftClose, PanelLeftOpen, RefreshCw, Search } from 'lucide-vue-next'
 import { apiRequest } from '../../services/api'
 import { useAuthStore } from '../../stores/auth'
 import { useThemeStore } from '../../stores/theme'
@@ -53,6 +53,7 @@ const loadingChart = ref(false)
 const exporting = ref(false)
 const errMsg = ref<string | null>(null)
 const result = ref<HistoryQueryResponse | null>(null)
+const keysPanelOpen = ref(typeof window !== 'undefined' ? window.innerWidth >= 1024 : true)
 
 const chartEl = ref<HTMLDivElement | null>(null)
 let chartInstance: echarts.ECharts | null = null
@@ -221,11 +222,14 @@ function renderChart() {
     }
   })
 
+  const isCompact = (chartEl.value?.clientWidth ?? 800) < 520
+
   const option: echarts.EChartsOption = {
     animationDuration: 220,
     backgroundColor: 'transparent',
     tooltip: {
       trigger: 'axis',
+      confine: true,
       backgroundColor: tooltipBg,
       borderColor: tooltipBorder,
       textStyle: { color: tooltipText, fontSize: 12 },
@@ -239,8 +243,8 @@ function renderChart() {
     },
     grid: {
       top: 18,
-      left: 54,
-      right: 24,
+      left: isCompact ? 42 : 54,
+      right: isCompact ? 12 : 24,
       bottom: 86,
     },
     xAxis: {
@@ -395,11 +399,11 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="space-y-5">
+  <div class="w-full space-y-5">
     <!-- Top Header & Actions -->
-    <div class="flex flex-wrap items-center justify-between gap-3">
+    <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
       <div class="flex flex-wrap items-center gap-2.5">
-        <h2 class="text-lg font-semibold text-white">WebView History</h2>
+        <h2 class="text-lg font-semibold tracking-tight text-white sm:text-xl">WebView History</h2>
         <span
           v-if="result?.resolution"
           class="rounded-full border border-slate-700 bg-slate-800 px-2.5 py-0.5 font-mono text-[11px] text-slate-300"
@@ -410,9 +414,19 @@ onUnmounted(() => {
 
       <div class="flex flex-wrap items-center gap-2">
         <button
+          v-if="keys.length > 0"
+          type="button"
+          class="hidden h-9 items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3 text-xs font-medium text-slate-200 transition hover:bg-slate-800 lg:inline-flex"
+          @click="keysPanelOpen = !keysPanelOpen"
+        >
+          <PanelLeftClose v-if="keysPanelOpen" class="h-3.5 w-3.5" />
+          <PanelLeftOpen v-else class="h-3.5 w-3.5" />
+          {{ keysPanelOpen ? 'Hide Keys' : `Keys (${selectedIds.length})` }}
+        </button>
+        <button
           type="button"
           :disabled="loadingChart || selectedIds.length === 0"
-          class="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs text-slate-200 hover:bg-slate-800 disabled:opacity-40"
+          class="hidden h-9 items-center justify-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3 text-xs font-medium leading-none text-slate-200 transition hover:bg-slate-800 disabled:opacity-40 sm:inline-flex"
           @click="queryHistory"
         >
           <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': loadingChart }" />
@@ -421,7 +435,7 @@ onUnmounted(() => {
         <button
           type="button"
           :disabled="exporting || selectedIds.length === 0"
-          class="inline-flex items-center gap-1.5 rounded-lg bg-sky-500 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-40"
+          class="inline-flex h-9 items-center justify-center gap-1.5 rounded-lg bg-sky-500 px-3.5 text-xs font-semibold leading-none text-slate-950 transition hover:bg-sky-400 disabled:opacity-40"
           @click="exportCsv"
         >
           <Download class="h-3.5 w-3.5" />
@@ -431,14 +445,14 @@ onUnmounted(() => {
     </div>
 
     <!-- Time Range Bar -->
-    <div class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900/60 px-4 py-3">
-      <div class="flex flex-wrap items-center gap-1.5">
-        <Calendar class="mr-1 h-4 w-4 text-slate-400" />
+    <div class="flex flex-col gap-3 rounded-xl border border-slate-800 bg-slate-900/60 p-3 sm:px-4">
+      <div class="no-scrollbar flex items-center gap-1.5 overflow-x-auto">
+        <Calendar class="mr-1 h-4 w-4 shrink-0 text-slate-400" />
         <button
           v-for="p in PRESETS"
           :key="p.key"
           type="button"
-          class="rounded-lg border px-2.5 py-1 text-xs font-medium transition"
+          class="shrink-0 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition"
           :class="
             preset === p.key
               ? 'border-sky-500/60 bg-sky-500/20 text-sky-200'
@@ -450,24 +464,24 @@ onUnmounted(() => {
         </button>
       </div>
 
-      <div v-if="preset === 'custom'" class="flex flex-wrap items-center gap-2 text-xs">
+      <div v-if="preset === 'custom'" class="grid grid-cols-1 gap-2 border-t border-slate-800/80 pt-3 text-xs sm:flex sm:flex-wrap sm:items-center">
         <input
           v-model="customFrom"
           type="datetime-local"
-          class="rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-1 text-xs text-white"
+          class="w-full rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-1.5 text-xs text-white sm:w-auto"
         />
-        <span class="text-slate-500">to</span>
+        <span class="hidden text-slate-500 sm:inline">to</span>
         <input
           v-model="customTo"
           type="datetime-local"
-          class="rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-1 text-xs text-white"
+          class="w-full rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-1.5 text-xs text-white sm:w-auto"
         />
         <button
           type="button"
-          class="rounded-lg bg-sky-500 px-3 py-1 text-xs font-semibold text-slate-950 hover:bg-sky-400"
+          class="h-9 rounded-lg bg-sky-500 px-3.5 text-xs font-semibold text-slate-950 transition hover:bg-sky-400 sm:h-8"
           @click="queryHistory"
         >
-          Apply
+          Apply Range
         </button>
       </div>
     </div>
@@ -489,89 +503,125 @@ onUnmounted(() => {
     </div>
 
     <!-- Main History Workspace -->
-    <div v-else class="grid gap-5 lg:grid-cols-4">
-      <!-- Left Series Selector -->
-      <aside class="flex flex-col rounded-xl border border-slate-800 bg-slate-900/60 p-4 space-y-3">
-        <div class="flex items-center justify-between">
-          <h3 class="text-xs font-semibold uppercase tracking-wider text-slate-400">
-            History Keys ({{ selectedIds.length }}/{{ keys.length }})
-          </h3>
-          <div class="flex items-center gap-2 text-[11px]">
+    <div v-else class="grid gap-5" :class="keysPanelOpen ? 'lg:grid-cols-4' : 'lg:grid-cols-1'">
+      <!-- Collapsible Series Selector -->
+      <aside
+        class="flex flex-col rounded-xl border border-slate-800 bg-slate-900/60"
+        :class="keysPanelOpen ? '' : 'lg:hidden'"
+      >
+        <div class="flex items-center justify-between gap-2 p-3.5 sm:p-4">
+          <button
+            type="button"
+            class="flex flex-1 items-center gap-2 text-left text-xs font-semibold uppercase tracking-wider text-slate-300 lg:cursor-default"
+            :aria-expanded="keysPanelOpen"
+            @click="keysPanelOpen = !keysPanelOpen"
+          >
+            <ChevronDown
+              class="h-4 w-4 shrink-0 text-slate-400 transition-transform lg:hidden"
+              :class="keysPanelOpen ? '' : '-rotate-90'"
+            />
+            <span>History Keys ({{ selectedIds.length }}/{{ keys.length }})</span>
+          </button>
+          <div class="flex items-center gap-2.5 text-[11px]">
             <button type="button" class="text-sky-300 hover:underline" @click="selectAllVisible">All</button>
             <button type="button" class="text-slate-400 hover:underline" @click="clearSelection">Clear</button>
           </div>
         </div>
 
-        <div class="relative">
-          <Search class="pointer-events-none absolute left-2.5 top-2 h-3.5 w-3.5 text-slate-500" />
-          <input
-            v-model="keySearch"
-            type="text"
-            placeholder="Filter keys..."
-            class="w-full rounded-lg border border-slate-700 bg-slate-950 py-1.5 pl-8 pr-2.5 text-xs text-white focus:border-sky-500 focus:outline-none"
-          />
-        </div>
-
-        <div class="max-h-[420px] space-y-1.5 overflow-y-auto pr-1">
-          <button
-            v-for="k in filteredKeys"
-            :key="k.registerMappingId"
-            type="button"
-            class="flex w-full items-start gap-2.5 rounded-lg border px-2.5 py-2 text-left text-xs transition"
-            :class="
-              selectedIds.includes(k.registerMappingId)
-                ? 'border-sky-500/50 bg-sky-500/15'
-                : 'border-slate-800 bg-slate-950/60 hover:border-slate-700 hover:bg-slate-800/40'
-            "
-            @click="toggleKey(k.registerMappingId)"
-          >
-            <span
-              class="mt-1 h-2.5 w-2.5 shrink-0 rounded-full"
-              :style="{
-                backgroundColor: selectedIds.includes(k.registerMappingId) ? colorForMapping(k.registerMappingId) : '#475569',
-              }"
+        <div v-if="keysPanelOpen" class="space-y-3 border-t border-slate-800/80 p-3.5 pt-3 sm:p-4 sm:pt-3">
+          <div class="relative">
+            <Search class="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" />
+            <input
+              v-model="keySearch"
+              type="text"
+              placeholder="Filter keys..."
+              class="w-full rounded-lg border border-slate-700 bg-slate-950 py-1.5 pl-8 pr-2.5 text-xs text-white focus:border-sky-500 focus:outline-none"
             />
-            <div class="min-w-0 flex-1">
-              <p class="truncate font-medium text-white">{{ k.registerName }}</p>
-              <p class="truncate text-[11px] text-slate-400">{{ k.deviceName }}</p>
-              <p class="mt-0.5 font-mono text-[10px] text-slate-500">
-                poll {{ formatPoll(k.pollIntervalSeconds) }} | keep {{ k.retentionDays }}d
-                <span v-if="!k.isActive" class="ml-1 text-amber-400">(paused)</span>
-              </p>
-            </div>
-          </button>
-          <p v-if="filteredKeys.length === 0" class="py-4 text-center text-xs text-slate-500">
-            No matching keys.
-          </p>
+          </div>
+
+          <div class="max-h-[260px] space-y-1.5 overflow-y-auto pr-1 lg:max-h-[420px]">
+            <button
+              v-for="k in filteredKeys"
+              :key="k.registerMappingId"
+              type="button"
+              class="flex w-full items-start gap-2.5 rounded-lg border px-2.5 py-2 text-left text-xs transition"
+              :class="
+                selectedIds.includes(k.registerMappingId)
+                  ? 'border-sky-500/50 bg-sky-500/15'
+                  : 'border-slate-800 bg-slate-950/60 hover:border-slate-700 hover:bg-slate-800/40'
+              "
+              @click="toggleKey(k.registerMappingId)"
+            >
+              <span
+                class="mt-1 h-2.5 w-2.5 shrink-0 rounded-full"
+                :style="{
+                  backgroundColor: selectedIds.includes(k.registerMappingId) ? colorForMapping(k.registerMappingId) : '#475569',
+                }"
+              />
+              <div class="min-w-0 flex-1">
+                <p class="truncate font-medium text-white">{{ k.registerName }}</p>
+                <p class="truncate text-[11px] text-slate-400">{{ k.deviceName }}</p>
+                <p class="mt-0.5 font-mono text-[10px] text-slate-500">
+                  poll {{ formatPoll(k.pollIntervalSeconds) }} | keep {{ k.retentionDays }}d
+                  <span v-if="!k.isActive" class="ml-1 text-amber-400">(paused)</span>
+                </p>
+              </div>
+            </button>
+            <p v-if="filteredKeys.length === 0" class="py-4 text-center text-xs text-slate-500">
+              No matching keys.
+            </p>
+          </div>
         </div>
       </aside>
 
       <!-- Right Chart + Summary Table -->
-      <div class="space-y-5 lg:col-span-3">
-        <section class="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
-          <div class="relative h-[380px] w-full">
+      <div class="min-w-0 space-y-5" :class="keysPanelOpen ? 'lg:col-span-3' : 'lg:col-span-1'">
+        <section class="rounded-xl border border-slate-800 bg-slate-900/60 p-3 sm:p-4">
+          <div class="relative h-[280px] w-full sm:h-[380px] lg:h-[420px]">
             <div ref="chartEl" class="h-full w-full" />
             <div
               v-if="selectedIds.length === 0"
-              class="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-slate-500"
+              class="pointer-events-none absolute inset-0 flex items-center justify-center px-4 text-center text-xs text-slate-500"
             >
               Select one or more history keys to plot trends.
             </div>
             <div
               v-else-if="!loadingChart && result && result.series.every((s) => s.points.length === 0)"
-              class="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-slate-500"
+              class="pointer-events-none absolute inset-0 flex items-center justify-center px-4 text-center text-xs text-slate-500"
             >
               No archived data points recorded in this time window yet.
             </div>
           </div>
         </section>
 
-        <!-- Summary Statistics Table -->
+        <!-- Summary Statistics -->
         <section v-if="summaries.length > 0" class="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60">
           <div class="px-4 pt-4 pb-2">
             <h3 class="text-xs font-semibold uppercase tracking-wider text-slate-400">Range Statistics</h3>
           </div>
-          <div class="overflow-x-auto">
+
+          <!-- Mobile Stat Cards -->
+          <div class="divide-y divide-slate-800/70 md:hidden">
+            <div v-for="row in summaryPag.paginatedItems.value" :key="row.id" class="space-y-2 p-3.5 text-xs">
+              <div class="flex items-center justify-between gap-2">
+                <span class="flex min-w-0 items-center gap-2">
+                  <span class="h-2.5 w-2.5 shrink-0 rounded-full" :style="{ backgroundColor: row.color }" />
+                  <span class="truncate font-medium text-white">{{ row.registerName }}</span>
+                </span>
+                <span class="shrink-0 font-mono text-[11px] text-slate-400">{{ row.pointsCount }} pts</span>
+              </div>
+              <p class="text-[11px] text-slate-500">{{ row.deviceName }}</p>
+              <div class="grid grid-cols-2 gap-2 rounded-lg border border-slate-800/80 bg-slate-950/60 p-2.5 font-mono text-[11px] tabular-nums">
+                <div><span class="text-slate-500">Latest:</span> <span class="text-slate-100">{{ row.latest }}</span></div>
+                <div><span class="text-slate-500">Avg:</span> <span class="text-slate-300">{{ row.avg }}</span></div>
+                <div><span class="text-slate-500">Min:</span> <span class="text-slate-300">{{ row.min }}</span></div>
+                <div><span class="text-slate-500">Max:</span> <span class="text-slate-300">{{ row.max }}</span></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Desktop Table -->
+          <div class="hidden overflow-x-auto md:block">
             <table class="w-full text-left text-xs">
               <thead class="border-b border-slate-800 text-slate-400">
                 <tr>
@@ -587,16 +637,16 @@ onUnmounted(() => {
                 <tr v-for="row in summaryPag.paginatedItems.value" :key="row.id" class="hover:bg-slate-800/30">
                   <td class="px-4 py-2.5">
                     <span class="inline-flex items-center gap-2">
-                      <span class="h-2.5 w-2.5 rounded-full" :style="{ backgroundColor: row.color }" />
+                      <span class="h-2.5 w-2.5 shrink-0 rounded-full" :style="{ backgroundColor: row.color }" />
                       <span class="font-medium text-white">{{ row.registerName }}</span>
                       <span class="text-slate-500">({{ row.deviceName }})</span>
                     </span>
                   </td>
-                  <td class="px-4 py-2.5 font-mono text-slate-200">{{ row.latest }}</td>
-                  <td class="px-4 py-2.5 font-mono text-slate-300">{{ row.min }}</td>
-                  <td class="px-4 py-2.5 font-mono text-slate-300">{{ row.max }}</td>
-                  <td class="px-4 py-2.5 font-mono text-slate-300">{{ row.avg }}</td>
-                  <td class="px-4 py-2.5 text-right font-mono text-slate-400">{{ row.pointsCount }}</td>
+                  <td class="whitespace-nowrap px-4 py-2.5 font-mono tabular-nums text-slate-200">{{ row.latest }}</td>
+                  <td class="whitespace-nowrap px-4 py-2.5 font-mono tabular-nums text-slate-300">{{ row.min }}</td>
+                  <td class="whitespace-nowrap px-4 py-2.5 font-mono tabular-nums text-slate-300">{{ row.max }}</td>
+                  <td class="whitespace-nowrap px-4 py-2.5 font-mono tabular-nums text-slate-300">{{ row.avg }}</td>
+                  <td class="whitespace-nowrap px-4 py-2.5 text-right font-mono tabular-nums text-slate-400">{{ row.pointsCount }}</td>
                 </tr>
               </tbody>
             </table>

@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
-import { Minus, Plus, Power, Settings, Trash2, Users } from 'lucide-vue-next'
+import { onMounted, onUnmounted, ref } from 'vue'
+import { Minus, Plus, Power, Settings, Trash2, Users, X } from 'lucide-vue-next'
 import { ApiError, apiRequest } from '../../services/api'
 import type { Site, SiteMember, SiteRole, User } from '../../types/iam'
 import StatusBadge from '../../components/StatusBadge.vue'
@@ -95,7 +95,20 @@ async function loadSites() {
   }
 }
 
-onMounted(loadSites)
+function onKeydown(e: KeyboardEvent) {
+  if (e.key !== 'Escape') return
+  if (memberSite.value) memberSite.value = null
+  else if (editSite.value) editSite.value = null
+  else if (showCreate.value) showCreate.value = false
+}
+
+onMounted(() => {
+  document.addEventListener('keydown', onKeydown)
+  void loadSites()
+})
+onUnmounted(() => {
+  document.removeEventListener('keydown', onKeydown)
+})
 
 function toggleNewService(key: ServiceKey) {
   newServices.value = {
@@ -287,17 +300,17 @@ async function removeMember(userId: string) {
 </script>
 
 <template>
-  <div class="mx-auto max-w-6xl space-y-6">
-    <div class="flex items-center justify-between">
+  <div class="w-full space-y-5 sm:space-y-6">
+    <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
       <div>
-        <h1 class="text-xl font-semibold text-white">Sites, Services & WireGuard</h1>
-        <p class="text-xs text-slate-400">
+        <h1 class="text-lg font-semibold tracking-tight text-white sm:text-xl">Sites, Services & WireGuard</h1>
+        <p class="mt-0.5 text-xs text-slate-400">
           Platform Admin exclusive: onboard sites, add or remove site services, manage WireGuard configs, and assign Site Operators.
         </p>
       </div>
       <button
         type="button"
-        class="inline-flex items-center gap-1.5 rounded-lg bg-indigo-500 px-3.5 py-2 text-xs font-semibold text-white hover:bg-indigo-400"
+        class="inline-flex h-9 shrink-0 items-center justify-center gap-1.5 self-start rounded-lg bg-indigo-500 px-3.5 text-xs font-semibold text-white transition hover:bg-indigo-400 sm:self-auto"
         @click="showCreate = true"
       >
         <Plus class="h-4 w-4" />
@@ -308,7 +321,71 @@ async function removeMember(userId: string) {
     <p v-if="errBanner" class="rounded-lg border border-rose-500/40 bg-rose-500/10 p-3 text-xs text-rose-200">{{ errBanner }}</p>
 
     <div class="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60">
-      <div class="overflow-x-auto">
+      <!-- Mobile Cards -->
+      <div class="divide-y divide-slate-800/70 md:hidden">
+        <div v-for="s in sitesPag.paginatedItems.value" :key="s.id" class="space-y-3 p-4 text-xs">
+          <div class="flex items-start justify-between gap-2">
+            <div class="min-w-0">
+              <p class="truncate text-sm font-semibold text-white">{{ s.name }}</p>
+              <p class="truncate font-mono text-[11px] text-slate-500">{{ s.slug }}</p>
+            </div>
+            <StatusBadge :status="s.status" size="sm" />
+          </div>
+
+          <div class="space-y-1 rounded-lg border border-slate-800/80 bg-slate-950/60 p-2.5 font-mono text-[11px] text-slate-300">
+            <p v-if="s.wireguard" class="break-all">{{ s.wireguard.endpointHost }}:{{ s.wireguard.endpointPort }}</p>
+            <p v-if="s.wireguard" class="break-words text-slate-500">{{ s.wireguard.lanSubnets.join(', ') }}</p>
+            <p class="text-[10px] text-slate-500">{{ s.isActive ? 'ACTIVE' : 'STOPPED' }} | {{ s.handshakeState }}</p>
+          </div>
+
+          <div class="flex flex-wrap items-center gap-1.5 text-[11px]">
+            <template v-for="svc in PLATFORM_SERVICES" :key="svc.key">
+              <span v-if="s[svc.key]" class="rounded px-2 py-0.5 font-medium" :class="svc.badgeClass">
+                {{ svc.name }}
+              </span>
+            </template>
+            <span v-if="!PLATFORM_SERVICES.some((svc) => s[svc.key])" class="text-slate-500">No attached services</span>
+          </div>
+
+          <div class="flex flex-wrap items-center gap-2 pt-1">
+            <button
+              type="button"
+              class="inline-flex h-8 flex-1 items-center justify-center gap-1 rounded-lg border border-indigo-500/40 bg-indigo-500/15 px-2.5 text-[11px] font-medium text-indigo-200 hover:bg-indigo-500/25"
+              @click="openEditSite(s)"
+            >
+              <Settings class="h-3.5 w-3.5" /> Services / WG
+            </button>
+            <button
+              type="button"
+              class="inline-flex h-8 flex-1 items-center justify-center gap-1 rounded-lg border border-slate-700 bg-slate-800 px-2.5 text-[11px] font-medium text-slate-200 hover:bg-slate-700"
+              @click="openMembers(s)"
+            >
+              <Users class="h-3.5 w-3.5" /> Members
+            </button>
+            <button
+              type="button"
+              class="inline-flex h-8 items-center justify-center gap-1 rounded-lg border border-slate-700 bg-slate-800 px-2.5 text-[11px] font-medium text-slate-200 hover:bg-slate-700"
+              @click="toggleActive(s)"
+            >
+              <Power class="h-3.5 w-3.5" /> {{ s.isActive ? 'Deactivate' : 'Activate' }}
+            </button>
+            <button
+              type="button"
+              aria-label="Delete site"
+              class="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-rose-500/30 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20"
+              @click="deleteSite(s)"
+            >
+              <Trash2 class="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </div>
+        <div v-if="!loading && sites.length === 0" class="px-4 py-8 text-center text-xs text-slate-500">
+          No sites onboarded yet.
+        </div>
+      </div>
+
+      <!-- Desktop Table -->
+      <div class="hidden overflow-x-auto md:block">
         <table class="w-full text-left text-xs">
           <thead class="border-b border-slate-800 text-slate-400">
             <tr>
@@ -329,48 +406,53 @@ async function removeMember(userId: string) {
                 <p v-if="s.wireguard">{{ s.wireguard.endpointHost }}:{{ s.wireguard.endpointPort }}</p>
                 <p v-if="s.wireguard" class="text-slate-500">{{ s.wireguard.lanSubnets.join(', ') }}</p>
               </td>
-              <td class="px-4 py-3 space-y-1">
+              <td class="space-y-1 px-4 py-3">
                 <StatusBadge :status="s.status" size="sm" />
-                <p class="font-mono text-[10px] text-slate-500">{{ s.isActive ? 'ACTIVE' : 'STOPPED' }} · {{ s.handshakeState }}</p>
+                <p class="font-mono text-[10px] text-slate-500">{{ s.isActive ? 'ACTIVE' : 'STOPPED' }} | {{ s.handshakeState }}</p>
               </td>
               <td class="px-4 py-3 text-[11px]">
-                <template v-for="svc in PLATFORM_SERVICES" :key="svc.key">
-                  <span v-if="s[svc.key]" class="mr-1.5 rounded px-1.5 py-0.5" :class="svc.badgeClass">
-                    {{ svc.name }}
-                  </span>
-                </template>
-                <span v-if="!PLATFORM_SERVICES.some((svc) => s[svc.key])" class="text-slate-500">None</span>
+                <div class="flex flex-wrap gap-1.5">
+                  <template v-for="svc in PLATFORM_SERVICES" :key="svc.key">
+                    <span v-if="s[svc.key]" class="rounded px-1.5 py-0.5 font-medium" :class="svc.badgeClass">
+                      {{ svc.name }}
+                    </span>
+                  </template>
+                  <span v-if="!PLATFORM_SERVICES.some((svc) => s[svc.key])" class="text-slate-500">None</span>
+                </div>
               </td>
-              <td class="px-4 py-3 text-right space-x-1.5">
-                <button
-                  type="button"
-                  class="inline-flex items-center gap-1 rounded border border-indigo-500/40 bg-indigo-500/15 px-2 py-1 text-[11px] text-indigo-200 hover:bg-indigo-500/25"
-                  @click="openEditSite(s)"
-                >
-                  <Settings class="h-3 w-3" /> Services / WG
-                </button>
-                <button
-                  type="button"
-                  class="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-slate-200 hover:bg-slate-700"
-                  @click="openMembers(s)"
-                >
-                  <Users class="h-3 w-3" /> Members
-                </button>
-                <button
-                  type="button"
-                  class="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-slate-200 hover:bg-slate-700"
-                  @click="toggleActive(s)"
-                >
-                  <Power class="h-3 w-3" /> {{ s.isActive ? 'Deactivate' : 'Activate' }}
-                </button>
-                <button
-                  type="button"
-                  class="inline-flex items-center rounded border border-rose-500/30 bg-rose-500/10 p-1 text-rose-300 hover:bg-rose-500/20"
-                  title="Delete site"
-                  @click="deleteSite(s)"
-                >
-                  <Trash2 class="h-3.5 w-3.5" />
-                </button>
+              <td class="px-4 py-3 text-right">
+                <div class="inline-flex flex-wrap items-center justify-end gap-1.5">
+                  <button
+                    type="button"
+                    class="inline-flex items-center gap-1 rounded border border-indigo-500/40 bg-indigo-500/15 px-2 py-1 text-[11px] text-indigo-200 transition hover:bg-indigo-500/25"
+                    @click="openEditSite(s)"
+                  >
+                    <Settings class="h-3 w-3" /> Services / WG
+                  </button>
+                  <button
+                    type="button"
+                    class="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-slate-200 transition hover:bg-slate-700"
+                    @click="openMembers(s)"
+                  >
+                    <Users class="h-3 w-3" /> Members
+                  </button>
+                  <button
+                    type="button"
+                    class="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-slate-200 transition hover:bg-slate-700"
+                    @click="toggleActive(s)"
+                  >
+                    <Power class="h-3 w-3" /> {{ s.isActive ? 'Deactivate' : 'Activate' }}
+                  </button>
+                  <button
+                    type="button"
+                    class="inline-flex items-center rounded border border-rose-500/30 bg-rose-500/10 p-1 text-rose-300 transition hover:bg-rose-500/20"
+                    title="Delete site"
+                    aria-label="Delete site"
+                    @click="deleteSite(s)"
+                  >
+                    <Trash2 class="h-3.5 w-3.5" />
+                  </button>
+                </div>
               </td>
             </tr>
             <tr v-if="!loading && sites.length === 0">
@@ -387,192 +469,236 @@ async function removeMember(userId: string) {
     </div>
 
     <!-- Create Site Modal -->
-    <div v-if="showCreate" class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-      <div class="max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl">
-        <h2 class="text-lg font-semibold text-white">Onboard New Site</h2>
-        <form class="mt-4 space-y-4" @submit.prevent="createSite">
-          <div class="grid gap-3 sm:grid-cols-2">
-            <div>
-              <label class="mb-1 block text-xs text-slate-400">Site Name</label>
-              <input v-model="newName" required class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white" />
+    <Teleport to="body">
+      <div
+        v-if="showCreate"
+        class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-xs"
+        @click.self="showCreate = false"
+      >
+        <div class="max-h-[90dvh] w-full max-w-xl overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl sm:p-6">
+          <div class="flex items-center justify-between gap-2">
+            <h2 class="text-base font-semibold text-white">Onboard New Site</h2>
+            <button
+              type="button"
+              aria-label="Close modal"
+              class="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white"
+              @click="showCreate = false"
+            >
+              <X class="h-4 w-4" />
+            </button>
+          </div>
+          <form class="mt-4 space-y-4" @submit.prevent="createSite">
+            <div class="grid gap-3 sm:grid-cols-2">
+              <div>
+                <label class="mb-1 block text-xs text-slate-400">Site Name</label>
+                <input v-model="newName" required class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white focus:border-indigo-500 focus:outline-none" />
+              </div>
+              <div>
+                <label class="mb-1 block text-xs text-slate-400">Slug (optional)</label>
+                <input v-model="newSlug" placeholder="auto-generated" class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs text-white focus:border-indigo-500 focus:outline-none" />
+              </div>
             </div>
-            <div>
-              <label class="mb-1 block text-xs text-slate-400">Slug (optional)</label>
-              <input v-model="newSlug" placeholder="auto-generated" class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs text-white" />
+
+            <WireguardConfEditor
+              v-model="newConf"
+              v-model:override-subnets="newOverrideSubnets"
+              :needs-narrowing="needsNarrowing"
+              :warnings="createWarnings"
+            />
+
+            <!-- Dynamic Service List -->
+            <div class="space-y-2">
+              <p class="text-xs font-medium uppercase tracking-wider text-slate-400">Site Services</p>
+              <div class="divide-y divide-slate-800 rounded-xl border border-slate-800 bg-slate-950/70">
+                <div
+                  v-for="svc in PLATFORM_SERVICES"
+                  :key="svc.key"
+                  class="flex items-center justify-between gap-3 px-3.5 py-2.5"
+                >
+                  <div class="min-w-0">
+                    <p class="text-xs font-medium text-white">{{ svc.name }}</p>
+                    <p class="text-[11px] text-slate-400">{{ svc.description }}</p>
+                  </div>
+                  <button
+                    type="button"
+                    class="inline-flex shrink-0 items-center gap-1 rounded-md border px-2.5 py-1.5 text-[11px] font-medium transition"
+                    :class="
+                      newServices[svc.key]
+                        ? 'border-rose-500/40 bg-rose-500/10 text-rose-200 hover:bg-rose-500/20'
+                        : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/20'
+                    "
+                    @click="toggleNewService(svc.key)"
+                  >
+                    <Minus v-if="newServices[svc.key]" class="h-3 w-3" />
+                    <Plus v-else class="h-3 w-3" />
+                    {{ newServices[svc.key] ? 'Remove' : 'Add' }}
+                  </button>
+                </div>
+              </div>
             </div>
+
+            <label class="inline-flex items-center gap-2 text-xs text-slate-200">
+              <input v-model="newActivate" type="checkbox" />
+              Activate runner immediately
+            </label>
+
+            <p v-if="createErr" class="rounded-lg border border-rose-500/40 bg-rose-500/10 p-2.5 text-xs text-rose-200">{{ createErr }}</p>
+
+            <div class="flex items-center justify-end gap-2 pt-2">
+              <button type="button" class="inline-flex h-9 items-center justify-center rounded-lg border border-slate-700 px-3.5 text-xs font-medium leading-none text-slate-300 hover:bg-slate-800" @click="showCreate = false">Cancel</button>
+              <button type="submit" :disabled="creating" class="inline-flex h-9 items-center justify-center rounded-lg bg-indigo-500 px-4 text-xs font-semibold leading-none text-white hover:bg-indigo-400 disabled:opacity-50">
+                {{ creating ? 'Validating...' : 'Create Site' }}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- Configure Site Services & WireGuard Config Modal (Platform Admin ONLY) -->
+    <Teleport to="body">
+      <div
+        v-if="editSite"
+        class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-xs"
+        @click.self="editSite = null"
+      >
+        <div class="max-h-[90dvh] w-full max-w-xl overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl space-y-5 sm:p-6">
+          <div class="flex items-center justify-between gap-2">
+            <h2 class="truncate text-base font-semibold text-white">Configure Site - {{ editSite.name }}</h2>
+            <button
+              type="button"
+              aria-label="Close modal"
+              class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white"
+              @click="editSite = null"
+            >
+              <X class="h-4 w-4" />
+            </button>
           </div>
 
-          <WireguardConfEditor
-            v-model="newConf"
-            v-model:override-subnets="newOverrideSubnets"
-            :needs-narrowing="needsNarrowing"
-            :warnings="createWarnings"
-          />
+          <form class="flex flex-col gap-2 border-b border-slate-800 pb-4 sm:flex-row sm:items-end" @submit.prevent="saveSiteFeatures">
+            <div class="w-full sm:flex-1">
+              <label class="mb-1 block text-xs text-slate-400">Site Name</label>
+              <input v-model="editName" required class="h-10 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 text-sm text-white focus:border-indigo-500 focus:outline-none" />
+            </div>
+            <button type="submit" :disabled="savingEdit" class="inline-flex h-10 items-center justify-center rounded-lg bg-indigo-500 px-4 text-xs font-semibold leading-none text-white transition hover:bg-indigo-400">
+              Rename
+            </button>
+          </form>
 
-          <!-- Dynamic Service List -->
-          <div class="space-y-2">
-            <p class="text-xs font-medium uppercase tracking-wider text-slate-400">Site Services</p>
+          <!-- Dynamic Site Services Add/Remove List -->
+          <div class="space-y-2 border-b border-slate-800 pb-5">
+            <p class="text-xs font-medium uppercase tracking-wider text-slate-400">Attached Services</p>
             <div class="divide-y divide-slate-800 rounded-xl border border-slate-800 bg-slate-950/70">
               <div
                 v-for="svc in PLATFORM_SERVICES"
                 :key="svc.key"
                 class="flex items-center justify-between gap-3 px-3.5 py-2.5"
               >
-                <div>
-                  <p class="text-xs font-medium text-white">{{ svc.name }}</p>
-                  <p class="text-[11px] text-slate-400">{{ svc.description }}</p>
+                <div class="min-w-0">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <p class="text-xs font-medium text-white">{{ svc.name }}</p>
+                    <span
+                      class="rounded-full px-2 py-0.5 text-[10px] font-medium uppercase"
+                      :class="editServices[svc.key] ? 'bg-emerald-500/15 text-emerald-300' : 'bg-slate-800 text-slate-400'"
+                    >
+                      {{ editServices[svc.key] ? 'Enabled' : 'Disabled' }}
+                    </span>
+                  </div>
+                  <p class="mt-0.5 text-[11px] text-slate-400">{{ svc.description }}</p>
                 </div>
                 <button
                   type="button"
-                  class="inline-flex shrink-0 items-center gap-1 rounded-md border px-2.5 py-1 text-[11px] font-medium transition"
+                  :disabled="savingEdit"
+                  class="inline-flex shrink-0 items-center gap-1 rounded-md border px-2.5 py-1.5 text-[11px] font-medium transition disabled:opacity-50"
                   :class="
-                    newServices[svc.key]
+                    editServices[svc.key]
                       ? 'border-rose-500/40 bg-rose-500/10 text-rose-200 hover:bg-rose-500/20'
                       : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/20'
                   "
-                  @click="toggleNewService(svc.key)"
+                  @click="toggleEditService(svc.key)"
                 >
-                  <Minus v-if="newServices[svc.key]" class="h-3 w-3" />
+                  <Minus v-if="editServices[svc.key]" class="h-3 w-3" />
                   <Plus v-else class="h-3 w-3" />
-                  {{ newServices[svc.key] ? 'Remove' : 'Add' }}
+                  {{ editServices[svc.key] ? 'Remove' : 'Add' }}
                 </button>
               </div>
             </div>
           </div>
 
-          <label class="inline-flex items-center gap-2 text-xs text-slate-200">
-            <input v-model="newActivate" type="checkbox" />
-            Activate runner immediately
-          </label>
-
-          <p v-if="createErr" class="rounded-lg border border-rose-500/40 bg-rose-500/10 p-2.5 text-xs text-rose-200">{{ createErr }}</p>
-
-          <div class="flex justify-end gap-2 pt-2">
-            <button type="button" class="rounded-lg border border-slate-700 px-3.5 py-2 text-xs text-slate-300" @click="showCreate = false">Cancel</button>
-            <button type="submit" :disabled="creating" class="rounded-lg bg-indigo-500 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-400 disabled:opacity-50">
-              {{ creating ? 'Validating...' : 'Create Site' }}
+          <form class="space-y-3" @submit.prevent="rotateSiteConf">
+            <h3 class="text-sm font-semibold text-white">Rotate WireGuard Client Config</h3>
+            <WireguardConfEditor
+              v-model="editConf"
+              v-model:override-subnets="editOverrideSubnets"
+              :needs-narrowing="editNeedsNarrowing"
+              :warnings="editWarnings"
+            />
+            <button type="submit" :disabled="savingEdit || !editConf.trim()" class="w-full rounded-lg bg-sky-500 px-3.5 py-2 text-xs font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-50 sm:w-auto">
+              Validate & Rotate WireGuard Config
             </button>
-          </div>
-        </form>
-      </div>
-    </div>
+          </form>
 
-    <!-- Configure Site Services & WireGuard Config Modal (Platform Admin ONLY) -->
-    <div v-if="editSite" class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-      <div class="max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl space-y-5">
-        <div class="flex items-center justify-between">
-          <h2 class="text-base font-semibold text-white">Configure Site - {{ editSite.name }}</h2>
-          <button type="button" class="text-xs text-slate-400 hover:text-white" @click="editSite = null">Close</button>
+          <p v-if="editErr" class="rounded-lg border border-rose-500/40 bg-rose-500/10 p-2.5 text-xs text-rose-200">{{ editErr }}</p>
+          <p v-if="editOk" class="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-2.5 text-xs text-emerald-200">{{ editOk }}</p>
         </div>
-
-        <form class="flex items-end gap-2 border-b border-slate-800 pb-4" @submit.prevent="saveSiteFeatures">
-          <div class="flex-1">
-            <label class="mb-1 block text-xs text-slate-400">Site Name</label>
-            <input v-model="editName" required class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white" />
-          </div>
-          <button type="submit" :disabled="savingEdit" class="rounded-lg bg-indigo-500 px-3.5 py-2 text-xs font-semibold text-white hover:bg-indigo-400">
-            Rename
-          </button>
-        </form>
-
-        <!-- Dynamic Site Services Add/Remove List -->
-        <div class="space-y-2 border-b border-slate-800 pb-5">
-          <p class="text-xs font-medium uppercase tracking-wider text-slate-400">Attached Services</p>
-          <div class="divide-y divide-slate-800 rounded-xl border border-slate-800 bg-slate-950/70">
-            <div
-              v-for="svc in PLATFORM_SERVICES"
-              :key="svc.key"
-              class="flex items-center justify-between gap-3 px-3.5 py-2.5"
-            >
-              <div>
-                <div class="flex items-center gap-2">
-                  <p class="text-xs font-medium text-white">{{ svc.name }}</p>
-                  <span
-                    class="rounded-full px-2 py-0.5 text-[10px] font-medium uppercase"
-                    :class="editServices[svc.key] ? 'bg-emerald-500/15 text-emerald-300' : 'bg-slate-800 text-slate-400'"
-                  >
-                    {{ editServices[svc.key] ? 'Enabled' : 'Disabled' }}
-                  </span>
-                </div>
-                <p class="mt-0.5 text-[11px] text-slate-400">{{ svc.description }}</p>
-              </div>
-              <button
-                type="button"
-                :disabled="savingEdit"
-                class="inline-flex shrink-0 items-center gap-1 rounded-md border px-2.5 py-1 text-[11px] font-medium transition disabled:opacity-50"
-                :class="
-                  editServices[svc.key]
-                    ? 'border-rose-500/40 bg-rose-500/10 text-rose-200 hover:bg-rose-500/20'
-                    : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/20'
-                "
-                @click="toggleEditService(svc.key)"
-              >
-                <Minus v-if="editServices[svc.key]" class="h-3 w-3" />
-                <Plus v-else class="h-3 w-3" />
-                {{ editServices[svc.key] ? 'Remove' : 'Add' }}
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <form class="space-y-3" @submit.prevent="rotateSiteConf">
-          <h3 class="text-sm font-semibold text-white">Rotate WireGuard Client Config</h3>
-          <WireguardConfEditor
-            v-model="editConf"
-            v-model:override-subnets="editOverrideSubnets"
-            :needs-narrowing="editNeedsNarrowing"
-            :warnings="editWarnings"
-          />
-          <button type="submit" :disabled="savingEdit || !editConf.trim()" class="rounded-lg bg-sky-500 px-3.5 py-2 text-xs font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-50">
-            Validate & Rotate WireGuard Config
-          </button>
-        </form>
-
-        <p v-if="editErr" class="rounded-lg border border-rose-500/40 bg-rose-500/10 p-2.5 text-xs text-rose-200">{{ editErr }}</p>
-        <p v-if="editOk" class="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-2.5 text-xs text-emerald-200">{{ editOk }}</p>
       </div>
-    </div>
+    </Teleport>
 
     <!-- Site Membership Modal -->
-    <div v-if="memberSite" class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-      <div class="w-full max-w-lg rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl space-y-4">
-        <div class="flex items-center justify-between">
-          <h2 class="text-base font-semibold text-white">Members - {{ memberSite.name }}</h2>
-          <button type="button" class="text-xs text-slate-400 hover:text-white" @click="memberSite = null">Close</button>
-        </div>
-
-        <form class="flex gap-2" @submit.prevent="addOrUpdateMember">
-          <select v-model="assignUserId" required class="flex-1 rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-2 text-xs text-white">
-            <option value="" disabled>Select user...</option>
-            <option v-for="u in users" :key="u.id" :value="u.id">{{ u.email }}</option>
-          </select>
-          <select v-model="assignRole" class="rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-2 text-xs text-white">
-            <option value="SITE_MEMBER">SITE_MEMBER</option>
-            <option value="SITE_OPERATOR">SITE_OPERATOR</option>
-          </select>
-          <button type="submit" class="rounded-lg bg-indigo-500 px-3 py-2 text-xs font-medium text-white">Assign</button>
-        </form>
-
-        <div class="overflow-hidden rounded-lg border border-slate-800">
-          <div class="divide-y divide-slate-800 px-3 text-xs">
-            <div v-for="m in siteMembersPag.paginatedItems.value" :key="m.userId" class="flex items-center justify-between py-2">
-              <div>
-                <p class="font-mono text-slate-200">{{ m.email }}</p>
-                <p class="text-[11px] text-slate-400">{{ m.role }}</p>
-              </div>
-              <button type="button" class="text-rose-400 hover:underline" @click="removeMember(m.userId)">Remove</button>
-            </div>
-            <p v-if="siteMembers.length === 0" class="py-3 text-center text-slate-500">No members assigned.</p>
+    <Teleport to="body">
+      <div
+        v-if="memberSite"
+        class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-xs"
+        @click.self="memberSite = null"
+      >
+        <div class="max-h-[90dvh] w-full max-w-lg overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl space-y-4 sm:p-6">
+          <div class="flex items-center justify-between gap-2">
+            <h2 class="truncate text-base font-semibold text-white">Members - {{ memberSite.name }}</h2>
+            <button
+              type="button"
+              aria-label="Close modal"
+              class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white"
+              @click="memberSite = null"
+            >
+              <X class="h-4 w-4" />
+            </button>
           </div>
-          <TablePagination
-            v-model:page="siteMembersPag.page.value"
-            v-model:page-size="siteMembersPag.pageSize.value"
-            :total-items="siteMembersPag.totalItems.value"
-            compact
-          />
+
+          <form class="flex flex-col gap-2 sm:flex-row sm:items-center" @submit.prevent="addOrUpdateMember">
+            <select v-model="assignUserId" required class="h-10 w-full min-w-0 rounded-lg border border-slate-700 bg-slate-950 px-2.5 text-xs text-white focus:border-indigo-500 focus:outline-none sm:flex-1">
+              <option value="" disabled>Select user...</option>
+              <option v-for="u in users" :key="u.id" :value="u.id">{{ u.email }}</option>
+            </select>
+            <div class="flex items-center gap-2">
+              <select v-model="assignRole" class="h-10 flex-1 rounded-lg border border-slate-700 bg-slate-950 px-2.5 text-xs text-white focus:border-indigo-500 focus:outline-none sm:flex-initial">
+                <option value="SITE_MEMBER">SITE_MEMBER</option>
+                <option value="SITE_OPERATOR">SITE_OPERATOR</option>
+              </select>
+              <button type="submit" class="inline-flex h-10 shrink-0 items-center justify-center rounded-lg bg-indigo-500 px-3.5 text-xs font-semibold leading-none text-white hover:bg-indigo-400">Assign</button>
+            </div>
+          </form>
+
+          <div class="overflow-hidden rounded-lg border border-slate-800">
+            <div class="divide-y divide-slate-800 px-3 text-xs">
+              <div v-for="m in siteMembersPag.paginatedItems.value" :key="m.userId" class="flex items-center justify-between gap-2 py-2.5">
+                <div class="min-w-0">
+                  <p class="truncate font-mono text-slate-200">{{ m.email }}</p>
+                  <p class="text-[11px] text-slate-400">{{ m.role }}</p>
+                </div>
+                <button type="button" class="shrink-0 text-rose-400 hover:underline" @click="removeMember(m.userId)">Remove</button>
+              </div>
+              <p v-if="siteMembers.length === 0" class="py-4 text-center text-slate-500">No members assigned.</p>
+            </div>
+            <TablePagination
+              v-model:page="siteMembersPag.page.value"
+              v-model:page-size="siteMembersPag.pageSize.value"
+              :total-items="siteMembersPag.totalItems.value"
+              compact
+            />
+          </div>
         </div>
       </div>
-    </div>
+    </Teleport>
 
     <DeleteConfirmModal
       :open="Boolean(siteToDelete)"

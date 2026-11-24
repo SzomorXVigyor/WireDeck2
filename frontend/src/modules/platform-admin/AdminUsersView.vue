@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
-import { Mail, Plus, Trash2 } from 'lucide-vue-next'
+import { onMounted, onUnmounted, ref } from 'vue'
+import { Mail, Plus, Trash2, X } from 'lucide-vue-next'
 import { apiRequest } from '../../services/api'
 import type { User } from '../../types/iam'
 import StatusBadge from '../../components/StatusBadge.vue'
@@ -28,7 +28,20 @@ async function loadUsers() {
   }
 }
 
-onMounted(loadUsers)
+function onKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && showInvite.value) {
+    showInvite.value = false
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('keydown', onKeydown)
+  void loadUsers()
+})
+
+onUnmounted(() => {
+  document.removeEventListener('keydown', onKeydown)
+})
 
 async function createInvite() {
   errBanner.value = null
@@ -87,15 +100,15 @@ async function confirmDeleteUser() {
 </script>
 
 <template>
-  <div class="mx-auto max-w-5xl space-y-6">
-    <div class="flex items-center justify-between">
+  <div class="w-full space-y-5 sm:space-y-6">
+    <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
       <div>
-        <h1 class="text-xl font-semibold text-white">Users & Email Invites</h1>
-        <p class="text-xs text-slate-400">Create users via single-use 48-hour email invitations dispatched by MailGopher.</p>
+        <h1 class="text-lg font-semibold tracking-tight text-white sm:text-xl">Users & Email Invites</h1>
+        <p class="mt-0.5 text-xs text-slate-400">Create users via single-use 48-hour email invitations dispatched by MailGopher.</p>
       </div>
       <button
         type="button"
-        class="inline-flex items-center gap-1.5 rounded-lg bg-indigo-500 px-3.5 py-2 text-xs font-semibold text-white hover:bg-indigo-400"
+        class="inline-flex h-9 shrink-0 items-center justify-center gap-1.5 self-start rounded-lg bg-indigo-500 px-3.5 text-xs font-semibold text-white transition hover:bg-indigo-400 sm:self-auto"
         @click="showInvite = true"
       >
         <Plus class="h-4 w-4" />
@@ -107,7 +120,48 @@ async function confirmDeleteUser() {
     <p v-if="notice" class="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-200">{{ notice }}</p>
 
     <div class="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60">
-      <div class="overflow-x-auto">
+      <!-- Mobile Cards -->
+      <div class="divide-y divide-slate-800/70 md:hidden">
+        <div v-for="u in usersPag.paginatedItems.value" :key="u.id" class="space-y-3 p-4 text-xs">
+          <div class="flex items-start justify-between gap-2">
+            <div class="min-w-0">
+              <p class="break-all font-mono text-sm font-medium text-white">{{ u.email }}</p>
+              <p class="mt-0.5 text-slate-400">{{ u.isPlatformAdmin ? 'Platform Admin' : 'Standard User' }}</p>
+            </div>
+            <StatusBadge :status="u.status" size="sm" />
+          </div>
+          <div class="flex flex-wrap items-center gap-2">
+            <button
+              v-if="u.status === 'INVITED'"
+              type="button"
+              class="inline-flex h-8 flex-1 items-center justify-center gap-1 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 text-[11px] font-medium text-amber-200 hover:bg-amber-500/20"
+              @click="resendInvite(u)"
+            >
+              <Mail class="h-3.5 w-3.5" /> Resend Invite
+            </button>
+            <button
+              v-if="u.status !== 'INVITED'"
+              type="button"
+              class="inline-flex h-8 flex-1 items-center justify-center rounded-lg border border-slate-700 bg-slate-800 px-2.5 text-[11px] font-medium text-slate-200 hover:bg-slate-700"
+              @click="toggleDisabled(u)"
+            >
+              {{ u.status === 'DISABLED' ? 'Enable Account' : 'Disable Account' }}
+            </button>
+            <button
+              type="button"
+              aria-label="Delete user"
+              class="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-rose-500/30 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20"
+              @click="deleteUser(u)"
+            >
+              <Trash2 class="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </div>
+        <div v-if="users.length === 0" class="px-4 py-8 text-center text-xs text-slate-500">No users found.</div>
+      </div>
+
+      <!-- Desktop Table -->
+      <div class="hidden overflow-x-auto md:block">
         <table class="w-full text-left text-xs">
           <thead class="border-b border-slate-800 text-slate-400">
             <tr>
@@ -122,31 +176,34 @@ async function confirmDeleteUser() {
               <td class="px-4 py-3 font-mono text-slate-200">{{ u.email }}</td>
               <td class="px-4 py-3"><StatusBadge :status="u.status" size="sm" /></td>
               <td class="px-4 py-3 text-slate-300">{{ u.isPlatformAdmin ? 'Platform Admin' : 'Standard User' }}</td>
-              <td class="px-4 py-3 text-right space-x-1.5">
-                <button
-                  v-if="u.status === 'INVITED'"
-                  type="button"
-                  class="inline-flex items-center gap-1 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-200"
-                  @click="resendInvite(u)"
-                >
-                  <Mail class="h-3 w-3" /> Resend Invite
-                </button>
-                <button
-                  v-if="u.status !== 'INVITED'"
-                  type="button"
-                  class="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-slate-200"
-                  @click="toggleDisabled(u)"
-                >
-                  {{ u.status === 'DISABLED' ? 'Enable' : 'Disable' }}
-                </button>
-                <button
-                  type="button"
-                  class="inline-flex items-center rounded border border-rose-500/30 bg-rose-500/10 p-1 text-rose-300"
-                  title="Delete user"
-                  @click="deleteUser(u)"
-                >
-                  <Trash2 class="h-3.5 w-3.5" />
-                </button>
+              <td class="px-4 py-3 text-right">
+                <div class="inline-flex items-center justify-end gap-1.5">
+                  <button
+                    v-if="u.status === 'INVITED'"
+                    type="button"
+                    class="inline-flex items-center gap-1 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-200 transition hover:bg-amber-500/20"
+                    @click="resendInvite(u)"
+                  >
+                    <Mail class="h-3 w-3" /> Resend Invite
+                  </button>
+                  <button
+                    v-if="u.status !== 'INVITED'"
+                    type="button"
+                    class="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-slate-200 transition hover:bg-slate-700"
+                    @click="toggleDisabled(u)"
+                  >
+                    {{ u.status === 'DISABLED' ? 'Enable' : 'Disable' }}
+                  </button>
+                  <button
+                    type="button"
+                    class="inline-flex items-center rounded border border-rose-500/30 bg-rose-500/10 p-1 text-rose-300 transition hover:bg-rose-500/20"
+                    title="Delete user"
+                    aria-label="Delete user"
+                    @click="deleteUser(u)"
+                  >
+                    <Trash2 class="h-3.5 w-3.5" />
+                  </button>
+                </div>
               </td>
             </tr>
             <tr v-if="users.length === 0">
@@ -162,27 +219,43 @@ async function confirmDeleteUser() {
       />
     </div>
 
-    <div v-if="showInvite" class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-      <div class="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl">
-        <h2 class="text-base font-semibold text-white">Invite New User</h2>
-        <form class="mt-4 space-y-4" @submit.prevent="createInvite">
-          <div>
-            <label class="mb-1 block text-xs text-slate-400">User Email</label>
-            <input v-model="inviteEmail" type="email" required class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white" />
-          </div>
-          <label class="inline-flex items-center gap-2 text-xs text-slate-200">
-            <input v-model="inviteAdmin" type="checkbox" />
-            Grant Platform Administrator privileges
-          </label>
-          <div class="flex justify-end gap-2 pt-2">
-            <button type="button" class="rounded-lg border border-slate-700 px-3.5 py-2 text-xs text-slate-300" @click="showInvite = false">Cancel</button>
-            <button type="submit" :disabled="inviting" class="rounded-lg bg-indigo-500 px-4 py-2 text-xs font-semibold text-white">
-              {{ inviting ? 'Sending Invite...' : 'Create & Send Invite' }}
+    <Teleport to="body">
+      <div
+        v-if="showInvite"
+        class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-xs"
+        @click.self="showInvite = false"
+      >
+        <div class="max-h-[90dvh] w-full max-w-md overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl sm:p-6">
+          <div class="flex items-center justify-between gap-2">
+            <h2 class="text-base font-semibold text-white">Invite New User</h2>
+            <button
+              type="button"
+              aria-label="Close modal"
+              class="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white"
+              @click="showInvite = false"
+            >
+              <X class="h-4 w-4" />
             </button>
           </div>
-        </form>
+          <form class="mt-4 space-y-4" @submit.prevent="createInvite">
+            <div>
+              <label class="mb-1 block text-xs text-slate-400">User Email</label>
+              <input v-model="inviteEmail" type="email" required class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white focus:border-indigo-500 focus:outline-none" />
+            </div>
+            <label class="inline-flex items-center gap-2 text-xs text-slate-200">
+              <input v-model="inviteAdmin" type="checkbox" />
+              Grant Platform Administrator privileges
+            </label>
+            <div class="flex items-center justify-end gap-2 pt-2">
+              <button type="button" class="inline-flex h-9 items-center justify-center rounded-lg border border-slate-700 px-3.5 text-xs font-medium leading-none text-slate-300 hover:bg-slate-800" @click="showInvite = false">Cancel</button>
+              <button type="submit" :disabled="inviting" class="inline-flex h-9 items-center justify-center rounded-lg bg-indigo-500 px-4 text-xs font-semibold leading-none text-white hover:bg-indigo-400 disabled:opacity-50">
+                {{ inviting ? 'Sending Invite...' : 'Create & Send Invite' }}
+              </button>
+            </div>
+          </form>
+        </div>
       </div>
-    </div>
+    </Teleport>
 
     <DeleteConfirmModal
       :open="Boolean(userToDelete)"

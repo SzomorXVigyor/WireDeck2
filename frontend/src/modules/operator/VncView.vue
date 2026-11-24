@@ -34,18 +34,18 @@ function sessionHref(targetId: string) {
 </script>
 
 <template>
-  <div class="space-y-6">
-    <div class="flex flex-wrap items-center justify-between gap-3">
+  <div class="w-full space-y-5 sm:space-y-6">
+    <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
       <div>
-        <h2 class="text-lg font-semibold text-white">WebVNC Endpoints</h2>
+        <h2 class="text-lg font-semibold tracking-tight text-white sm:text-xl">WebVNC Endpoints</h2>
         <p class="mt-0.5 text-xs text-slate-400">
-          Click any endpoint to open its remote desktop console in a new browser tab.
+          Select an endpoint to open its remote desktop console in a new browser tab.
         </p>
       </div>
 
       <button
         type="button"
-        class="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-800"
+        class="hidden h-9 shrink-0 items-center justify-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3.5 text-xs font-medium leading-none text-slate-200 transition hover:bg-slate-800 sm:inline-flex"
         @click="loadTargets"
       >
         <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': loading }" />
@@ -71,7 +71,7 @@ function sessionHref(targetId: string) {
       </p>
     </div>
 
-    <div v-else class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+    <div v-else class="grid grid-cols-1 gap-3.5 sm:grid-cols-2 lg:grid-cols-3 sm:gap-4">
       <a
         v-for="t in targets"
         :key="t.id"
@@ -81,7 +81,7 @@ function sessionHref(targetId: string) {
         class="group flex flex-col justify-between rounded-xl border border-slate-800 bg-slate-900/70 p-4 transition hover:border-emerald-500/50 hover:bg-slate-900"
       >
         <div class="flex items-start justify-between gap-3">
-          <div class="flex items-center gap-3 min-w-0">
+          <div class="flex min-w-0 items-center gap-3">
             <div
               class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-emerald-500/15 text-emerald-400 transition group-hover:bg-emerald-500/25"
             >
@@ -102,7 +102,7 @@ function sessionHref(targetId: string) {
           />
         </div>
 
-        <div class="mt-4 flex items-center justify-between border-t border-slate-800/80 pt-3 text-[11px]">
+        <div class="mt-4 flex items-center justify-between gap-2 border-t border-slate-800/80 pt-3 text-[11px]">
           <span
             v-if="t.hasPassword"
             class="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 font-medium text-emerald-300"
@@ -118,7 +118,7 @@ function sessionHref(targetId: string) {
             Prompt on connect
           </span>
 
-          <span class="font-medium text-emerald-400 opacity-80 group-hover:opacity-100">
+          <span class="shrink-0 font-medium text-emerald-400 opacity-85 group-hover:opacity-100">
             Open console
           </span>
         </div>
