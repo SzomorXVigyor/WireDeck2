@@ -59,6 +59,7 @@ type Scheduler struct {
 	devices        map[uuid.UUID]models.Device
 	mappings       map[uuid.UUID]models.RegisterMapping
 	historyEntries map[uuid.UUID]models.HistoryEntry // keyed by register_mapping_id
+	alarmIntervals map[uuid.UUID]time.Duration       // keyed by register_mapping_id (min poll interval across active rules)
 	graceUntil     map[uuid.UUID]time.Time
 	graceInterval  map[uuid.UUID]time.Duration
 	lastPolled     map[uuid.UUID]time.Time
@@ -97,6 +98,7 @@ func NewScheduler(
 		devices:        make(map[uuid.UUID]models.Device),
 		mappings:       make(map[uuid.UUID]models.RegisterMapping),
 		historyEntries: make(map[uuid.UUID]models.HistoryEntry),
+		alarmIntervals: make(map[uuid.UUID]time.Duration),
 		graceUntil:     make(map[uuid.UUID]time.Time),
 		graceInterval:  make(map[uuid.UUID]time.Duration),
 		lastPolled:     make(map[uuid.UUID]time.Time),
@@ -143,6 +145,10 @@ func (s *Scheduler) ReloadConfig(ctx context.Context) error {
 	if err := s.db.NewSelect().Model(&entries).Where("is_active = TRUE").Scan(ctx); err != nil {
 		return err
 	}
+	var alarmRules []models.AlarmRule
+	if err := s.db.NewSelect().Model(&alarmRules).Where("is_active = TRUE").Scan(ctx); err != nil {
+		return err
+	}
 
 	devMap := make(map[uuid.UUID]models.Device, len(devs))
 	for _, d := range devs {
@@ -160,11 +166,26 @@ func (s *Scheduler) ReloadConfig(ctx context.Context) error {
 			histMap[he.RegisterMappingID] = he
 		}
 	}
+	alarmMap := make(map[uuid.UUID]time.Duration)
+	for _, ar := range alarmRules {
+		if _, ok := mapMap[ar.RegisterMappingID]; !ok {
+			continue
+		}
+		sec := ar.PollIntervalSeconds
+		if sec < 1 {
+			sec = 10
+		}
+		dur := time.Duration(sec) * time.Second
+		if prev, exists := alarmMap[ar.RegisterMappingID]; !exists || dur < prev {
+			alarmMap[ar.RegisterMappingID] = dur
+		}
+	}
 
 	s.mu.Lock()
 	s.devices = devMap
 	s.mappings = mapMap
 	s.historyEntries = histMap
+	s.alarmIntervals = alarmMap
 	s.mu.Unlock()
 	return nil
 }
@@ -219,7 +240,8 @@ func (s *Scheduler) pollDue(ctx context.Context) {
 		_, isSub := activeIntervals[id]
 		inGrace := now.Before(s.graceUntil[id])
 		_, hasHist := s.historyEntries[id]
-		if isSub || inGrace || hasHist {
+		_, hasAlarm := s.alarmIntervals[id]
+		if isSub || inGrace || hasHist || hasAlarm {
 			activeCountByDevice[m.DeviceID]++
 		}
 	}
@@ -236,7 +258,7 @@ func (s *Scheduler) pollDue(ctx context.Context) {
 			}
 		}
 
-		// Demand check: ONLY poll if dashboard is open (WS active/grace) OR has active history entry
+		// Demand check (D17): ONLY poll if dashboard is open (WS active/grace) OR has active history entry OR active alarm rule
 		var effInterval time.Duration
 		subDur, isSub := activeIntervals[id]
 		inGrace := now.Before(s.graceUntil[id])
@@ -261,6 +283,14 @@ func (s *Scheduler) pollDue(ctx context.Context) {
 			}
 			if effInterval == 0 || arch < effInterval {
 				effInterval = arch
+			}
+		}
+		if alarmDur, hasAlarm := s.alarmIntervals[id]; hasAlarm {
+			if alarmDur < time.Second {
+				alarmDur = time.Second
+			}
+			if effInterval == 0 || alarmDur < effInterval {
+				effInterval = alarmDur
 			}
 		}
 

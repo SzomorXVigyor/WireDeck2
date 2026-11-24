@@ -14,6 +14,7 @@ import (
 
 	"github.com/SzomorXVigyor/WireDeck2/pkg/internalclient"
 	"github.com/SzomorXVigyor/WireDeck2/pkg/wireguard"
+	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/alarm"
 	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/history"
 	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/models"
 	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/provider"
@@ -37,11 +38,16 @@ type Service struct {
 	hub           *TelemetryHub
 	scheduler     *Scheduler
 	histStore     history.Store
+	alarmEng      *alarm.Engine
 	devDirectDial bool
 }
 
 func (s *Service) SetHistoryStore(store history.Store) {
 	s.histStore = store
+}
+
+func (s *Service) SetAlarmEngine(eng *alarm.Engine) {
+	s.alarmEng = eng
 }
 
 func NewService(
@@ -63,11 +69,16 @@ func NewService(
 }
 
 func (s *Service) reloadAsync() {
-	if s.scheduler != nil {
+	if s.scheduler != nil || s.alarmEng != nil {
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			_ = s.scheduler.ReloadConfig(ctx)
+			if s.scheduler != nil {
+				_ = s.scheduler.ReloadConfig(ctx)
+			}
+			if s.alarmEng != nil {
+				_ = s.alarmEng.ReloadRules(ctx)
+			}
 		}()
 	}
 }
@@ -769,11 +780,17 @@ func (s *Service) DrainSite(siteID uuid.UUID) {
 
 func (s *Service) DeleteSiteData(ctx context.Context, siteID uuid.UUID) error {
 	s.DrainSite(siteID)
+	if s.alarmEng != nil {
+		s.alarmEng.PurgeSiteMemory(siteID)
+	}
 	if s.histStore != nil {
 		if err := s.histStore.DeleteSiteHistory(ctx, siteID); err != nil {
 			slog.Warn("delete_site_tsdb_history_failed", "site_id", siteID, "error", err)
 		}
 	}
+	_, _ = s.db.NewDelete().Model((*models.AlarmPendingState)(nil)).Where("site_id = ?", siteID).Exec(ctx)
+	_, _ = s.db.NewDelete().Model((*models.AlarmEvent)(nil)).Where("site_id = ?", siteID).Exec(ctx)
+	_, _ = s.db.NewDelete().Model((*models.AlarmRule)(nil)).Where("site_id = ?", siteID).Exec(ctx)
 	_, _ = s.db.NewDelete().Model((*models.HistoryEntry)(nil)).Where("site_id = ?", siteID).Exec(ctx)
 	_, _ = s.db.NewDelete().Model((*models.Dashboard)(nil)).Where("site_id = ?", siteID).Exec(ctx)
 	_, _ = s.db.NewDelete().Model((*models.Device)(nil)).Where("site_id = ?", siteID).Exec(ctx)

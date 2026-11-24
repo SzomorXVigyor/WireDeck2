@@ -55,21 +55,31 @@ func TestWebViewOpenAPI_RoleSeparationAndPreUpgradeWSAuth(t *testing.T) {
 	for _, want := range []string{
 		"/api/v1/webview/sites/{siteId}/history",
 		"/api/v1/webview/sites/{siteId}/history/keys",
+		"/api/v1/webview/alarms",
+		"/api/v1/webview/alarms/summary",
+		"/api/v1/webview/sites/{siteId}/alarms",
+		"/api/v1/webview/sites/{siteId}/alarms/{eventId}/ack",
+		"/api/v1/webview/sites/{siteId}/operator/alarm-rules",
 	} {
 		if _, ok := paths[want]; !ok {
 			t.Fatalf("expected OpenAPI spec to contain %s", want)
 		}
 	}
 
-	// 2. SITE_MEMBER must get 403 Forbidden on Site Operator route
+	// 2. SITE_MEMBER must get 403 Forbidden on Site Operator routes (devices & alarm-rules)
 	tok, _, _ := signer.IssueAccessToken(uuid.New(), "member@example.com", false)
 	siteID := uuid.New().String()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/webview/sites/"+siteID+"/operator/devices", nil)
-	req.Header.Set("Authorization", "Bearer "+tok)
-	rec = httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("expected 403 for SITE_MEMBER on operator route, got %d: %s", rec.Code, rec.Body.String())
+	for _, opPath := range []string{
+		"/api/v1/webview/sites/" + siteID + "/operator/devices",
+		"/api/v1/webview/sites/" + siteID + "/operator/alarm-rules",
+	} {
+		req := httptest.NewRequest(http.MethodGet, opPath, nil)
+		req.Header.Set("Authorization", "Bearer "+tok)
+		rec = httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for SITE_MEMBER on %s, got %d: %s", opPath, rec.Code, rec.Body.String())
+		}
 	}
 
 	// 3. Unauthenticated / invalid WebSocket ticket must be rejected with HTTP 401 before upgrade

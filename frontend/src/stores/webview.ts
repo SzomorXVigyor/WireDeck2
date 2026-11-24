@@ -1,13 +1,22 @@
 import { defineStore } from 'pinia'
 import { ref, shallowRef } from 'vue'
 import { apiRequest } from '../services/api'
-import type { TelemetrySample, WebviewDashboard, WebviewWorkspace } from '../types/webview'
+import type { AlarmEvent, TelemetrySample, WebviewDashboard, WebviewWorkspace } from '../types/webview'
+import { useAlarmStore } from './alarms'
 
 export const useWebviewStore = defineStore('webview', () => {
   const connectionState = ref<'disconnected' | 'connecting' | 'connected' | 'error'>('disconnected')
   const connectionError = ref('')
   const samples = shallowRef<Record<string, TelemetrySample>>({})
   const siteDashboards = ref<Record<string, WebviewDashboard[]>>({})
+  const alarmListeners = new Set<(ev: AlarmEvent) => void>()
+
+  function subscribeAlarmEvents(cb: (ev: AlarmEvent) => void): () => void {
+    alarmListeners.add(cb)
+    return () => {
+      alarmListeners.delete(cb)
+    }
+  }
 
   let activeSiteId = ''
   let subscribedIds: string[] = []
@@ -125,9 +134,18 @@ export const useWebviewStore = defineStore('webview', () => {
 
       sock.onmessage = (evt) => {
         try {
-          const msg = JSON.parse(String(evt.data)) as { type?: string; samples?: TelemetrySample[] }
+          const msg = JSON.parse(String(evt.data)) as {
+            type?: string
+            samples?: TelemetrySample[]
+            alarm?: AlarmEvent
+          }
           if ((msg.type === 'snapshot' || msg.type === 'value_update') && Array.isArray(msg.samples)) {
             applySamples(msg.samples)
+          } else if (msg.type === 'alarm_event' && msg.alarm) {
+            for (const cb of alarmListeners) {
+              cb(msg.alarm)
+            }
+            void useAlarmStore().fetchSummary()
           }
         } catch {
           // ignore malformed frames
@@ -212,6 +230,7 @@ export const useWebviewStore = defineStore('webview', () => {
     siteDashboards,
     fetchSiteDashboards,
     setSiteDashboards,
+    subscribeAlarmEvents,
     connect,
     disconnect,
     writeValue,

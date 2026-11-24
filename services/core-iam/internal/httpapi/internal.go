@@ -87,6 +87,20 @@ func NewInternalRouter(svc *service.IAMService, internalToken string, readyCheck
 			}
 			writeJSON(w, http.StatusOK, res)
 		})
+
+		ir.Get("/users/{userId}/sites", func(w http.ResponseWriter, r *http.Request) {
+			userID, err := uuid.Parse(chi.URLParam(r, "userId"))
+			if err != nil {
+				http.Error(w, "invalid userId", http.StatusBadRequest)
+				return
+			}
+			res, err := svc.InternalUserWebviewSites(r.Context(), userID)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			writeJSON(w, http.StatusOK, res)
+		})
 	})
 
 	return r

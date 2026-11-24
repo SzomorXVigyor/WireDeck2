@@ -17,7 +17,9 @@ import (
 	"github.com/SzomorXVigyor/WireDeck2/pkg/auth"
 	"github.com/SzomorXVigyor/WireDeck2/pkg/db"
 	"github.com/SzomorXVigyor/WireDeck2/pkg/internalclient"
+	"github.com/SzomorXVigyor/WireDeck2/pkg/mailgopher"
 	"github.com/SzomorXVigyor/WireDeck2/pkg/telemetry"
+	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/alarm"
 	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/engine"
 	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/history"
 	"github.com/SzomorXVigyor/WireDeck2/services/webview-engine/internal/httpapi"
@@ -65,15 +67,23 @@ func main() {
 	var svc *engine.Service
 	var hub *engine.TelemetryHub
 	var scheduler *engine.Scheduler
+	var alarmEng *alarm.Engine
 
 	cache := sitecache.New(coreIAMClient, orchClient, func(siteID uuid.UUID, prev, cur internalclient.SiteRuntimeState) {
 		if svc != nil && ((prev.IsActive && !cur.IsActive) || (prev.WebviewEnabled && !cur.WebviewEnabled)) {
 			slog.Info("runtime_state_draining_webview", "site_id", siteID, "is_active", cur.IsActive, "webview_enabled", cur.WebviewEnabled)
 			svc.DrainSite(siteID)
 		}
-		if hub != nil && prev.Status != "OFFLINE" && cur.Status == "OFFLINE" {
-			slog.Info("site_offline_marking_telemetry_stale", "site_id", siteID)
-			hub.MarkSiteStale(siteID, "site tunnel offline")
+		if prev.Status != "OFFLINE" && cur.Status == "OFFLINE" {
+			if hub != nil {
+				slog.Info("site_offline_marking_telemetry_stale", "site_id", siteID)
+				hub.MarkSiteStale(siteID, "site tunnel offline")
+			}
+			if alarmEng != nil {
+				fctx, fcancel := context.WithTimeout(context.Background(), 5*time.Second)
+				alarmEng.FreezeSiteOffline(fctx, siteID)
+				fcancel()
+			}
 		}
 	})
 
@@ -91,6 +101,31 @@ func main() {
 	var owner ownership.Provider = ownership.SingleReplicaOwnership{}
 	scheduler = engine.NewScheduler(dbBundle.Bun, providers, cache, hub, owner, graceDur, devDirectDial)
 	svc = engine.NewService(dbBundle.Bun, providers, cache, hub, scheduler, devDirectDial)
+
+	// Alarm engine (latch/re-arm state machine + MailGopher notifications + WS push)
+	var mailer alarm.Mailer
+	if mgURL := strings.TrimSpace(os.Getenv("MAILGOPHER_URL")); mgURL != "" {
+		mailer = mailgopher.NewClient(mgURL)
+		slog.Info("alarm_mailgopher_enabled", "url", mgURL)
+	} else {
+		slog.Warn("alarm_mailgopher_disabled_missing_MAILGOPHER_URL")
+	}
+	alarmEng = alarm.NewEngine(
+		alarm.NewBunRepository(dbBundle.Bun),
+		mailer,
+		cache.SiteName,
+		func(siteID uuid.UUID, evt models.AlarmEvent) {
+			hub.PublishAlarmEvent(siteID, svc.ToAlarmEventView(evt))
+		},
+	)
+	if err := alarmEng.Start(ctx); err != nil {
+		slog.Error("alarm_engine_start_failed", "error", err)
+		os.Exit(1)
+	}
+	svc.SetAlarmEngine(alarmEng)
+	scheduler.AddSampleHook(func(sample engine.ValueSample, mapping models.RegisterMapping, _ *models.HistoryEntry) {
+		alarmEng.EvaluateSample(ctx, mapping, sample.Quality, sample.Value, sample.Timestamp)
+	})
 
 	// Optional TimescaleDB history store + batched COPY ingester
 	var tsdbStore history.Store
@@ -194,6 +229,9 @@ func main() {
 	defer cancel()
 	_ = publicSrv.Shutdown(shutCtx)
 	_ = internalSrv.Shutdown(shutCtx)
+	if alarmEng != nil {
+		alarmEng.Shutdown(shutCtx)
+	}
 	if histIngester != nil {
 		histIngester.Shutdown(shutCtx)
 	}

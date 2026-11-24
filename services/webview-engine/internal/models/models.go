@@ -106,3 +106,76 @@ type Widget struct {
 	CreatedAt         time.Time      `bun:",notnull,default:current_timestamp"`
 	UpdatedAt         time.Time      `bun:",notnull,default:current_timestamp"`
 }
+
+const (
+	AlarmCondGT  = "GT"
+	AlarmCondGTE = "GTE"
+	AlarmCondLT  = "LT"
+	AlarmCondLTE = "LTE"
+	AlarmCondEQ  = "EQ"
+	AlarmCondNEQ = "NEQ"
+
+	AlarmSeverityInfo     = "INFO"
+	AlarmSeverityWarning  = "WARNING"
+	AlarmSeverityCritical = "CRITICAL"
+
+	AlarmStateActive  = "ACTIVE"
+	AlarmStateCleared = "CLEARED"
+)
+
+type AlarmRule struct {
+	bun.BaseModel `bun:"table:alarm_rules,alias:ar"`
+
+	ID                  uuid.UUID `bun:",pk,type:uuid,default:gen_random_uuid()"`
+	SiteID              uuid.UUID `bun:",notnull,type:uuid"`
+	RegisterMappingID   uuid.UUID `bun:",notnull,type:uuid"`
+	Name                string    `bun:",notnull"`
+	Condition           string    `bun:",notnull"`
+	Threshold           float64   `bun:",notnull"`
+	ClearDeadband       float64   `bun:",notnull,default:0"`
+	HoldSeconds         int       `bun:",notnull,default:0"`
+	PollIntervalSeconds int       `bun:",notnull,default:10"`
+	Severity            string    `bun:",notnull,default:'WARNING'"`
+	NotifyEmails        []string  `bun:",notnull,array"`
+	NotifyOnClear       bool      `bun:",notnull,default:false"`
+	IsActive            bool      `bun:",notnull,default:true"`
+	CreatedAt           time.Time `bun:",notnull,default:current_timestamp"`
+	UpdatedAt           time.Time `bun:",notnull,default:current_timestamp"`
+}
+
+type AlarmEvent struct {
+	bun.BaseModel `bun:"table:alarm_events,alias:ae"`
+
+	ID                   uuid.UUID  `bun:",pk,type:uuid,default:gen_random_uuid()"`
+	SiteID               uuid.UUID  `bun:",notnull,type:uuid"`
+	RuleID               *uuid.UUID `bun:",type:uuid"`
+	RegisterMappingID    *uuid.UUID `bun:",type:uuid"`
+	RuleName             string     `bun:",notnull"`
+	RegisterName         string     `bun:",notnull"`
+	Condition            string     `bun:",notnull"`
+	Threshold            float64    `bun:",notnull"`
+	Unit                 string     `bun:",notnull,default:''"`
+	Severity             string     `bun:",notnull"`
+	State                string     `bun:",notnull"`
+	IsStale              bool       `bun:",notnull,default:false"`
+	TriggeredAt          time.Time  `bun:",notnull,default:current_timestamp"`
+	TriggeredValue       float64    `bun:",notnull"`
+	ClearedAt            *time.Time
+	ClearedValue         *float64
+	AcknowledgedAt       *time.Time
+	AcknowledgedByUserID *uuid.UUID `bun:",type:uuid"`
+	AcknowledgedByEmail  string     `bun:",notnull,default:''"`
+	AckNote              string     `bun:",notnull,default:''"`
+	NotifiedAt           *time.Time
+	NotifyFailed         bool   `bun:",notnull,default:false"`
+	NotifyError          string `bun:",notnull,default:''"`
+}
+
+type AlarmPendingState struct {
+	bun.BaseModel `bun:"table:alarm_pending_states,alias:aps"`
+
+	RuleID    uuid.UUID `bun:",pk,type:uuid"`
+	SiteID    uuid.UUID `bun:",notnull,type:uuid"`
+	SinceAt   time.Time `bun:",notnull,default:current_timestamp"`
+	LastValue float64   `bun:",notnull"`
+}

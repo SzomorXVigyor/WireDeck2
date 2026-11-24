@@ -13,7 +13,6 @@ import HomeRedirectView from '../modules/operator/HomeRedirectView.vue'
 import SiteOverviewView from '../modules/operator/SiteOverviewView.vue'
 import ProfileView from '../modules/operator/ProfileView.vue'
 import PreferencesView from '../modules/operator/PreferencesView.vue'
-import FeaturePlaceholderView from '../modules/operator/FeaturePlaceholderView.vue'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -38,8 +37,7 @@ const router = createRouter({
         {
           path: 'alarms',
           name: 'global-alarms',
-          component: FeaturePlaceholderView,
-          props: { title: 'Global Alarm Centre', phase: 'Phase 4', description: 'Cross-site latched alarm feed and acknowledgement controls.' },
+          component: () => import('../modules/operator/AlarmCenterView.vue'),
         },
         { path: 'sites/:siteId/overview', name: 'site-overview', component: SiteOverviewView },
         {
@@ -69,9 +67,8 @@ const router = createRouter({
         {
           path: 'sites/:siteId/alarms',
           name: 'site-alarms',
-          component: FeaturePlaceholderView,
+          component: () => import('../modules/operator/AlarmCenterView.vue'),
           meta: { requireFlag: 'webviewEnabled' },
-          props: { title: 'Site Alarm Centre', phase: 'Phase 4', description: 'Site-scoped alarm history, stale flags, and acknowledgements.' },
         },
       ],
     },

@@ -288,6 +288,93 @@ func NewPublicRouter(svc *engine.Service, hub *engine.TelemetryHub, verifier *au
 	}
 
 	// =========================================================================
+	// 0. Authenticated User Cross-Site Alarm Feed (/api/v1/webview/alarms*)
+	// =========================================================================
+	userGroup := huma.NewGroup(humaAPI)
+	userGroup.UseMiddleware(humaAuthMiddleware(humaAPI, verifier))
+
+	type GlobalAlarmsInput struct {
+		SiteID       string `query:"siteId" doc:"Optional site UUID filter"`
+		State        string `query:"state" doc:"ACTIVE | CLEARED | ALL"`
+		Severity     string `query:"severity" doc:"INFO | WARNING | CRITICAL"`
+		Acknowledged string `query:"acknowledged" doc:"true | false"`
+		Limit        int    `query:"limit" minimum:"0" maximum:"1000"`
+		Offset       int    `query:"offset" minimum:"0"`
+	}
+	type AlarmEventsOutput struct {
+		Body struct {
+			Events  []engine.AlarmEventView `json:"events"`
+			Summary engine.AlarmSummary     `json:"summary"`
+		}
+	}
+	huma.Register(userGroup, huma.Operation{
+		OperationID: "webviewListGlobalAlarms",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/webview/alarms",
+		Summary:     "List alarm events across all sites accessible to the current user",
+		Tags:        []string{"WebView Alarms"},
+		Security:    []map[string][]string{{"BearerAuth": {}}},
+	}, func(ctx context.Context, in *GlobalAlarmsInput) (*AlarmEventsOutput, error) {
+		claims, _ := auth.ClaimsFromContext(ctx)
+		userID, err := uuid.Parse(claims.Subject)
+		if err != nil {
+			return nil, huma.Error401Unauthorized("invalid token subject")
+		}
+		var siteFilter *uuid.UUID
+		if s := strings.TrimSpace(in.SiteID); s != "" {
+			parsed, err := uuid.Parse(s)
+			if err != nil {
+				return nil, huma.Error400BadRequest("invalid siteId")
+			}
+			siteFilter = &parsed
+		}
+		events, summary, err := svc.ListGlobalAlarmEvents(ctx, userID, engine.AlarmEventFilter{
+			SiteID:       siteFilter,
+			State:        in.State,
+			Severity:     in.Severity,
+			Acknowledged: in.Acknowledged,
+			Limit:        in.Limit,
+			Offset:       in.Offset,
+		})
+		if err != nil {
+			return nil, mapError(err)
+		}
+		out := &AlarmEventsOutput{}
+		out.Body.Events = events
+		out.Body.Summary = summary
+		return out, nil
+	})
+
+	type GlobalAlarmSummaryOutput struct {
+		Body struct {
+			Summary engine.AlarmSummary `json:"summary"`
+			BySite  map[string]int      `json:"bySite"`
+		}
+	}
+	huma.Register(userGroup, huma.Operation{
+		OperationID: "webviewGlobalAlarmSummary",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/webview/alarms/summary",
+		Summary:     "Lightweight active alarm counts globally and per site for sidebar badges",
+		Tags:        []string{"WebView Alarms"},
+		Security:    []map[string][]string{{"BearerAuth": {}}},
+	}, func(ctx context.Context, _ *struct{}) (*GlobalAlarmSummaryOutput, error) {
+		claims, _ := auth.ClaimsFromContext(ctx)
+		userID, err := uuid.Parse(claims.Subject)
+		if err != nil {
+			return nil, huma.Error401Unauthorized("invalid token subject")
+		}
+		sum, bySite, err := svc.GetGlobalAlarmSummary(ctx, userID)
+		if err != nil {
+			return nil, mapError(err)
+		}
+		out := &GlobalAlarmSummaryOutput{}
+		out.Body.Summary = sum
+		out.Body.BySite = bySite
+		return out, nil
+	})
+
+	// =========================================================================
 	// 1. Site Member Endpoints (/api/v1/webview/sites/{siteId}/*)
 	// =========================================================================
 	memberGroup := huma.NewGroup(humaAPI)
@@ -454,6 +541,69 @@ func NewPublicRouter(svc *engine.Service, hub *engine.TelemetryHub, verifier *au
 			return nil, mapError(err)
 		}
 		return &QueryHistoryOutput{Body: *res}, nil
+	})
+
+	// --- Site Alarms Feed & Acknowledge (Any Site Member+) ---
+	type SiteAlarmsInput struct {
+		SiteID       uuid.UUID `path:"siteId" format:"uuid"`
+		State        string    `query:"state" doc:"ACTIVE | CLEARED | ALL"`
+		Severity     string    `query:"severity" doc:"INFO | WARNING | CRITICAL"`
+		Acknowledged string    `query:"acknowledged" doc:"true | false"`
+		Limit        int       `query:"limit" minimum:"0" maximum:"1000"`
+		Offset       int       `query:"offset" minimum:"0"`
+	}
+	huma.Register(memberGroup, huma.Operation{
+		OperationID: "webviewListSiteAlarms",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/webview/sites/{siteId}/alarms",
+		Summary:     "List alarm events and summary for a specific site (Site Member)",
+		Tags:        []string{"WebView Alarms"},
+		Security:    []map[string][]string{{"BearerAuth": {}}},
+	}, func(ctx context.Context, in *SiteAlarmsInput) (*AlarmEventsOutput, error) {
+		events, summary, err := svc.ListSiteAlarmEvents(ctx, in.SiteID, engine.AlarmEventFilter{
+			State:        in.State,
+			Severity:     in.Severity,
+			Acknowledged: in.Acknowledged,
+			Limit:        in.Limit,
+			Offset:       in.Offset,
+		})
+		if err != nil {
+			return nil, mapError(err)
+		}
+		out := &AlarmEventsOutput{}
+		out.Body.Events = events
+		out.Body.Summary = summary
+		return out, nil
+	})
+
+	type AckAlarmInput struct {
+		SiteID  uuid.UUID `path:"siteId" format:"uuid"`
+		EventID uuid.UUID `path:"eventId" format:"uuid"`
+		Body    struct {
+			Note string `json:"note,omitempty" maxLength:"500"`
+		}
+	}
+	type AlarmEventOutput struct {
+		Body engine.AlarmEventView
+	}
+	huma.Register(memberGroup, huma.Operation{
+		OperationID: "webviewAckAlarm",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/webview/sites/{siteId}/alarms/{eventId}/ack",
+		Summary:     "Acknowledge an alarm event (any authenticated site member; cosmetic, preserves latch)",
+		Tags:        []string{"WebView Alarms"},
+		Security:    []map[string][]string{{"BearerAuth": {}}},
+	}, func(ctx context.Context, in *AckAlarmInput) (*AlarmEventOutput, error) {
+		claims, _ := auth.ClaimsFromContext(ctx)
+		userID, err := uuid.Parse(claims.Subject)
+		if err != nil {
+			return nil, huma.Error401Unauthorized("invalid token subject")
+		}
+		ev, err := svc.AcknowledgeAlarmEvent(ctx, in.SiteID, in.EventID, userID, claims.Email, in.Body.Note)
+		if err != nil {
+			return nil, mapError(err)
+		}
+		return &AlarmEventOutput{Body: *ev}, nil
 	})
 
 	// =========================================================================
@@ -1117,6 +1267,139 @@ func NewPublicRouter(svc *engine.Service, hub *engine.TelemetryHub, verifier *au
 		Security:      []map[string][]string{{"BearerAuth": {}}},
 	}, func(ctx context.Context, in *PolicyUserInput) (*struct{}, error) {
 		if err := svc.DeleteMemberPolicy(ctx, in.SiteID, in.UserID); err != nil {
+			return nil, mapError(err)
+		}
+		return nil, nil
+	})
+
+	// --- Alarm Rules Management (Site Operator) ---
+	type ListAlarmRulesOutput struct {
+		Body struct {
+			Rules []engine.AlarmRuleView `json:"rules"`
+		}
+	}
+	huma.Register(opGroup, huma.Operation{
+		OperationID: "webviewOperatorListAlarmRules",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/webview/sites/{siteId}/operator/alarm-rules",
+		Summary:     "List alarm rules and live latch state for a site (Site Operator)",
+		Tags:        []string{"Site Operator - WebView"},
+		Security:    []map[string][]string{{"BearerAuth": {}}},
+	}, func(ctx context.Context, in *SiteIDInput) (*ListAlarmRulesOutput, error) {
+		rules, err := svc.ListAlarmRules(ctx, in.SiteID)
+		if err != nil {
+			return nil, mapError(err)
+		}
+		out := &ListAlarmRulesOutput{}
+		out.Body.Rules = rules
+		return out, nil
+	})
+
+	type CreateAlarmRuleReq struct {
+		SiteID uuid.UUID `path:"siteId" format:"uuid"`
+		Body   struct {
+			RegisterMappingID   uuid.UUID `json:"registerMappingId" format:"uuid"`
+			Name                string    `json:"name" minLength:"1" maxLength:"120"`
+			Condition           string    `json:"condition" enum:"GT,GTE,LT,LTE,EQ,NEQ"`
+			Threshold           float64   `json:"threshold"`
+			ClearDeadband       float64   `json:"clearDeadband,omitempty" minimum:"0"`
+			HoldSeconds         int       `json:"holdSeconds,omitempty" minimum:"0" maximum:"86400"`
+			PollIntervalSeconds int       `json:"pollIntervalSeconds,omitempty" minimum:"1" maximum:"3600"`
+			Severity            string    `json:"severity,omitempty" enum:"INFO,WARNING,CRITICAL"`
+			NotifyEmails        []string  `json:"notifyEmails,omitempty" maxItems:"50"`
+			NotifyOnClear       bool      `json:"notifyOnClear,omitempty"`
+			IsActive            *bool     `json:"isActive,omitempty"`
+		}
+	}
+	type AlarmRuleOutput struct {
+		Body engine.AlarmRuleView
+	}
+	huma.Register(opGroup, huma.Operation{
+		OperationID:   "webviewOperatorCreateAlarmRule",
+		Method:        http.MethodPost,
+		Path:          "/api/v1/webview/sites/{siteId}/operator/alarm-rules",
+		Summary:       "Create a latch/re-arm alarm rule evaluated in scaled engineering units (Site Operator)",
+		Tags:          []string{"Site Operator - WebView"},
+		DefaultStatus: http.StatusCreated,
+		Security:      []map[string][]string{{"BearerAuth": {}}},
+	}, func(ctx context.Context, in *CreateAlarmRuleReq) (*AlarmRuleOutput, error) {
+		view, err := svc.CreateAlarmRule(ctx, in.SiteID, engine.CreateAlarmRuleInput{
+			RegisterMappingID:   in.Body.RegisterMappingID,
+			Name:                in.Body.Name,
+			Condition:           in.Body.Condition,
+			Threshold:           in.Body.Threshold,
+			ClearDeadband:       in.Body.ClearDeadband,
+			HoldSeconds:         in.Body.HoldSeconds,
+			PollIntervalSeconds: in.Body.PollIntervalSeconds,
+			Severity:            in.Body.Severity,
+			NotifyEmails:        in.Body.NotifyEmails,
+			NotifyOnClear:       in.Body.NotifyOnClear,
+			IsActive:            in.Body.IsActive,
+		})
+		if err != nil {
+			return nil, mapError(err)
+		}
+		return &AlarmRuleOutput{Body: *view}, nil
+	})
+
+	type UpdateAlarmRuleReq struct {
+		SiteID uuid.UUID `path:"siteId" format:"uuid"`
+		RuleID uuid.UUID `path:"ruleId" format:"uuid"`
+		Body   struct {
+			RegisterMappingID   *uuid.UUID `json:"registerMappingId,omitempty" format:"uuid"`
+			Name                *string    `json:"name,omitempty" minLength:"1" maxLength:"120"`
+			Condition           *string    `json:"condition,omitempty" enum:"GT,GTE,LT,LTE,EQ,NEQ"`
+			Threshold           *float64   `json:"threshold,omitempty"`
+			ClearDeadband       *float64   `json:"clearDeadband,omitempty" minimum:"0"`
+			HoldSeconds         *int       `json:"holdSeconds,omitempty" minimum:"0" maximum:"86400"`
+			PollIntervalSeconds *int       `json:"pollIntervalSeconds,omitempty" minimum:"1" maximum:"3600"`
+			Severity            *string    `json:"severity,omitempty" enum:"INFO,WARNING,CRITICAL"`
+			NotifyEmails        *[]string  `json:"notifyEmails,omitempty" maxItems:"50"`
+			NotifyOnClear       *bool      `json:"notifyOnClear,omitempty"`
+			IsActive            *bool      `json:"isActive,omitempty"`
+		}
+	}
+	huma.Register(opGroup, huma.Operation{
+		OperationID: "webviewOperatorUpdateAlarmRule",
+		Method:      http.MethodPatch,
+		Path:        "/api/v1/webview/sites/{siteId}/operator/alarm-rules/{ruleId}",
+		Summary:     "Update an alarm rule (Site Operator)",
+		Tags:        []string{"Site Operator - WebView"},
+		Security:    []map[string][]string{{"BearerAuth": {}}},
+	}, func(ctx context.Context, in *UpdateAlarmRuleReq) (*AlarmRuleOutput, error) {
+		view, err := svc.UpdateAlarmRule(ctx, in.SiteID, in.RuleID, engine.UpdateAlarmRuleInput{
+			RegisterMappingID:   in.Body.RegisterMappingID,
+			Name:                in.Body.Name,
+			Condition:           in.Body.Condition,
+			Threshold:           in.Body.Threshold,
+			ClearDeadband:       in.Body.ClearDeadband,
+			HoldSeconds:         in.Body.HoldSeconds,
+			PollIntervalSeconds: in.Body.PollIntervalSeconds,
+			Severity:            in.Body.Severity,
+			NotifyEmails:        in.Body.NotifyEmails,
+			NotifyOnClear:       in.Body.NotifyOnClear,
+			IsActive:            in.Body.IsActive,
+		})
+		if err != nil {
+			return nil, mapError(err)
+		}
+		return &AlarmRuleOutput{Body: *view}, nil
+	})
+
+	type AlarmRuleIDInput struct {
+		SiteID uuid.UUID `path:"siteId" format:"uuid"`
+		RuleID uuid.UUID `path:"ruleId" format:"uuid"`
+	}
+	huma.Register(opGroup, huma.Operation{
+		OperationID:   "webviewOperatorDeleteAlarmRule",
+		Method:        http.MethodDelete,
+		Path:          "/api/v1/webview/sites/{siteId}/operator/alarm-rules/{ruleId}",
+		Summary:       "Delete an alarm rule and auto-clear any open latched event (Site Operator)",
+		Tags:          []string{"Site Operator - WebView"},
+		DefaultStatus: http.StatusNoContent,
+		Security:      []map[string][]string{{"BearerAuth": {}}},
+	}, func(ctx context.Context, in *AlarmRuleIDInput) (*struct{}, error) {
+		if err := svc.DeleteAlarmRule(ctx, in.SiteID, in.RuleID); err != nil {
 			return nil, mapError(err)
 		}
 		return nil, nil

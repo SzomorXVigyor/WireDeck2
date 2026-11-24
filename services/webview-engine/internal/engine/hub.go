@@ -44,8 +44,9 @@ type wsClientMsg struct {
 }
 
 type wsServerMsg struct {
-	Type    string        `json:"type"` // snapshot | value_update | pong | error
+	Type    string        `json:"type"` // snapshot | value_update | alarm_event | pong | error
 	Samples []ValueSample `json:"samples,omitempty"`
+	Alarm   any           `json:"alarm,omitempty"`
 	Message string        `json:"message,omitempty"`
 }
 
@@ -199,6 +200,29 @@ func (h *TelemetryHub) MarkSiteStale(siteID uuid.UUID, reason string) {
 
 	if len(updates) > 0 {
 		h.Publish(updates)
+	}
+}
+
+// PublishAlarmEvent fans out a live alarm state change to all WebSocket clients connected to siteID.
+func (h *TelemetryHub) PublishAlarmEvent(siteID uuid.UUID, alarmPayload any) {
+	raw, err := json.Marshal(wsServerMsg{Type: "alarm_event", Alarm: alarmPayload})
+	if err != nil {
+		return
+	}
+	h.mu.RLock()
+	var targets []*wsClient
+	for _, c := range h.clients {
+		if c.siteID == siteID {
+			targets = append(targets, c)
+		}
+	}
+	h.mu.RUnlock()
+
+	for _, c := range targets {
+		select {
+		case c.sendCh <- raw:
+		default:
+		}
 	}
 }
 

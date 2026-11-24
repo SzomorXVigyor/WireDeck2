@@ -28,11 +28,18 @@ type SiteAuthzResponse struct {
 // SiteRuntimeState is returned by core-iam GET /internal/sites/runtime-state.
 type SiteRuntimeState struct {
 	SiteID         uuid.UUID `json:"siteId"`
+	Name           string    `json:"name,omitempty"`
 	IsActive       bool      `json:"isActive"`
 	Status         string    `json:"status"`
 	VncEnabled     bool      `json:"vncEnabled"`
 	WebviewEnabled bool      `json:"webviewEnabled"`
 	LanSubnets     []string  `json:"lanSubnets"`
+}
+
+// UserSitesResponse is returned by core-iam GET /internal/users/{userId}/sites.
+type UserSitesResponse struct {
+	IsPlatformAdmin bool        `json:"isPlatformAdmin"`
+	SiteIDs         []uuid.UUID `json:"siteIds"`
 }
 
 // DesiredRunnerSpec is returned by core-iam GET /internal/runners/desired.

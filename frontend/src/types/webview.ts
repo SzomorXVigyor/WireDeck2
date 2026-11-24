@@ -141,3 +141,76 @@ export interface HistoryQueryResponse {
   to: string
   series: HistorySeries[]
 }
+
+export type AlarmCondition = 'GT' | 'GTE' | 'LT' | 'LTE' | 'EQ' | 'NEQ'
+export type AlarmSeverity = 'INFO' | 'WARNING' | 'CRITICAL'
+export type AlarmState = 'ACTIVE' | 'CLEARED'
+export type AlarmRuntimeStatus = 'NORMAL' | 'PENDING' | 'ACTIVE'
+
+export interface AlarmRule {
+  id: string
+  siteId: string
+  registerMappingId: string
+  registerName: string
+  deviceName: string
+  unit: string
+  precision: number
+  name: string
+  condition: AlarmCondition
+  threshold: number
+  clearDeadband: number
+  holdSeconds: number
+  pollIntervalSeconds: number
+  severity: AlarmSeverity
+  notifyEmails: string[]
+  notifyOnClear: boolean
+  isActive: boolean
+  runtimeStatus: AlarmRuntimeStatus
+  createdAt: string
+  updatedAt: string
+}
+
+export interface AlarmEvent {
+  id: string
+  siteId: string
+  siteName: string
+  ruleId?: string
+  registerMappingId?: string
+  ruleName: string
+  registerName: string
+  condition: AlarmCondition
+  threshold: number
+  unit: string
+  severity: AlarmSeverity
+  state: AlarmState
+  isStale: boolean
+  triggeredAt: string
+  triggeredValue: number
+  clearedAt?: string
+  clearedValue?: number
+  acknowledgedAt?: string
+  acknowledgedByUserId?: string
+  acknowledgedByEmail?: string
+  ackNote?: string
+  notifiedAt?: string
+  notifyFailed: boolean
+  notifyError?: string
+}
+
+export interface AlarmSummary {
+  activeCount: number
+  activeCritical: number
+  activeWarning: number
+  activeInfo: number
+  unacknowledgedCount: number
+}
+
+export interface AlarmEventsResponse {
+  events: AlarmEvent[]
+  summary: AlarmSummary
+}
+
+export interface GlobalAlarmSummaryResponse {
+  summary: AlarmSummary
+  bySite: Record<string, number>
+}

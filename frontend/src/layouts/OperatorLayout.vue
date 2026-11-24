@@ -16,9 +16,11 @@ import {
 } from 'lucide-vue-next'
 import { useAuthStore } from '../stores/auth'
 import { useSiteStore } from '../stores/sites'
+import { useAlarmStore } from '../stores/alarms'
 
 const auth = useAuthStore()
 const siteStore = useSiteStore()
+const alarmStore = useAlarmStore()
 const route = useRoute()
 const router = useRouter()
 
@@ -31,13 +33,16 @@ const activeSite = computed(() =>
 
 onMounted(() => {
   siteStore.startPolling()
+  alarmStore.startPolling()
 })
 onUnmounted(() => {
   siteStore.stopPolling()
+  alarmStore.stopPolling()
 })
 
 async function handleLogout() {
   siteStore.stopPolling()
+  alarmStore.stopPolling()
   await auth.logout()
   await router.push({ name: 'login' })
 }
@@ -99,11 +104,24 @@ function dotColor(status: string) {
         <div class="border-t border-slate-800/80 pt-4">
           <RouterLink
             to="/alarms"
-            class="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-slate-300 hover:bg-slate-800/70 hover:text-white"
+            class="flex items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-sm text-slate-300 hover:bg-slate-800/70 hover:text-white"
             active-class="bg-sky-500/15 text-sky-300 font-medium"
           >
-            <Bell class="h-4 w-4" />
-            Global Alarm Centre
+            <span class="flex items-center gap-2.5">
+              <Bell class="h-4 w-4" />
+              Global Alarm Centre
+            </span>
+            <span
+              v-if="alarmStore.summary.activeCount > 0"
+              class="rounded-full px-1.5 py-0.5 text-[10px] font-semibold leading-none"
+              :class="
+                alarmStore.summary.activeCritical > 0
+                  ? 'bg-rose-500 text-white'
+                  : 'bg-amber-500 text-slate-950'
+              "
+            >
+              {{ alarmStore.summary.activeCount }}
+            </span>
           </RouterLink>
           <RouterLink
             to="/profile"
@@ -195,6 +213,12 @@ function dotColor(status: string) {
               active-class="bg-slate-800 text-white"
             >
               <Bell class="h-3.5 w-3.5" /> Alarms
+              <span
+                v-if="alarmStore.siteActiveCount(activeSite.id) > 0"
+                class="rounded-full bg-rose-500 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white"
+              >
+                {{ alarmStore.siteActiveCount(activeSite.id) }}
+              </span>
             </RouterLink>
           </nav>
         </div>

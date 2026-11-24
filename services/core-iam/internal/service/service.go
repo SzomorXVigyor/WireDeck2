@@ -1013,6 +1013,7 @@ func (s *IAMService) InternalRuntimeStates(ctx context.Context) ([]internalclien
 	for i, site := range sites {
 		out[i] = internalclient.SiteRuntimeState{
 			SiteID:         site.ID,
+			Name:           site.Name,
 			IsActive:       site.IsActive,
 			Status:         site.Status,
 			VncEnabled:     site.VncEnabled,
@@ -1021,6 +1022,40 @@ func (s *IAMService) InternalRuntimeStates(ctx context.Context) ([]internalclien
 		}
 	}
 	return out, nil
+}
+
+// InternalUserWebviewSites returns all site IDs the active user may view WebView/Alarms for.
+func (s *IAMService) InternalUserWebviewSites(ctx context.Context, userID uuid.UUID) (*internalclient.UserSitesResponse, error) {
+	u, err := s.GetUser(ctx, userID)
+	if err != nil || u.Status != models.UserStatusActive {
+		return &internalclient.UserSitesResponse{SiteIDs: []uuid.UUID{}}, nil
+	}
+	var ids []uuid.UUID
+	if u.IsPlatformAdmin {
+		if err := s.db.NewSelect().
+			Table("sites").
+			Column("id").
+			Where("webview_enabled = TRUE").
+			Scan(ctx, &ids); err != nil {
+			return nil, err
+		}
+	} else {
+		if err := s.db.NewSelect().
+			TableExpr("site_memberships AS sm").
+			Join("JOIN sites AS s ON s.id = sm.site_id").
+			Column("s.id").
+			Where("sm.user_id = ? AND s.webview_enabled = TRUE", userID).
+			Scan(ctx, &ids); err != nil {
+			return nil, err
+		}
+	}
+	if ids == nil {
+		ids = []uuid.UUID{}
+	}
+	return &internalclient.UserSitesResponse{
+		IsPlatformAdmin: u.IsPlatformAdmin,
+		SiteIDs:         ids,
+	}, nil
 }
 
 func (s *IAMService) InternalDesiredRunners(ctx context.Context) ([]internalclient.DesiredRunnerSpec, error) {

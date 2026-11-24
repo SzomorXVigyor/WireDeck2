@@ -4,10 +4,12 @@ import { useRoute } from 'vue-router'
 import {
   ArrowDown,
   ArrowUp,
+  Bell,
   Cpu,
   Database,
   Edit3,
   LayoutGrid,
+  Mail,
   Play,
   Plus,
   ShieldCheck,
@@ -19,6 +21,9 @@ import { apiRequest } from '../../services/api'
 import { useWebviewStore } from '../../stores/webview'
 import type { SiteMember } from '../../types/iam'
 import type {
+  AlarmCondition,
+  AlarmRule,
+  AlarmSeverity,
   ColorOption,
   DeviceProtocol,
   FontSizeOption,
@@ -49,13 +54,14 @@ const route = useRoute()
 const siteId = computed(() => String(route.params.siteId || ''))
 const webviewStore = useWebviewStore()
 
-type TabKey = 'devices' | 'mappings' | 'dashboards' | 'history' | 'policies'
+type TabKey = 'devices' | 'mappings' | 'dashboards' | 'history' | 'alarms' | 'policies'
 const activeTab = ref<TabKey>('devices')
 
 const devices = ref<WebviewDevice[]>([])
 const mappings = ref<RegisterMapping[]>([])
 const dashboards = ref<WebviewDashboard[]>([])
 const historyEntries = ref<HistoryEntry[]>([])
+const alarmRules = ref<AlarmRule[]>([])
 const members = ref<SiteMember[]>([])
 const policies = ref<MemberWritePolicy[]>([])
 const testResults = ref<Record<string, TelemetrySample>>({})
@@ -339,6 +345,142 @@ function openEditHistoryEntry(he: HistoryEntry) {
   histModalOpen.value = true
 }
 
+// --- Alarm Rule Create / Edit Modal ---
+const alarmModalOpen = ref(false)
+const editingAlarmId = ref<string | null>(null)
+const alarmName = ref('')
+const alarmMappingId = ref('')
+const alarmCondition = ref<AlarmCondition>('GT')
+const alarmThreshold = ref('0')
+const alarmDeadband = ref('0')
+const alarmHoldSec = ref('0')
+const alarmPollSec = ref('10')
+const alarmSeverity = ref<AlarmSeverity>('WARNING')
+const alarmEmails = ref<string[]>([])
+const alarmEmailDraft = ref('')
+const alarmEmailErr = ref<string | null>(null)
+const alarmNotifyOnClear = ref(false)
+const alarmActive = ref(true)
+
+const alarmBoundMapping = computed(() => (alarmMappingId.value ? mappingMap.value[alarmMappingId.value] ?? null : null))
+const alarmNeedsDeadband = computed(() => alarmCondition.value !== 'EQ' && alarmCondition.value !== 'NEQ')
+
+function openCreateAlarmRule() {
+  editingAlarmId.value = null
+  alarmName.value = ''
+  alarmMappingId.value = mappings.value[0]?.id || ''
+  alarmCondition.value = 'GT'
+  alarmThreshold.value = '0'
+  alarmDeadband.value = '0'
+  alarmHoldSec.value = '0'
+  alarmPollSec.value = '10'
+  alarmSeverity.value = 'WARNING'
+  alarmEmails.value = []
+  alarmEmailDraft.value = ''
+  alarmEmailErr.value = null
+  alarmNotifyOnClear.value = false
+  alarmActive.value = true
+  alarmModalOpen.value = true
+}
+
+function openEditAlarmRule(r: AlarmRule) {
+  editingAlarmId.value = r.id
+  alarmName.value = r.name
+  alarmMappingId.value = r.registerMappingId
+  alarmCondition.value = r.condition
+  alarmThreshold.value = String(r.threshold)
+  alarmDeadband.value = String(r.clearDeadband)
+  alarmHoldSec.value = String(r.holdSeconds)
+  alarmPollSec.value = String(r.pollIntervalSeconds)
+  alarmSeverity.value = r.severity
+  alarmEmails.value = [...(r.notifyEmails || [])]
+  alarmEmailDraft.value = ''
+  alarmEmailErr.value = null
+  alarmNotifyOnClear.value = r.notifyOnClear
+  alarmActive.value = r.isActive
+  alarmModalOpen.value = true
+}
+
+const simpleEmailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+
+function addAlarmEmailsFromDraft() {
+  alarmEmailErr.value = null
+  const raw = alarmEmailDraft.value.trim()
+  if (!raw) return
+  const parts = raw.split(/[\s,;]+/).filter(Boolean)
+  const invalid: string[] = []
+  const next = [...alarmEmails.value]
+  for (const part of parts) {
+    const norm = part.toLowerCase()
+    if (!simpleEmailRe.test(norm)) {
+      invalid.push(part)
+      continue
+    }
+    if (!next.includes(norm) && next.length < 50) {
+      next.push(norm)
+    }
+  }
+  alarmEmails.value = next
+  if (invalid.length > 0) {
+    alarmEmailErr.value = `Invalid email address: ${invalid.join(', ')}`
+    alarmEmailDraft.value = invalid.join(', ')
+  } else {
+    alarmEmailDraft.value = ''
+  }
+}
+
+function addMemberEmailQuick(email: string) {
+  const norm = email.trim().toLowerCase()
+  if (!norm || alarmEmails.value.includes(norm) || alarmEmails.value.length >= 50) return
+  alarmEmails.value = [...alarmEmails.value, norm]
+}
+
+function removeAlarmEmail(email: string) {
+  alarmEmails.value = alarmEmails.value.filter((e) => e !== email)
+}
+
+function alarmConditionSymbol(c: AlarmCondition): string {
+  switch (c) {
+    case 'GT':
+      return '>'
+    case 'GTE':
+      return '>='
+    case 'LT':
+      return '<'
+    case 'LTE':
+      return '<='
+    case 'EQ':
+      return '=='
+    case 'NEQ':
+      return '!='
+    default:
+      return c
+  }
+}
+
+function alarmSeverityBadgeClass(sev: AlarmSeverity): string {
+  switch (sev) {
+    case 'CRITICAL':
+      return 'border-rose-500/40 bg-rose-500/15 text-rose-300'
+    case 'WARNING':
+      return 'border-amber-500/40 bg-amber-500/15 text-amber-300'
+    default:
+      return 'border-sky-500/40 bg-sky-500/15 text-sky-300'
+  }
+}
+
+function alarmRuntimeBadgeClass(r: AlarmRule): string {
+  if (!r.isActive) return 'border-slate-700 bg-slate-800/80 text-slate-400'
+  switch (r.runtimeStatus) {
+    case 'ACTIVE':
+      return 'border-rose-500/40 bg-rose-500/20 text-rose-200'
+    case 'PENDING':
+      return 'border-amber-500/40 bg-amber-500/20 text-amber-200'
+    default:
+      return 'border-emerald-500/30 bg-emerald-500/15 text-emerald-300'
+  }
+}
+
 const selectedDash = computed(() => dashboards.value.find((d) => d.id === selectedDashId.value) ?? dashboards.value[0] ?? null)
 const deviceMap = computed<Record<string, WebviewDevice>>(() => {
   const m: Record<string, WebviewDevice> = {}
@@ -367,6 +509,7 @@ const mappingsPag = usePagination(mappings)
 const dashboardsPag = usePagination(dashboards)
 const widgetsPag = usePagination(() => selectedDash.value?.widgets ?? [])
 const historyPag = usePagination(historyEntries)
+const alarmsPag = usePagination(alarmRules)
 const policiesPag = usePagination(siteMembersOnly)
 
 watch(selectedDashId, () => {
@@ -383,11 +526,12 @@ function registerKeyLabel(m: RegisterMapping): string {
 async function loadAll() {
   errMsg.value = null
   try {
-    const [dRes, mRes, dbRes, hRes, pRes, memRes] = await Promise.all([
+    const [dRes, mRes, dbRes, hRes, aRes, pRes, memRes] = await Promise.all([
       apiRequest<{ devices: WebviewDevice[] }>(`/api/v1/webview/sites/${siteId.value}/operator/devices`),
       apiRequest<{ mappings: RegisterMapping[] }>(`/api/v1/webview/sites/${siteId.value}/operator/mappings`),
       apiRequest<{ dashboards: WebviewDashboard[] }>(`/api/v1/webview/sites/${siteId.value}/operator/dashboards`),
       apiRequest<{ entries: HistoryEntry[] }>(`/api/v1/webview/sites/${siteId.value}/operator/history-entries`),
+      apiRequest<{ rules: AlarmRule[] }>(`/api/v1/webview/sites/${siteId.value}/operator/alarm-rules`),
       apiRequest<{ policies: MemberWritePolicy[] }>(`/api/v1/webview/sites/${siteId.value}/operator/member-policies`),
       apiRequest<{ members: SiteMember[] }>(`/api/v1/iam/sites/${siteId.value}/operator/members`).catch(() => ({ members: [] })),
     ])
@@ -395,6 +539,7 @@ async function loadAll() {
     mappings.value = mRes.mappings || []
     dashboards.value = dbRes.dashboards || []
     historyEntries.value = hRes.entries || []
+    alarmRules.value = aRes.rules || []
     policies.value = pRes.policies || []
     members.value = memRes.members || []
     webviewStore.setSiteDashboards(siteId.value, dashboards.value)
@@ -777,6 +922,92 @@ async function toggleMemberWrite(member: SiteMember, canWrite: boolean) {
     errMsg.value = err instanceof Error ? err.message : 'Failed to update member write policy'
   }
 }
+
+// --- Alarm Rule Actions ---
+async function saveAlarmRule() {
+  errMsg.value = null
+  okMsg.value = null
+  if (alarmEmailDraft.value.trim()) {
+    addAlarmEmailsFromDraft()
+    if (alarmEmailErr.value) return
+  }
+  const threshold = Number(alarmThreshold.value)
+  if (!Number.isFinite(threshold)) {
+    errMsg.value = 'Threshold must be a valid number.'
+    return
+  }
+  const deadband = alarmNeedsDeadband.value ? Number(alarmDeadband.value || '0') : 0
+  if (!Number.isFinite(deadband) || deadband < 0) {
+    errMsg.value = 'Clear deadband must be 0 or greater.'
+    return
+  }
+  const holdSec = Math.round(Number(alarmHoldSec.value || '0'))
+  if (!Number.isFinite(holdSec) || holdSec < 0 || holdSec > 86400) {
+    errMsg.value = 'Hold time must be between 0 and 86400 seconds.'
+    return
+  }
+  const pollSec = Math.round(Number(alarmPollSec.value || '10'))
+  if (!Number.isFinite(pollSec) || pollSec < 1 || pollSec > 3600) {
+    errMsg.value = 'Poll interval must be between 1 and 3600 seconds.'
+    return
+  }
+  if (!alarmMappingId.value) {
+    errMsg.value = 'Please select a register.'
+    return
+  }
+
+  const payload = {
+    registerMappingId: alarmMappingId.value,
+    name: alarmName.value.trim(),
+    condition: alarmCondition.value,
+    threshold,
+    clearDeadband: deadband,
+    holdSeconds: holdSec,
+    pollIntervalSeconds: pollSec,
+    severity: alarmSeverity.value,
+    notifyEmails: alarmEmails.value,
+    notifyOnClear: alarmNotifyOnClear.value,
+    isActive: alarmActive.value,
+  }
+
+  try {
+    if (editingAlarmId.value) {
+      await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/alarm-rules/${editingAlarmId.value}`, {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      })
+      okMsg.value = `Updated alarm rule "${payload.name}".`
+    } else {
+      await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/alarm-rules`, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      })
+      okMsg.value = `Created alarm rule "${payload.name}".`
+    }
+    alarmModalOpen.value = false
+    await loadAll()
+  } catch (err) {
+    errMsg.value = err instanceof Error ? err.message : 'Failed to save alarm rule'
+  }
+}
+
+function confirmDeleteAlarmRule(r: AlarmRule) {
+  askDelete(
+    'Delete Alarm Rule',
+    r.name,
+    'Any active latched alarm for this rule will be cleared and background polling for this rule will stop.',
+    async () => {
+      errMsg.value = null
+      try {
+        await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/alarm-rules/${r.id}`, { method: 'DELETE' })
+        okMsg.value = `Deleted alarm rule "${r.name}".`
+        await loadAll()
+      } catch (err) {
+        errMsg.value = err instanceof Error ? err.message : 'Failed to delete alarm rule'
+      }
+    },
+  )
+}
 </script>
 
 <template>
@@ -784,7 +1015,7 @@ async function toggleMemberWrite(member: SiteMember, canWrite: boolean) {
     <div>
       <h2 class="text-lg font-semibold text-white">WebView Configuration</h2>
       <p class="text-xs text-slate-400">
-        Manage devices, protocol-defined registers, dashboards, widgets, scheduled history keys, and site member write policies.
+        Manage devices, protocol-defined registers, dashboards, widgets, scheduled history keys, alarm rules, and site member write policies.
       </p>
     </div>
 
@@ -821,6 +1052,14 @@ async function toggleMemberWrite(member: SiteMember, canWrite: boolean) {
         @click="activeTab = 'history'"
       >
         <Database class="h-3.5 w-3.5" /> History ({{ historyEntries.length }})
+      </button>
+      <button
+        type="button"
+        class="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium"
+        :class="activeTab === 'alarms' ? 'bg-amber-500/20 text-amber-200' : 'text-slate-400 hover:bg-slate-800 hover:text-white'"
+        @click="activeTab = 'alarms'"
+      >
+        <Bell class="h-3.5 w-3.5" /> Alarms ({{ alarmRules.length }})
       </button>
       <button
         type="button"
@@ -1223,7 +1462,117 @@ async function toggleMemberWrite(member: SiteMember, canWrite: boolean) {
       </div>
     </div>
 
-    <!-- TAB 5: MEMBER WRITE POLICIES -->
+    <!-- TAB 5: ALARM RULES -->
+    <div v-if="activeTab === 'alarms'" class="space-y-4">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h3 class="text-sm font-semibold text-white">Alarm Rules</h3>
+          <p class="mt-0.5 text-xs text-slate-400">
+            Latch and re-arm rules evaluated in scaled engineering units. Active rules poll their register in the background even when no dashboard is open.
+          </p>
+        </div>
+        <button
+          type="button"
+          :disabled="mappings.length === 0"
+          class="inline-flex items-center gap-1.5 rounded-lg bg-amber-500 px-3.5 py-2 text-xs font-semibold text-slate-950 hover:bg-amber-400 disabled:opacity-40"
+          @click="openCreateAlarmRule"
+        >
+          <Plus class="h-4 w-4" /> Add Alarm Rule
+        </button>
+      </div>
+
+      <div class="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60">
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-xs">
+            <thead class="border-b border-slate-800 text-slate-400">
+              <tr>
+                <th class="px-4 py-3">Rule</th>
+                <th class="px-4 py-3">Register</th>
+                <th class="px-4 py-3">Condition</th>
+                <th class="px-4 py-3">Hold / Poll</th>
+                <th class="px-4 py-3">Severity</th>
+                <th class="px-4 py-3">State</th>
+                <th class="px-4 py-3">Notify</th>
+                <th class="px-4 py-3 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-800/70">
+              <tr v-for="r in alarmsPag.paginatedItems.value" :key="r.id" class="hover:bg-slate-800/30">
+                <td class="px-4 py-3 font-medium text-white">{{ r.name }}</td>
+                <td class="px-4 py-3 text-slate-300">
+                  <p>{{ r.registerName || r.registerMappingId }}</p>
+                  <p v-if="r.deviceName" class="text-[11px] text-slate-500">{{ r.deviceName }}</p>
+                </td>
+                <td class="px-4 py-3 font-mono text-slate-200 whitespace-nowrap">
+                  <span>{{ alarmConditionSymbol(r.condition) }} {{ r.threshold }}{{ r.unit ? ` ${r.unit}` : '' }}</span>
+                  <span v-if="r.clearDeadband > 0" class="block text-[10px] text-slate-400">
+                    deadband: {{ r.clearDeadband }}{{ r.unit ? ` ${r.unit}` : '' }}
+                  </span>
+                </td>
+                <td class="px-4 py-3 font-mono text-slate-300 whitespace-nowrap">
+                  {{ r.holdSeconds }}s / {{ r.pollIntervalSeconds }}s
+                </td>
+                <td class="px-4 py-3 whitespace-nowrap">
+                  <span
+                    class="inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase"
+                    :class="alarmSeverityBadgeClass(r.severity)"
+                  >
+                    {{ r.severity }}
+                  </span>
+                </td>
+                <td class="px-4 py-3 whitespace-nowrap">
+                  <span
+                    class="inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase"
+                    :class="alarmRuntimeBadgeClass(r)"
+                  >
+                    {{ r.isActive ? r.runtimeStatus : 'PAUSED' }}
+                  </span>
+                </td>
+                <td class="px-4 py-3 text-slate-300 whitespace-nowrap">
+                  <span
+                    v-if="r.notifyEmails.length > 0"
+                    class="inline-flex items-center gap-1 text-[11px]"
+                    :title="r.notifyEmails.join(', ')"
+                  >
+                    <Mail class="h-3.5 w-3.5 text-sky-400" />
+                    {{ r.notifyEmails.length }}
+                  </span>
+                  <span v-else class="text-slate-500">-</span>
+                </td>
+                <td class="px-4 py-3 text-right space-x-1.5 whitespace-nowrap">
+                  <button
+                    type="button"
+                    class="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-slate-200 hover:bg-slate-700"
+                    @click="openEditAlarmRule(r)"
+                  >
+                    <Edit3 class="h-3 w-3" /> Edit
+                  </button>
+                  <button
+                    type="button"
+                    class="inline-flex items-center rounded border border-rose-500/30 bg-rose-500/10 p-1 text-rose-300 hover:bg-rose-500/20"
+                    @click="confirmDeleteAlarmRule(r)"
+                  >
+                    <Trash2 class="h-3.5 w-3.5" />
+                  </button>
+                </td>
+              </tr>
+              <tr v-if="alarmRules.length === 0">
+                <td colspan="8" class="px-4 py-8 text-center text-slate-500">
+                  No alarm rules configured for this site yet.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <TablePagination
+          v-model:page="alarmsPag.page.value"
+          v-model:page-size="alarmsPag.pageSize.value"
+          :total-items="alarmsPag.totalItems.value"
+        />
+      </div>
+    </div>
+
+    <!-- TAB 6: MEMBER WRITE POLICIES -->
     <div v-if="activeTab === 'policies'" class="space-y-4">
       <section class="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60">
         <div class="px-5 pt-5 pb-3">
@@ -1725,6 +2074,223 @@ async function toggleMemberWrite(member: SiteMember, canWrite: boolean) {
               class="rounded-lg bg-amber-500 px-4 py-2 text-xs font-semibold text-slate-950 hover:bg-amber-400 disabled:opacity-40"
             >
               {{ editingHistId ? 'Save Changes' : 'Add Key' }}
+            </button>
+          </div>
+        </form>
+      </div>
+    </Teleport>
+
+    <!-- MODAL: ADD / EDIT ALARM RULE -->
+    <Teleport to="body">
+      <div
+        v-if="alarmModalOpen"
+        class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-xs"
+        @click.self="alarmModalOpen = false"
+      >
+        <form
+          class="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl space-y-4"
+          @submit.prevent="saveAlarmRule"
+        >
+          <div class="flex items-center justify-between">
+            <h3 class="text-sm font-semibold text-white">{{ editingAlarmId ? 'Edit Alarm Rule' : 'Add Alarm Rule' }}</h3>
+            <button type="button" class="text-slate-400 hover:text-white" @click="alarmModalOpen = false">
+              <X class="h-4 w-4" />
+            </button>
+          </div>
+
+          <div class="grid gap-3 sm:grid-cols-2">
+            <div>
+              <label class="mb-1 block text-xs text-slate-400">Rule Name</label>
+              <input
+                v-model="alarmName"
+                required
+                maxlength="120"
+                placeholder="e.g. Boiler High Temperature"
+                class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white"
+              />
+            </div>
+            <div>
+              <label class="mb-1 block text-xs text-slate-400">Severity</label>
+              <select
+                v-model="alarmSeverity"
+                class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white"
+              >
+                <option value="CRITICAL">Critical</option>
+                <option value="WARNING">Warning</option>
+                <option value="INFO">Info</option>
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <RegisterPicker
+              v-model="alarmMappingId"
+              :devices="devices"
+              :mappings="mappings"
+              register-label="Monitored Register"
+              placeholder="Search register to monitor..."
+            />
+            <p v-if="alarmBoundMapping" class="mt-1.5 text-[11px] text-slate-400">
+              Evaluated in scaled engineering units (unit:
+              <span class="font-mono text-slate-200">{{ alarmBoundMapping.protocolAttributes?.unit || 'none' }}</span>,
+              precision:
+              <span class="font-mono text-slate-200">{{ alarmBoundMapping.protocolAttributes?.precision ?? 0 }}</span>).
+            </p>
+          </div>
+
+          <div class="grid gap-3 sm:grid-cols-3">
+            <div>
+              <label class="mb-1 block text-xs text-slate-400">Condition</label>
+              <select
+                v-model="alarmCondition"
+                class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white"
+              >
+                <option value="GT">Greater than (&gt;)</option>
+                <option value="GTE">Greater or equal (&gt;=)</option>
+                <option value="LT">Less than (&lt;)</option>
+                <option value="LTE">Less or equal (&lt;=)</option>
+                <option value="EQ">Equal to (==)</option>
+                <option value="NEQ">Not equal to (!=)</option>
+              </select>
+            </div>
+            <div>
+              <label class="mb-1 block text-xs text-slate-400">
+                Threshold{{ alarmBoundMapping?.protocolAttributes?.unit ? ` (${alarmBoundMapping.protocolAttributes.unit})` : '' }}
+              </label>
+              <NumericTextInput
+                v-model="alarmThreshold"
+                allow-decimal
+                allow-negative
+                required
+                placeholder="80.0"
+                input-class="bg-slate-950"
+              />
+            </div>
+            <div v-if="alarmNeedsDeadband">
+              <label class="mb-1 block text-xs text-slate-400">
+                Clear Deadband{{ alarmBoundMapping?.protocolAttributes?.unit ? ` (${alarmBoundMapping.protocolAttributes.unit})` : '' }}
+              </label>
+              <NumericTextInput
+                v-model="alarmDeadband"
+                allow-decimal
+                :min="0"
+                placeholder="0"
+                input-class="bg-slate-950"
+              />
+            </div>
+          </div>
+
+          <div class="grid gap-3 sm:grid-cols-2">
+            <div>
+              <label class="mb-1 block text-xs text-slate-400">Hold Time (seconds, 0 = immediate)</label>
+              <NumericTextInput
+                v-model="alarmHoldSec"
+                :min="0"
+                :max="86400"
+                placeholder="0"
+                input-class="bg-slate-950"
+              />
+            </div>
+            <div>
+              <label class="mb-1 block text-xs text-slate-400">Background Poll Interval (seconds)</label>
+              <NumericTextInput
+                v-model="alarmPollSec"
+                :min="1"
+                :max="3600"
+                required
+                placeholder="10"
+                input-class="bg-slate-950"
+              />
+            </div>
+          </div>
+
+          <!-- Free-list Email Recipients -->
+          <div class="space-y-2.5 rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+            <div class="flex items-center justify-between">
+              <label class="text-xs font-medium text-slate-200">Email Notification Recipients (optional)</label>
+              <span class="text-[11px] text-slate-500">{{ alarmEmails.length }} / 50</span>
+            </div>
+
+            <div class="flex gap-2">
+              <input
+                v-model="alarmEmailDraft"
+                type="text"
+                placeholder="Enter one or more emails (comma or space separated)"
+                class="flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-white placeholder-slate-500"
+                @keydown.enter.prevent="addAlarmEmailsFromDraft"
+              />
+              <button
+                type="button"
+                class="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs font-medium text-slate-200 hover:bg-slate-700"
+                @click="addAlarmEmailsFromDraft"
+              >
+                Add
+              </button>
+            </div>
+
+            <p v-if="alarmEmailErr" class="text-[11px] text-rose-300">{{ alarmEmailErr }}</p>
+
+            <div v-if="alarmEmails.length > 0" class="flex flex-wrap gap-1.5 pt-1">
+              <span
+                v-for="email in alarmEmails"
+                :key="email"
+                class="inline-flex items-center gap-1 rounded-full border border-sky-500/30 bg-sky-500/15 px-2.5 py-0.5 text-[11px] text-sky-200"
+              >
+                {{ email }}
+                <button
+                  type="button"
+                  class="text-sky-300 hover:text-white"
+                  :title="`Remove ${email}`"
+                  @click="removeAlarmEmail(email)"
+                >
+                  <X class="h-3 w-3" />
+                </button>
+              </span>
+            </div>
+            <p v-else class="text-[11px] text-slate-500">
+              No email recipients configured. Alarms will still appear in the Alarm Centre.
+            </p>
+
+            <div v-if="members.length > 0" class="border-t border-slate-800 pt-2">
+              <p class="mb-1.5 text-[10px] uppercase tracking-wider text-slate-500">Quick add site member</p>
+              <div class="flex flex-wrap gap-1.5">
+                <button
+                  v-for="m in members"
+                  :key="m.userId"
+                  type="button"
+                  :disabled="alarmEmails.includes(m.email.toLowerCase())"
+                  class="rounded-md border border-slate-700 bg-slate-900 px-2 py-0.5 text-[11px] text-slate-300 hover:bg-slate-800 disabled:opacity-40"
+                  @click="addMemberEmailQuick(m.email)"
+                >
+                  + {{ m.email }}
+                </button>
+              </div>
+            </div>
+
+            <label class="inline-flex items-center gap-2 pt-1 text-xs text-slate-300">
+              <input v-model="alarmNotifyOnClear" type="checkbox" />
+              Send recovery email when alarm clears
+            </label>
+          </div>
+
+          <label v-if="editingAlarmId" class="inline-flex items-center gap-2 text-xs text-slate-300">
+            <input v-model="alarmActive" type="checkbox" /> Rule Active
+          </label>
+
+          <div class="flex justify-end gap-2 pt-2">
+            <button
+              type="button"
+              class="rounded-lg border border-slate-700 px-3.5 py-2 text-xs text-slate-300 hover:bg-slate-800"
+              @click="alarmModalOpen = false"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              :disabled="!alarmMappingId || !alarmName.trim()"
+              class="rounded-lg bg-amber-500 px-4 py-2 text-xs font-semibold text-slate-950 hover:bg-amber-400 disabled:opacity-40"
+            >
+              {{ editingAlarmId ? 'Save Changes' : 'Add Alarm Rule' }}
             </button>
           </div>
         </form>

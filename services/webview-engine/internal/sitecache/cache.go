@@ -18,15 +18,21 @@ type authzEntry struct {
 	fetchedAt time.Time
 }
 
+type userSitesEntry struct {
+	resp      internalclient.UserSitesResponse
+	fetchedAt time.Time
+}
+
 type Cache struct {
 	coreIAM      *internalclient.HTTPClient
 	orchestrator *internalclient.HTTPClient
 
-	mu       sync.RWMutex
-	states   map[uuid.UUID]internalclient.SiteRuntimeState
-	authz    map[string]authzEntry
-	authzTTL time.Duration
-	onChange func(siteID uuid.UUID, prev, cur internalclient.SiteRuntimeState)
+	mu        sync.RWMutex
+	states    map[uuid.UUID]internalclient.SiteRuntimeState
+	authz     map[string]authzEntry
+	userSites map[uuid.UUID]userSitesEntry
+	authzTTL  time.Duration
+	onChange  func(siteID uuid.UUID, prev, cur internalclient.SiteRuntimeState)
 }
 
 func New(coreIAM, orchestrator *internalclient.HTTPClient, onChange func(uuid.UUID, internalclient.SiteRuntimeState, internalclient.SiteRuntimeState)) *Cache {
@@ -35,6 +41,7 @@ func New(coreIAM, orchestrator *internalclient.HTTPClient, onChange func(uuid.UU
 		orchestrator: orchestrator,
 		states:       make(map[uuid.UUID]internalclient.SiteRuntimeState),
 		authz:        make(map[string]authzEntry),
+		userSites:    make(map[uuid.UUID]userSitesEntry),
 		authzTTL:     30 * time.Second,
 		onChange:     onChange,
 	}
@@ -75,6 +82,36 @@ func (c *Cache) GetRuntimeState(siteID uuid.UUID) (internalclient.SiteRuntimeSta
 	defer c.mu.RUnlock()
 	st, ok := c.states[siteID]
 	return st, ok
+}
+
+func (c *Cache) SiteName(siteID uuid.UUID) string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if st, ok := c.states[siteID]; ok && st.Name != "" {
+		return st.Name
+	}
+	return siteID.String()[:8]
+}
+
+func (c *Cache) GetUserSites(ctx context.Context, userID uuid.UUID) (*internalclient.UserSitesResponse, error) {
+	c.mu.RLock()
+	if e, ok := c.userSites[userID]; ok && time.Since(e.fetchedAt) < 15*time.Second {
+		resp := e.resp
+		c.mu.RUnlock()
+		return &resp, nil
+	}
+	c.mu.RUnlock()
+
+	var resp internalclient.UserSitesResponse
+	path := fmt.Sprintf("/internal/users/%s/sites", userID.String())
+	if _, err := c.coreIAM.DoJSON(ctx, http.MethodGet, path, nil, &resp); err != nil {
+		return nil, err
+	}
+
+	c.mu.Lock()
+	c.userSites[userID] = userSitesEntry{resp: resp, fetchedAt: time.Now()}
+	c.mu.Unlock()
+	return &resp, nil
 }
 
 func (c *Cache) CheckAuthz(ctx context.Context, siteID, userID uuid.UUID) (*internalclient.SiteAuthzResponse, error) {
