@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import * as echarts from 'echarts'
 import { Calendar, ChevronDown, Download, LineChart, PanelLeftClose, PanelLeftOpen, RefreshCw, Search } from 'lucide-vue-next'
@@ -369,13 +369,33 @@ async function exportCsv() {
   }
 }
 
+function bindChartResizeObserver(el: HTMLDivElement | null) {
+  resizeObserver?.disconnect()
+  resizeObserver = null
+  if (!el) return
+  resizeObserver = new ResizeObserver(() => {
+    chartInstance?.resize()
+  })
+  resizeObserver.observe(el)
+}
+
+watch(
+  chartEl,
+  (el) => {
+    bindChartResizeObserver(el)
+    if (el && chartInstance) {
+      chartInstance.resize()
+    }
+  },
+  { immediate: true },
+)
+
+watch(keysPanelOpen, async () => {
+  await nextTick()
+  chartInstance?.resize()
+})
+
 onMounted(() => {
-  if (chartEl.value) {
-    resizeObserver = new ResizeObserver(() => {
-      chartInstance?.resize()
-    })
-    resizeObserver.observe(chartEl.value)
-  }
   void loadKeys()
 })
 

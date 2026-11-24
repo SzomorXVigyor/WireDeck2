@@ -68,9 +68,10 @@ func (c *Cache) SyncRuntimeStates(ctx context.Context) {
 	c.mu.Unlock()
 
 	if c.onChange != nil {
+		firstSync := len(prevMap) == 0
 		for id, cur := range next {
 			prev := prevMap[id]
-			if prev.IsActive != cur.IsActive || prev.WebviewEnabled != cur.WebviewEnabled || prev.Status != cur.Status {
+			if firstSync || prev.IsActive != cur.IsActive || prev.WebviewEnabled != cur.WebviewEnabled || prev.Status != cur.Status {
 				c.onChange(id, prev, cur)
 			}
 		}

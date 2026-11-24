@@ -99,6 +99,19 @@ func (m *memRepo) ClearEvent(_ context.Context, eventID uuid.UUID, clearedAt tim
 	return nil
 }
 
+func (m *memRepo) DeleteSiteActiveEvents(_ context.Context, siteID uuid.UUID) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var n int64
+	for id, ev := range m.events {
+		if ev.SiteID == siteID && ev.State == models.AlarmStateActive {
+			delete(m.events, id)
+			n++
+		}
+	}
+	return n, nil
+}
+
 func (m *memRepo) MarkEventStale(_ context.Context, eventID uuid.UUID, stale bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -302,5 +315,94 @@ func TestSiteOfflineFreezeD12AndRestartRehydration(t *testing.T) {
 	events, _ := repo.LoadActiveEvents(ctx)
 	if len(events) != 1 || !events[0].IsStale {
 		t.Fatalf("expected active event marked stale=true, got %+v", events)
+	}
+}
+
+func TestDropSiteActiveAlarmsOnWebviewDisabled(t *testing.T) {
+	ctx := context.Background()
+	siteA := uuid.New()
+	siteB := uuid.New()
+	mapA := uuid.New()
+	mapB := uuid.New()
+
+	rActiveA := models.AlarmRule{
+		ID: uuid.New(), SiteID: siteA, RegisterMappingID: mapA,
+		Name: "SiteA Active", Condition: models.AlarmCondGT, Threshold: 10,
+		HoldSeconds: 0, Severity: models.AlarmSeverityCritical, IsActive: true,
+	}
+	rPendingA := models.AlarmRule{
+		ID: uuid.New(), SiteID: siteA, RegisterMappingID: mapA,
+		Name: "SiteA Pending", Condition: models.AlarmCondGT, Threshold: 10,
+		HoldSeconds: 30, Severity: models.AlarmSeverityWarning, IsActive: true,
+	}
+	rClearedA := models.AlarmRule{
+		ID: uuid.New(), SiteID: siteA, RegisterMappingID: mapA,
+		Name: "SiteA Historical", Condition: models.AlarmCondLT, Threshold: 5,
+		HoldSeconds: 0, Severity: models.AlarmSeverityInfo, IsActive: true,
+	}
+	rActiveB := models.AlarmRule{
+		ID: uuid.New(), SiteID: siteB, RegisterMappingID: mapB,
+		Name: "SiteB Active", Condition: models.AlarmCondGT, Threshold: 10,
+		HoldSeconds: 0, Severity: models.AlarmSeverityCritical, IsActive: true,
+	}
+
+	mappingA := models.RegisterMapping{ID: mapA, SiteID: siteA, Name: "Temp A"}
+	mappingB := models.RegisterMapping{ID: mapB, SiteID: siteB, Name: "Temp B"}
+	repo := newMemRepo(rActiveA, rPendingA, rClearedA, rActiveB)
+	eng := NewEngine(repo, nil, nil, nil)
+	if err := eng.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer eng.Shutdown(ctx)
+
+	t0 := time.Date(2026, 11, 24, 21, 0, 0, 0, time.UTC)
+	// Trigger & clear rClearedA so siteA has a historical CLEARED event
+	eng.EvaluateSample(ctx, mappingA, "GOOD", ptr(2), t0)
+	eng.EvaluateSample(ctx, mappingA, "GOOD", ptr(6), t0.Add(time.Second))
+	// Trigger ACTIVE + PENDING on siteA, and ACTIVE on siteB
+	eng.EvaluateSample(ctx, mappingA, "GOOD", ptr(20), t0.Add(2*time.Second))
+	eng.EvaluateSample(ctx, mappingB, "GOOD", ptr(20), t0.Add(2*time.Second))
+
+	if !eng.HasSiteActiveOrPending(siteA) {
+		t.Fatalf("expected siteA to have active/pending alarms")
+	}
+
+	// Disable WebView on siteA -> drops ONLY active alarms + pending holds on siteA
+	eng.DropSiteActiveAlarms(ctx, siteA)
+
+	if eng.HasSiteActiveOrPending(siteA) {
+		t.Fatalf("expected siteA to have no active/pending alarms after drop")
+	}
+	if eng.RuleRuntimeStatus(rActiveA.ID) != "NORMAL" || eng.RuleRuntimeStatus(rPendingA.ID) != "NORMAL" {
+		t.Fatalf("expected siteA rules NORMAL after drop, got active=%s pending=%s", eng.RuleRuntimeStatus(rActiveA.ID), eng.RuleRuntimeStatus(rPendingA.ID))
+	}
+	if eng.RuleRuntimeStatus(rActiveB.ID) != "ACTIVE" {
+		t.Fatalf("expected siteB active alarm untouched, got %s", eng.RuleRuntimeStatus(rActiveB.ID))
+	}
+
+	// Verify DB state: siteA CLEARED preserved, siteA ACTIVE deleted, siteB ACTIVE preserved
+	repo.mu.Lock()
+	var siteACleared, siteAActive, siteBActive int
+	for _, ev := range repo.events {
+		if ev.SiteID == siteA && ev.State == models.AlarmStateCleared {
+			siteACleared++
+		}
+		if ev.SiteID == siteA && ev.State == models.AlarmStateActive {
+			siteAActive++
+		}
+		if ev.SiteID == siteB && ev.State == models.AlarmStateActive {
+			siteBActive++
+		}
+	}
+	repo.mu.Unlock()
+
+	if siteAActive != 0 {
+		t.Fatalf("expected 0 active events on siteA, got %d", siteAActive)
+	}
+	if siteACleared != 1 {
+		t.Fatalf("expected 1 historical cleared event preserved on siteA, got %d", siteACleared)
+	}
+	if siteBActive != 1 {
+		t.Fatalf("expected 1 active event preserved on siteB, got %d", siteBActive)
 	}
 }

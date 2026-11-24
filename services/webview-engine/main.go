@@ -74,12 +74,17 @@ func main() {
 			slog.Info("runtime_state_draining_webview", "site_id", siteID, "is_active", cur.IsActive, "webview_enabled", cur.WebviewEnabled)
 			svc.DrainSite(siteID)
 		}
+		if alarmEng != nil && !cur.WebviewEnabled && (prev.WebviewEnabled || alarmEng.HasSiteActiveOrPending(siteID)) {
+			dctx, dcancel := context.WithTimeout(context.Background(), 5*time.Second)
+			alarmEng.DropSiteActiveAlarms(dctx, siteID)
+			dcancel()
+		}
 		if prev.Status != "OFFLINE" && cur.Status == "OFFLINE" {
 			if hub != nil {
 				slog.Info("site_offline_marking_telemetry_stale", "site_id", siteID)
 				hub.MarkSiteStale(siteID, "site tunnel offline")
 			}
-			if alarmEng != nil {
+			if alarmEng != nil && cur.WebviewEnabled {
 				fctx, fcancel := context.WithTimeout(context.Background(), 5*time.Second)
 				alarmEng.FreezeSiteOffline(fctx, siteID)
 				fcancel()

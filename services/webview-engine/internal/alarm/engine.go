@@ -33,6 +33,7 @@ type Repository interface {
 	DeleteSitePendingStates(ctx context.Context, siteID uuid.UUID) error
 	InsertEvent(ctx context.Context, evt *models.AlarmEvent) error
 	ClearEvent(ctx context.Context, eventID uuid.UUID, clearedAt time.Time, clearedVal *float64) error
+	DeleteSiteActiveEvents(ctx context.Context, siteID uuid.UUID) (int64, error)
 	MarkEventStale(ctx context.Context, eventID uuid.UUID, stale bool) error
 	MarkSiteEventsStale(ctx context.Context, siteID uuid.UUID) ([]models.AlarmEvent, error)
 	UpdateEventNotification(ctx context.Context, eventID uuid.UUID, notifiedAt *time.Time, failed bool, errMsg string) error
@@ -97,6 +98,17 @@ func (r *BunRepository) ClearEvent(ctx context.Context, eventID uuid.UUID, clear
 		Where("id = ?", eventID).
 		Exec(ctx)
 	return err
+}
+
+func (r *BunRepository) DeleteSiteActiveEvents(ctx context.Context, siteID uuid.UUID) (int64, error) {
+	res, err := r.db.NewDelete().Model((*models.AlarmEvent)(nil)).
+		Where("site_id = ? AND state = ?", siteID, models.AlarmStateActive).
+		Exec(ctx)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
 }
 
 func (r *BunRepository) MarkEventStale(ctx context.Context, eventID uuid.UUID, stale bool) error {
@@ -663,6 +675,53 @@ func (e *Engine) HandleRuleDeactivated(ctx context.Context, ruleID uuid.UUID) {
 		activeEvt.ClearedAt = &now
 		activeEvt.IsStale = false
 		e.emit(activeEvt.SiteID, activeEvt)
+	}
+}
+
+// HasSiteActiveOrPending reports whether the engine currently tracks any ACTIVE event or PENDING hold for siteID.
+func (e *Engine) HasSiteActiveOrPending(siteID uuid.UUID) bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	for _, ev := range e.activeByRule {
+		if ev.SiteID == siteID {
+			return true
+		}
+	}
+	for _, ps := range e.pendingByRule {
+		if ps.SiteID == siteID {
+			return true
+		}
+	}
+	return false
+}
+
+// DropSiteActiveAlarms deletes all ACTIVE alarm events and PENDING hold timers for a site
+// (used when the WebView module is disabled on the site). Historical CLEARED events and
+// alarm rule definitions are preserved intact.
+func (e *Engine) DropSiteActiveAlarms(ctx context.Context, siteID uuid.UUID) {
+	if err := e.repo.DeleteSitePendingStates(ctx, siteID); err != nil {
+		slog.Warn("alarm_drop_delete_pending_failed", "site_id", siteID, "error", err)
+	}
+	deleted, err := e.repo.DeleteSiteActiveEvents(ctx, siteID)
+	if err != nil {
+		slog.Warn("alarm_drop_delete_active_failed", "site_id", siteID, "error", err)
+	}
+
+	e.mu.Lock()
+	for ruleID, ps := range e.pendingByRule {
+		if ps.SiteID == siteID {
+			delete(e.pendingByRule, ruleID)
+		}
+	}
+	for ruleID, ev := range e.activeByRule {
+		if ev.SiteID == siteID {
+			delete(e.activeByRule, ruleID)
+		}
+	}
+	e.mu.Unlock()
+
+	if deleted > 0 {
+		slog.Info("alarm_dropped_active_on_webview_disable", "site_id", siteID, "deleted_active", deleted)
 	}
 }
 
