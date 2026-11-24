@@ -2,13 +2,13 @@
 
 WireDeck2 uses **two physically separated PostgreSQL instances** on the internal `wiredeck-control` network:
 
-1. **OLTP (`postgres-oltp`, `postgres:18-alpine`)** — relational platform state, segmented into 4 logical schemas with **one Postgres role per service**, owning only its own schema.
-2. **TSDB (`postgres-tsdb`, `timescale/timescaledb:2.32.0-pg17`)** — dedicated time-series database for remote sensor and register history (`platform_webview_history` hypertable, compression, `1m` & `1h` continuous aggregates, retention policies).
+1. **OLTP (`postgres-oltp`, `postgres:18.7-alpine`)** — relational platform state, segmented into 4 logical schemas with **one Postgres role per service**, owning only its own schema.
+2. **TSDB (`postgres-tsdb`, `timescale/timescaledb:2.32.1-pg18`)** — dedicated time-series database for remote sensor and register history (`platform_webview_history` hypertable, compression, `1m` & `1h` continuous aggregates, retention policies).
 
 ## Why Split OLTP and TSDB?
 
 - **Blast-radius isolation:** High-volume sensor writes, continuous aggregate refreshes, and wide range scans never compete for WAL, I/O, or locks with IAM authentication or control-plane writes.
-- **Independent upgrades & backups:** OLTP runs the latest vanilla `postgres:18-alpine` with trivial `pg_dump` backups; TSDB uses `timescale/timescaledb:2.32.0-pg17` with physical backups (`pgBackRest` / volume snapshots).
+- **Independent upgrades & backups:** OLTP runs the latest vanilla `postgres:18.7-alpine` with trivial `pg_dump` backups; TSDB uses `timescale/timescaledb:2.32.1-pg18` with physical backups (`pgBackRest` / volume snapshots).
 - **K8s portability:** `webview-engine` writes/reads time-series strictly through a Go `HistoryStore` interface.
 
 ## Who Migrates What

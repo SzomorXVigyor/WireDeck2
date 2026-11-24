@@ -13,7 +13,7 @@
 | **ORM & SQL Driver** | **`uptrace/bun` `v1.3.0`** + **`jackc/pgx/v5` `v5.13.0`** (with `pgx.CopyFrom` binary bulk inserts for time-series ingestion and `pressly/goose/v3` embedded SQL migrations). |
 | **HTTP Validation & OpenAPI** | **`go-chi/chi/v5`** + **`danielgtaylor/huma/v2`**: **100% schema-validated** inputs (strict JSON Schema validation, rejecting unknown fields, typed path/query/header/body structs) + **auto-generated OpenAPI 3.1 + interactive Swagger/Scalar UI** directly from Go types (zero YAML drift). |
 | **Admin vs. User API Separation** | **Strict router-level separation** into dedicated `/admin/*` sub-routers with group-level RBAC middleware (`RequirePlatformAdmin`, `RequireSiteAdmin`), separate OpenAPI tags/groups, and separate `:8081` internal port for service-to-service endpoints. |
-| **Datastores (Separated)** | **OLTP:** `postgres:18-alpine` (4 role-isolated schemas: `platform_iam`, `platform_runners`, `platform_webvnc`, `platform_webview`; trivial `pg_dump` backups).<br>**TSDB:** Separate `timescale/timescaledb:2.32.0-pg17` instance (`platform_webview_history` hypertable, compression, `1m`/`1h` continuous aggregates, `time_bucket_gapfill` + `locf()`, 30d raw / 1y rollup retention), accessed via a `HistoryStore` Go interface. |
+| **Datastores (Separated)** | **OLTP:** `postgres:18.7-alpine` (4 role-isolated schemas: `platform_iam`, `platform_runners`, `platform_webvnc`, `platform_webview`; trivial `pg_dump` backups).<br>**TSDB:** Separate `timescale/timescaledb:2.32.1-pg18` instance (`platform_webview_history` hypertable, compression, `1m`/`1h` continuous aggregates, `time_bucket_gapfill` + `locf()`, 30d raw / 1y rollup retention), accessed via a `HistoryStore` Go interface. |
 | **VNC Passwords (D25)** | **Server-side only.** `webvnc-proxy` completes the RFB 3.8 DES challenge-response with the target using `password_encrypted` (`VNC_PASSWORD_ENCRYPTION_KEY`) and presents `SecurityType=None` to browser `noVNC`. |
 | **User Lifecycle & Auth (D29)** | **Admin-created users via email invite** (`MailGopher`, 48 h single-use `INVITE` token). Users can **change their password anytime** (authenticated change-password + unauthenticated email `PASSWORD_RESET` flow). `HttpOnly; Secure; SameSite=Strict` rotating refresh cookie + in-memory RS256 access JWT (`kid` rotation). |
 | **Versions Policy** | **Latest stable** libraries, frameworks, and images everywhere, pinned to explicit stable tags (never `:latest`). |
@@ -55,7 +55,7 @@ flowchart TD
         Webview --> PG
         WebVNC --> PG
 
-        Webview -->|"HistoryStore (pgx.CopyFrom / SQL)"| TSDB["TimescaleDB 2.32-pg17 (Dedicated TSDB)"]
+        Webview -->|"HistoryStore (pgx.CopyFrom / SQL)"| TSDB["TimescaleDB 2.32-pg18 (Dedicated TSDB)"]
         CoreIAM -->|"Invites & Resets"| MailGopher["mailgopher (Go 1.27, internal only)"]
         Webview -->|"Alarm Emails"| MailGopher
     end
@@ -79,7 +79,7 @@ flowchart TD
 3. **Reboot-Safe Tmpfs Recovery (D22):** `runner-orchestrator` pulls desired specs (`GET /internal/runners/desired`) and missing confs (`GET /internal/sites/:siteId/runner-conf`) from `core-iam:8081` during boot/reconcile.
 4. **Separate Encryption Keys (D23):** `WG_CONF_ENCRYPTION_KEY` (`core-iam`) vs. `VNC_PASSWORD_ENCRYPTION_KEY` (`webvnc-proxy`).
 5. **Cross-Service Lifecycle Propagation (D28):** `GET /internal/sites/runtime-state` (polled every 10–15 s) propagates `isActive`, `status` (drives D12 offline alarm freeze), feature flags, and `lanSubnets`. `POST /internal/sites/:siteId/drain` handles graceful conf rotation; `DELETE /internal/sites/:siteId/data` handles site deletion cascades (including TSDB purge).
-6. **TimescaleDB Dedicated Instance & Migration Fix:** Separate `timescale/timescaledb:2.32.0-pg17` container with `-- NO_TRANSACTION` fixed on `005_history.sql`, `pgx.CopyFrom` batched writes, `1m`/`1h` continuous aggregates, and `time_bucket_gapfill` + `locf()` for continuous deadband charts.
+6. **TimescaleDB Dedicated Instance & Migration Fix:** Separate `timescale/timescaledb:2.32.1-pg18` container with `-- NO_TRANSACTION` fixed on `005_history.sql`, `pgx.CopyFrom` batched writes, `1m`/`1h` continuous aggregates, and `time_bucket_gapfill` + `locf()` for continuous deadband charts.
 
 ---
 
@@ -142,8 +142,8 @@ How should admin actions be separated from normal users in the Vue 3 frontend? H
 |---|---|
 | **Go** | `1.27.2` (`golang:1.27-alpine`, static `CGO_ENABLED=0` distroless/scratch binaries) |
 | **Go Libraries** | `uptrace/bun v1.3.0`, `jackc/pgx/v5 v5.13.0`, `go-chi/chi/v5`, `danielgtaylor/huma/v2`, `coder/websocket`, `lestrrat-go/jwx/v3`, `pressly/goose/v3`, `google.golang.org/grpc`, `prometheus/client_golang` |
-| **OLTP Database** | `postgres:18-alpine` |
-| **Time-Series Database** | `timescale/timescaledb:2.32.0-pg17` |
+| **OLTP Database** | `postgres:18.7-alpine` |
+| **Time-Series Database** | `timescale/timescaledb:2.32.1-pg18` |
 | **Reverse Proxy** | `traefik:v3.7` (`v3.7.19`) |
 | **Frontend** | Vue `3.5.x`, Vite `8.3.x`, TypeScript `5.x`, Pinia, Vue Router, Tailwind CSS v4, ECharts, `@novnc/novnc`, `openapi-typescript`, served by `nginx:1.27-alpine` (built on `node:26-alpine` + `pnpm@10`) |
 
@@ -168,9 +168,9 @@ How should admin actions be separated from normal users in the Vue 3 frontend? H
    - `git init`, `.gitignore`, `README.md`, `CLAUDE.md`, Go workspace/monorepo layout (`pkg/`, `services/{core-iam,runner-orchestrator,webvnc-proxy,webview-engine}/`, `frontend/`).
    - Remove obsolete Prisma directories (`services/*/prisma`), update `docs/ARCHITECTURE.md` (v2.2) & `docs/k8s-host.md`, create `docs/WIREGUARD-CONF.md`.
    - Split `db/` into clean bootstrap migrators:
-     - `db/oltp/` (`postgres:18-alpine`: `citext`/`pgcrypto`, 4 schemas & 4 isolated roles; per-service tables managed by each service's embedded `goose` migrations).
-     - `db/tsdb/` (`timescale/timescaledb:2.32.0-pg17`: `platform_webview_history` schema/role, fixed `005_history.sql` with `-- NO_TRANSACTION`, `006_continuous_aggregates.sql`).
-   - Updated `deploy/docker-compose.yml` (`wiredeck-control` + `wiredeck-runners`, `postgres-oltp` PG18, `postgres-tsdb` TimescaleDB 2.32-pg17, Traefik v3.7, MailGopher, healthchecks), `deploy/.env.example`, `deploy/traefik/{traefik,dynamic}.yml`, and `deploy/docker-compose.dev.yml` (Modbus TCP simulator + password-protected VNC target + test WG peer).
+     - `db/oltp/` (`postgres:18.7-alpine`: `citext`/`pgcrypto`, 4 schemas & 4 isolated roles; per-service tables managed by each service's embedded `goose` migrations).
+     - `db/tsdb/` (`timescale/timescaledb:2.32.1-pg18`: `platform_webview_history` schema/role, fixed `005_history.sql` with `-- NO_TRANSACTION`, `006_continuous_aggregates.sql`).
+   - Updated `deploy/docker-compose.yml` (`wiredeck-control` + `wiredeck-runners`, `postgres-oltp` PG18, `postgres-tsdb` TimescaleDB 2.32-pg18, Traefik v3.7, MailGopher, healthchecks), `deploy/.env.example`, `deploy/traefik/{traefik,dynamic}.yml`, and `deploy/docker-compose.dev.yml` (Modbus TCP simulator + password-protected VNC target + test WG peer).
    - **Gate P0:** `WireRelay` & `MailGopher` tests pass; both `oltp-migrator` (PG18) and `tsdb-migrator` (TimescaleDB) run cleanly and idempotently.
 
 ### Phase 1 — Control Plane & Tunnel Vertical Slice (`core-iam`, `runner-orchestrator`, SPA Shells)

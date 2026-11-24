@@ -40,7 +40,7 @@ WireDeck2 is a greenfield rewrite of WireDeck. It replaces the *discrete site ru
 | **D26** | **Native Go MBAP + Modbus PDU codec** directly over `WireRelay.TunnelStream` (incl. FC `0x10`). | Supports 16-bit & 32-bit (`UINT32`/`INT32`/`FLOAT32`) reads and writes with configurable word/byte order. |
 | **D27** | **Full WireDeck v1 widget & register parity**: `lamp`, `display`, `switch`, `button`, `number_input`, `chart`, plus `access_mode` (`READ \| WRITE \| READ_WRITE`). | Preserves industrial setpoint writes, momentary commands, and write-only registers. |
 | **D28** | **Cross-service lifecycle contracts**: `GET /internal/sites/runtime-state` (15 s poll), `POST /internal/sites/:id/drain`, `DELETE /internal/sites/:id/data`. | Powers D12 offline alarm freeze, live flag toggles, graceful conf rotation, and clean site deletion cascades. |
-| **D29** | **Separated OLTP (`postgres:18-alpine`) + TSDB (`timescale/timescaledb:2.32.0-pg17`)** without PgBouncer in v1, behind `HistoryStore`. | Isolates sensor write/rollup I/O from OLTP auth/config, allows trivial OLTP `pg_dump`, preserves prepared statements. |
+| **D29** | **Separated OLTP (`postgres:18.7-alpine`) + TSDB (`timescale/timescaledb:2.32.1-pg18`)** without PgBouncer in v1, behind `HistoryStore`. | Isolates sensor write/rollup I/O from OLTP auth/config, allows trivial OLTP `pg_dump`, preserves prepared statements. |
 | **D30** | **Admin email-invite user creation + anytime self-service password change/reset** + **Strict `/admin/*` API & Three-Surface SPA separation**. | Admin invites via `MailGopher` (`user_tokens`), rotating `HttpOnly` refresh cookies, router-enforced admin groups, and clean Operator / Site-Admin / Platform-Admin UI shells. |
 
 ---
@@ -86,7 +86,7 @@ WireDeck2 is a greenfield rewrite of WireDeck. It replaces the *discrete site ru
    │  │   runner-    │<─────┴─────────────┘       │ mailgopher (internal only)  │
    │  │ orchestrator │                            └─────────────────────────────┘
    │  │     (Go)     │    ┌─────────────────────┐ ┌─────────────────────────────┐
-   │  └──┬────────┬──┘    │ PostgreSQL 18 (OLTP)│ │ TimescaleDB 2.32-pg17 (TSDB)│
+   │  └──┬────────┬──┘    │ PostgreSQL 18 (OLTP)│ │ TimescaleDB 2.32-pg18 (TSDB)│
    └─────┼────────┼───────┴─────────────────────┴─┴─────────────────────────────┘
          │        │
    docker│        │ gRPC (:9000 + WIRERELAY_AUTH_TOKEN)
@@ -162,8 +162,8 @@ Every public HTTP service (`core-iam`, `webview-engine`, `webvnc-proxy`) uses **
 
 | Instance | Image | Schemas & Owners | Migrations |
 |---|---|---|---|
-| `postgres-oltp` | `postgres:18-alpine` | `platform_iam` (`svc_core_iam`) · `platform_runners` (`svc_runner_orchestrator`) · `platform_webvnc` (`svc_webvnc_proxy`) · `platform_webview` (`svc_webview_engine`) | Bootstrap via `db/oltp/`; tables via embedded `goose` per service |
-| `postgres-tsdb` | `timescale/timescaledb:2.32.0-pg17` | `platform_webview_history` (`svc_webview_history`) | Managed via `db/tsdb/sql/*.sql` (with `-- NO_TRANSACTION` on policy/CAGG DDL) |
+| `postgres-oltp` | `postgres:18.7-alpine` | `platform_iam` (`svc_core_iam`) · `platform_runners` (`svc_runner_orchestrator`) · `platform_webvnc` (`svc_webvnc_proxy`) · `platform_webview` (`svc_webview_engine`) | Bootstrap via `db/oltp/`; tables via embedded `goose` per service |
+| `postgres-tsdb` | `timescale/timescaledb:2.32.1-pg18` | `platform_webview_history` (`svc_webview_history`) | Managed via `db/tsdb/sql/*.sql` (with `-- NO_TRANSACTION` on policy/CAGG DDL) |
 
 ### 5.2 Core Entities
 

@@ -1,5 +1,5 @@
 #!/bin/sh
-# One-shot migrator for postgres-tsdb (TimescaleDB 2.32.0 on PostgreSQL 17).
+# One-shot migrator for postgres-tsdb (TimescaleDB 2.32.1 on PostgreSQL 18.7).
 # Creates the timescaledb extension, history role, hypertable, compression,
 # continuous aggregates, and retention policies.
 set -eu

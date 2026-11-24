@@ -6,7 +6,7 @@ Centralized, multi-site industrial telemetry, remote browser VNC, and alerting p
 
 - **Backend (100% Go):** `core-iam`, `runner-orchestrator`, `webvnc-proxy`, `webview-engine`, sharing a common `pkg/` layer (`uptrace/bun`, `pgx/v5`, `chi`, `huma/v2` OpenAPI 3.1 + strict JSON Schema validation).
 - **Frontend (Vue 3 + TypeScript + Vite):** Three-surface modular SPA (`OperatorLayout`, lazy-loaded `SiteAdminLayout`, lazy-loaded `PlatformAdminLayout`).
-- **Datastores:** Dedicated `postgres:18-alpine` (4 role-isolated OLTP schemas) + dedicated `timescale/timescaledb:2.32.0-pg17` (hypertables + continuous aggregates for sensor & register history).
+- **Datastores:** Dedicated `postgres:18.7-alpine` (4 role-isolated OLTP schemas) + dedicated `timescale/timescaledb:2.32.1-pg18` (hypertables + continuous aggregates for sensor & register history).
 - **Site Runners & Email:** Consumes hardened [WireRelay](../WireRelay) (`v1.1.0+`) and [MailGopher](../MailGopher) (`v1.2.0+`) images.
 - **Network Isolation:** Segmented `wiredeck-control` (`internal: true`) and `wiredeck-runners` Docker bridges, dual-port public (`:8080`) vs internal (`:8081`) HTTP APIs, and Kubernetes-ready interfaces (`RunnerBackend`, `OwnershipProvider`, `LeaderElector`, `HistoryStore`).
 

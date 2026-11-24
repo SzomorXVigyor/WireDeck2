@@ -10,7 +10,7 @@ Guidance for working in the `WireDeck2` repository. Always consult `docs/ARCHITE
 - `services/webvnc-proxy/` — Go + Bun + Huma v2. Server-side RFB 3.8 VNC auth proxy + WS ↔ `WireRelay.TunnelStream` bridge + target CRUD.
 - `services/webview-engine/` — Go + Bun + Huma v2 (single replica in v1, `OwnershipProvider` seam). Native MBAP Modbus codec, per-device stream pool & coalescer, demand-driven scheduler, TimescaleDB `HistoryStore`, latch/re-arm alarm engine.
 - `frontend/` — Vue 3.5 + TypeScript + Vite 8 + Pinia + Tailwind CSS v4 + ECharts + `@novnc/novnc`. Three-surface modular SPA (`OperatorLayout`, lazy `SiteAdminLayout`, lazy `PlatformAdminLayout`).
-- `db/oltp/` & `db/tsdb/` — One-shot bootstrap migrators for PostgreSQL 18 (OLTP) and TimescaleDB 2.32-pg17 (TSDB). Per-service OLTP tables live in embedded `goose` migrations inside each service.
+- `db/oltp/` & `db/tsdb/` — One-shot bootstrap migrators for PostgreSQL 18 (OLTP) and TimescaleDB 2.32-pg18 (TSDB). Per-service OLTP tables live in embedded `goose` migrations inside each service.
 - `deploy/` — Production & dev Docker Compose stacks, Traefik v3.7 configs, nginx SPA config, `.env.example`.
 
 ## Non-Negotiable Architectural Rules

@@ -10,7 +10,7 @@ name: wiredeck-local
 
 services:
   postgres-oltp:
-    image: postgres:18-alpine
+    image: postgres:18.7-alpine
     container_name: wiredeck-local-postgres-oltp
     networks: [wiredeck-control]
     environment:
@@ -48,7 +48,7 @@ services:
           path: ../db/oltp
 
   postgres-tsdb:
-    image: timescale/timescaledb:2.32.0-pg17
+    image: timescale/timescaledb:2.32.1-pg18
     container_name: wiredeck-local-postgres-tsdb
     networks: [wiredeck-control]
     environment:
@@ -56,7 +56,7 @@ services:
       POSTGRES_PASSWORD: ${TSDB_ADMIN_PASSWORD:-localtsdbadmin}
       POSTGRES_DB: wiredeck_history
     volumes:
-      - postgres_tsdb_local:/var/lib/postgresql/data
+      - postgres_tsdb_local:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${TSDB_ADMIN_USER:-postgres} -d wiredeck_history"]
       interval: 5s

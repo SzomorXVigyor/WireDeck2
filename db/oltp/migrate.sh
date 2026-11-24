@@ -1,5 +1,5 @@
 #!/bin/sh
-# One-shot bootstrap migrator for postgres-oltp (PostgreSQL 18).
+# One-shot bootstrap migrator for postgres-oltp (PostgreSQL 18.7).
 # Creates extensions, per-service schemas, and least-privilege service roles.
 # Each Go service runs its own embedded goose table migrations on startup as its own role.
 set -eu

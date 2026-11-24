@@ -19,7 +19,7 @@ services:
   # Datastores (Separated OLTP + TSDB on wiredeck-control only)
   # ---------------------------------------------------------------------------
   postgres-oltp:
-    image: postgres:18-alpine
+    image: postgres:18.7-alpine
     container_name: wiredeck-postgres-oltp
     networks: [wiredeck-control]
     logging: *default-logging
@@ -57,7 +57,7 @@ services:
     restart: "no"
 
   postgres-tsdb:
-    image: timescale/timescaledb:2.32.0-pg17
+    image: timescale/timescaledb:2.32.1-pg18
     container_name: wiredeck-postgres-tsdb
     networks: [wiredeck-control]
     logging: *default-logging
@@ -68,7 +68,7 @@ services:
       POSTGRES_PASSWORD: ${TSDB_ADMIN_PASSWORD}
       POSTGRES_DB: wiredeck_history
     volumes:
-      - postgres_tsdb_data:/var/lib/postgresql/data
+      - postgres_tsdb_data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${TSDB_ADMIN_USER} -d wiredeck_history"]
       interval: 10s
