@@ -1,0 +1,152 @@
+name: Build & Publish Containers
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Optional version override (default: vYY.MM-DDhhmm UTC)"
+        required: false
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  REGISTRY: ghcr.io
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  prepare:
+    name: Compute Build Version & Metadata
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      owner: ${{ steps.meta.outputs.owner }}
+    steps:
+      - name: Compute version and lowercase GHCR owner
+        id: meta
+        shell: bash
+        run: |
+          VER="${{ inputs.version }}"
+          if [ -z "$VER" ]; then
+            VER="v$(date -u +%y.%m-%d%H%M)"
+          fi
+          OWNER="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          echo "version=${VER}" >> "$GITHUB_OUTPUT"
+          echo "owner=${OWNER}" >> "$GITHUB_OUTPUT"
+          echo "Release version: ${VER} (ghcr.io/${OWNER}/wiredeck-*)"
+
+  test:
+    name: Run Go & Frontend Checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run Go unit tests
+        run: go test -race ./pkg/... ./services/...
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install frontend dependencies & typecheck
+        working-directory: frontend
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm type-check
+
+  build-and-publish:
+    name: Container (${{ matrix.name }})
+    needs: [prepare, test]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: core-iam
+            context: .
+            file: services/core-iam/Dockerfile
+          - name: runner-orchestrator
+            context: .
+            file: services/runner-orchestrator/Dockerfile
+          - name: webview-engine
+            context: .
+            file: services/webview-engine/Dockerfile
+          - name: webvnc-proxy
+            context: .
+            file: services/webvnc-proxy/Dockerfile
+          - name: frontend
+            context: ./frontend
+            file: frontend/Dockerfile
+          - name: oltp-migrator
+            context: ./db/oltp
+            file: db/oltp/Dockerfile
+          - name: tsdb-migrator
+            context: ./db/tsdb
+            file: db/tsdb/Dockerfile
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ needs.prepare.outputs.owner }}/wiredeck-${{ matrix.name }}
+          tags: |
+            type=raw,value=${{ needs.prepare.outputs.version }},enable=${{ github.event_name != 'pull_request' }}
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable=${{ github.event_name != 'pull_request' }}
+          labels: |
+            org.opencontainers.image.title=WireDeck ${{ matrix.name }}
+            org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
+
+      - name: Build and push container image
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          push: ${{ github.event_name != 'pull_request' }}
+          build-args: |
+            APP_VERSION=${{ needs.prepare.outputs.version }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
