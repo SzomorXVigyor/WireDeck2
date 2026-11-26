@@ -1561,6 +1561,7 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
         <!-- Live End-Result Tile Canvas (Exact same grid & tiles as WebView) -->
         <DashboardTileGrid
           :widgets="selectedDash.widgets"
+          :site-id="siteId"
           :layout="selectedDash.layout"
           :mappings-by-id="mappingMap"
           :can-write="true"

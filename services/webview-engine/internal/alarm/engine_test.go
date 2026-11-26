@@ -86,6 +86,20 @@ func (m *memRepo) InsertEvent(_ context.Context, evt *models.AlarmEvent) error {
 	return nil
 }
 
+func (m *memRepo) UpdateEventMetrics(_ context.Context, eventID uuid.UUID, lastVal float64, peakDelta float64, stale bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if ev, ok := m.events[eventID]; ok {
+		lv := lastVal
+		pd := peakDelta
+		ev.LastValue = &lv
+		ev.PeakDelta = &pd
+		ev.IsStale = stale
+		m.events[eventID] = ev
+	}
+	return nil
+}
+
 func (m *memRepo) ClearEvent(_ context.Context, eventID uuid.UUID, clearedAt time.Time, clearedVal *float64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -404,5 +418,55 @@ func TestDropSiteActiveAlarmsOnWebviewDisabled(t *testing.T) {
 	}
 	if siteBActive != 1 {
 		t.Fatalf("expected 1 active event preserved on siteB, got %d", siteBActive)
+	}
+}
+
+func TestEngineTracksCurrentValueAndPeakDelta(t *testing.T) {
+	ctx := context.Background()
+	siteID := uuid.New()
+	mapID := uuid.New()
+	rule := models.AlarmRule{
+		ID:                uuid.New(),
+		SiteID:            siteID,
+		RegisterMappingID: mapID,
+		Name:              "High Temp",
+		Condition:         models.AlarmCondGT,
+		Threshold:         80,
+		ClearDeadband:     5,
+		Severity:          models.AlarmSeverityCritical,
+		IsActive:          true,
+	}
+	repo := newMemRepo(rule)
+	eng := NewEngine(repo, nil, nil, nil)
+	if err := eng.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer eng.Shutdown(ctx)
+
+	mapping := models.RegisterMapping{ID: mapID, SiteID: siteID, Name: "Boiler Temp"}
+	t0 := time.Now().UTC()
+
+	// Trigger at 84 -> delta +4
+	eng.EvaluateSample(ctx, mapping, "GOOD", ptr(84), t0)
+	// Spike to 95 -> current 95, peak delta +15
+	eng.EvaluateSample(ctx, mapping, "GOOD", ptr(95), t0.Add(time.Second))
+	// Drop into deadband (78, still latched since clear <= 75) -> current 78, peak delta remains +15
+	eng.EvaluateSample(ctx, mapping, "GOOD", ptr(78), t0.Add(2*time.Second))
+
+	repo.mu.Lock()
+	var ev models.AlarmEvent
+	for _, e := range repo.events {
+		ev = e
+	}
+	repo.mu.Unlock()
+
+	if ev.TriggeredValue != 84 {
+		t.Fatalf("expected TriggeredValue=84, got %v", ev.TriggeredValue)
+	}
+	if ev.LastValue == nil || *ev.LastValue != 78 {
+		t.Fatalf("expected LastValue=78, got %v", ev.LastValue)
+	}
+	if ev.PeakDelta == nil || *ev.PeakDelta != 15 {
+		t.Fatalf("expected PeakDelta=15, got %v", ev.PeakDelta)
 	}
 }

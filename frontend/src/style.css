@@ -271,6 +271,17 @@ html.light textarea {
   grid-row: span 2;
 }
 
+.wd-tile-xl {
+  grid-column: span 2;
+  grid-row: span 2;
+}
+
+@container tile-canvas (min-width: 560px) {
+  .wd-tile-xl {
+    grid-column: span 4;
+  }
+}
+
 /* Tile architectural crispness and subtle light-mode elevation */
 .wd-tile-surface {
   position: relative;

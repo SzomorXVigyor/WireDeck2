@@ -32,6 +32,7 @@ type Repository interface {
 	DeletePendingState(ctx context.Context, ruleID uuid.UUID) error
 	DeleteSitePendingStates(ctx context.Context, siteID uuid.UUID) error
 	InsertEvent(ctx context.Context, evt *models.AlarmEvent) error
+	UpdateEventMetrics(ctx context.Context, eventID uuid.UUID, lastVal float64, peakDelta float64, stale bool) error
 	ClearEvent(ctx context.Context, eventID uuid.UUID, clearedAt time.Time, clearedVal *float64) error
 	DeleteSiteActiveEvents(ctx context.Context, siteID uuid.UUID) (int64, error)
 	MarkEventStale(ctx context.Context, eventID uuid.UUID, stale bool) error
@@ -89,14 +90,26 @@ func (r *BunRepository) InsertEvent(ctx context.Context, evt *models.AlarmEvent)
 	return err
 }
 
-func (r *BunRepository) ClearEvent(ctx context.Context, eventID uuid.UUID, clearedAt time.Time, clearedVal *float64) error {
+func (r *BunRepository) UpdateEventMetrics(ctx context.Context, eventID uuid.UUID, lastVal float64, peakDelta float64, stale bool) error {
 	_, err := r.db.NewUpdate().Model((*models.AlarmEvent)(nil)).
+		Set("last_value = ?", lastVal).
+		Set("peak_delta = ?", peakDelta).
+		Set("is_stale = ?", stale).
+		Where("id = ?", eventID).
+		Exec(ctx)
+	return err
+}
+
+func (r *BunRepository) ClearEvent(ctx context.Context, eventID uuid.UUID, clearedAt time.Time, clearedVal *float64) error {
+	q := r.db.NewUpdate().Model((*models.AlarmEvent)(nil)).
 		Set("state = ?", models.AlarmStateCleared).
 		Set("cleared_at = ?", clearedAt).
 		Set("cleared_value = ?", clearedVal).
-		Set("is_stale = FALSE").
-		Where("id = ?", eventID).
-		Exec(ctx)
+		Set("is_stale = FALSE")
+	if clearedVal != nil {
+		q = q.Set("last_value = ?", *clearedVal)
+	}
+	_, err := q.Where("id = ?", eventID).Exec(ctx)
 	return err
 }
 
@@ -231,6 +244,28 @@ func IsCleared(cond string, v, threshold, deadband float64) bool {
 		return math.Abs(v-threshold) <= floatEps
 	default:
 		return true
+	}
+}
+
+// ViolationDelta computes the signed delta from threshold when v is on the violating side of the condition.
+func ViolationDelta(cond string, v, threshold float64) (float64, bool) {
+	switch cond {
+	case models.AlarmCondGT, models.AlarmCondGTE:
+		if v >= threshold {
+			return v - threshold, true
+		}
+		return 0, false
+	case models.AlarmCondLT, models.AlarmCondLTE:
+		if v <= threshold {
+			return v - threshold, true
+		}
+		return 0, false
+	case models.AlarmCondEQ:
+		return 0, true
+	case models.AlarmCondNEQ:
+		return v - threshold, true
+	default:
+		return v - threshold, true
 	}
 }
 
@@ -491,6 +526,7 @@ func (e *Engine) evaluateRuleSample(ctx context.Context, rule models.AlarmRule, 
 			activeEvt.State = models.AlarmStateCleared
 			activeEvt.ClearedAt = &ts
 			activeEvt.ClearedValue = &clearedVal
+			activeEvt.LastValue = &clearedVal
 			activeEvt.IsStale = false
 
 			e.mu.Lock()
@@ -517,17 +553,38 @@ func (e *Engine) evaluateRuleSample(ctx context.Context, rule models.AlarmRule, 
 			return
 		}
 
-		// Still active and violating (or inside deadband): un-stale if previously stale.
-		if activeEvt.IsStale {
-			if err := e.repo.MarkEventStale(ctx, activeEvt.ID, false); err != nil {
-				slog.Warn("alarm_unstale_failed", "event_id", activeEvt.ID, "error", err)
+		// Still active and violating (or inside deadband): update current value, peak delta, and un-stale.
+		curLast := activeEvt.TriggeredValue
+		if activeEvt.LastValue != nil {
+			curLast = *activeEvt.LastValue
+		}
+		curPeak := activeEvt.TriggeredValue - rule.Threshold
+		if activeEvt.PeakDelta != nil {
+			curPeak = *activeEvt.PeakDelta
+		}
+		nextPeak := curPeak
+		if d, ok := ViolationDelta(rule.Condition, val, rule.Threshold); ok && math.Abs(d) > math.Abs(curPeak) {
+			nextPeak = d
+		}
+		valChanged := activeEvt.LastValue == nil || math.Abs(val-curLast) > floatEps
+		peakChanged := activeEvt.PeakDelta == nil || math.Abs(nextPeak-curPeak) > floatEps
+		wasStale := activeEvt.IsStale
+		if wasStale || valChanged || peakChanged {
+			if err := e.repo.UpdateEventMetrics(ctx, activeEvt.ID, val, nextPeak, false); err != nil {
+				slog.Warn("alarm_update_metrics_failed", "event_id", activeEvt.ID, "error", err)
 				return
 			}
+			vCopy := val
+			pCopy := nextPeak
+			activeEvt.LastValue = &vCopy
+			activeEvt.PeakDelta = &pCopy
 			activeEvt.IsStale = false
 			e.mu.Lock()
 			e.activeByRule[rule.ID] = activeEvt
 			e.mu.Unlock()
-			e.emit(activeEvt.SiteID, activeEvt)
+			if wasStale {
+				e.emit(activeEvt.SiteID, activeEvt)
+			}
 		}
 		return
 	}
@@ -576,6 +633,8 @@ func (e *Engine) evaluateRuleSample(ctx context.Context, rule models.AlarmRule, 
 	// Latch ACTIVE!
 	ruleID := rule.ID
 	mapID := rule.RegisterMappingID
+	initLast := val
+	initPeak := val - rule.Threshold
 	evt := models.AlarmEvent{
 		ID:                uuid.New(),
 		SiteID:            rule.SiteID,
@@ -591,6 +650,8 @@ func (e *Engine) evaluateRuleSample(ctx context.Context, rule models.AlarmRule, 
 		IsStale:           false,
 		TriggeredAt:       ts,
 		TriggeredValue:    val,
+		LastValue:         &initLast,
+		PeakDelta:         &initPeak,
 	}
 	if err := e.repo.InsertEvent(ctx, &evt); err != nil {
 		slog.Warn("alarm_insert_event_failed", "rule_id", rule.ID, "error", err)

@@ -1077,7 +1077,7 @@ func NewPublicRouter(svc *engine.Service, hub *engine.TelemetryHub, verifier *au
 		DashboardID uuid.UUID `path:"dashboardId" format:"uuid"`
 		Body        struct {
 			Name              string         `json:"name" minLength:"1" maxLength:"100"`
-			WidgetType        string         `json:"widgetType" enum:"lamp,display,switch,button,number_input"`
+			WidgetType        string         `json:"widgetType" enum:"lamp,display,switch,button,number_input,graph"`
 			RegisterMappingID *uuid.UUID     `json:"registerMappingId,omitempty" format:"uuid"`
 			SortOrder         int            `json:"sortOrder,omitempty"`
 			Style             map[string]any `json:"style,omitempty"`
@@ -1137,7 +1137,7 @@ func NewPublicRouter(svc *engine.Service, hub *engine.TelemetryHub, verifier *au
 		WidgetID uuid.UUID `path:"widgetId" format:"uuid"`
 		Body     struct {
 			Name              *string        `json:"name,omitempty" minLength:"1" maxLength:"100"`
-			WidgetType        *string        `json:"widgetType,omitempty" enum:"lamp,display,switch,button,number_input"`
+			WidgetType        *string        `json:"widgetType,omitempty" enum:"lamp,display,switch,button,number_input,graph"`
 			RegisterMappingID *uuid.UUID     `json:"registerMappingId,omitempty" format:"uuid"`
 			SortOrder         *int           `json:"sortOrder,omitempty"`
 			Style             map[string]any `json:"style,omitempty"`

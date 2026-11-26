@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { LayoutGrid, Pencil, RefreshCw, Wifi, WifiOff } from 'lucide-vue-next'
+import { LayoutGrid, Pencil, RefreshCw } from 'lucide-vue-next'
 import { apiRequest } from '../../services/api'
 import { useSiteStore } from '../../stores/sites'
 import { useToastStore } from '../../stores/toast'
 import { useWebviewStore } from '../../stores/webview'
 import type { RegisterMapping, WebviewDashboard, WebviewWorkspace } from '../../types/webview'
+import { extractWidgetMappingIds } from '../../utils/tiles'
 import DashboardTileGrid from '../../components/webview/DashboardTileGrid.vue'
 
 const route = useRoute()
@@ -57,10 +58,15 @@ function syncSubscriptions() {
     webviewStore.disconnect()
     return
   }
-  const ids = dash.widgets
-    .map((w) => w.registerMappingId || '')
-    .filter((id) => Boolean(id && mappingsById.value[id]))
-  webviewStore.connect(siteId.value, ids, dash.pollIntervalMs || 1000)
+  const uniqueIds = new Set<string>()
+  for (const w of dash.widgets) {
+    for (const id of extractWidgetMappingIds(w)) {
+      if (id && mappingsById.value[id]) {
+        uniqueIds.add(id)
+      }
+    }
+  }
+  webviewStore.connect(siteId.value, Array.from(uniqueIds), dash.pollIntervalMs || 1000)
 }
 
 async function loadWorkspace() {
@@ -92,11 +98,51 @@ async function handleWrite(mappingId: string, value: number, pulseMs?: number) {
   }
 }
 
+const reportedBadErrors = new Set<string>()
+
+watch(
+  () => webviewStore.samples,
+  (samplesMap) => {
+    const dash = activeDashboard.value
+    if (!dash || !samplesMap) return
+    const activeIds = new Set<string>()
+    for (const w of dash.widgets) {
+      for (const id of extractWidgetMappingIds(w)) {
+        activeIds.add(id)
+      }
+    }
+    const currentBadKeys = new Set<string>()
+    for (const id of activeIds) {
+      const sample = samplesMap[id]
+      if (!sample) continue
+      if (sample.quality === 'BAD') {
+        const msg = sample.error?.trim() || 'Unable to read telemetry from device.'
+        const mapping = mappingsById.value[id]
+        const key = `${mapping?.deviceId || id}:${msg}`
+        currentBadKeys.add(key)
+        if (!reportedBadErrors.has(key)) {
+          reportedBadErrors.add(key)
+          toast.error(msg, 'Connection Problem')
+        }
+      }
+    }
+    for (const key of Array.from(reportedBadErrors)) {
+      if (!currentBadKeys.has(key)) {
+        reportedBadErrors.delete(key)
+      }
+    }
+  },
+)
+
 onMounted(loadWorkspace)
 watch(siteId, () => {
+  reportedBadErrors.clear()
   void loadWorkspace()
 })
-watch(routeDashboardId, syncSubscriptions)
+watch(routeDashboardId, () => {
+  reportedBadErrors.clear()
+  syncSubscriptions()
+})
 onUnmounted(() => {
   webviewStore.disconnect()
 })
@@ -133,22 +179,6 @@ onUnmounted(() => {
       </h2>
 
       <div class="flex flex-wrap items-center gap-2 text-xs">
-        <span
-          class="inline-flex h-8 items-center gap-1.5 rounded-full border px-2.5 text-[11px] font-medium"
-          :class="
-            webviewStore.connectionState === 'connected'
-              ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
-              : webviewStore.connectionState === 'connecting'
-                ? 'border-amber-500/30 bg-amber-500/10 text-amber-300'
-                : 'border-slate-700 bg-slate-900 text-slate-400'
-          "
-          :title="webviewStore.connectionError || webviewStore.connectionState"
-        >
-          <Wifi v-if="webviewStore.connectionState === 'connected'" class="h-3.5 w-3.5" />
-          <WifiOff v-else class="h-3.5 w-3.5" />
-          {{ webviewStore.connectionState }}
-        </span>
-
         <RouterLink
           v-if="canOperate"
           :to="editDashboardRoute"
@@ -193,6 +223,7 @@ onUnmounted(() => {
     <DashboardTileGrid
       v-else-if="activeDashboard"
       :widgets="activeDashboard.widgets"
+      :site-id="siteId"
       :layout="activeDashboard.layout"
       :mappings-by-id="mappingsById"
       :samples="webviewStore.samples"

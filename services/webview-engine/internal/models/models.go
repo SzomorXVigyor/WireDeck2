@@ -160,6 +160,8 @@ type AlarmEvent struct {
 	IsStale              bool       `bun:",notnull,default:false"`
 	TriggeredAt          time.Time  `bun:",notnull,default:current_timestamp"`
 	TriggeredValue       float64    `bun:",notnull"`
+	LastValue            *float64
+	PeakDelta            *float64
 	ClearedAt            *time.Time
 	ClearedValue         *float64
 	AcknowledgedAt       *time.Time

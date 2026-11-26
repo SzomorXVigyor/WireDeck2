@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/netip"
 	"strings"
 	"time"
@@ -658,6 +659,71 @@ func (s *Service) DeleteDashboard(ctx context.Context, siteID, dashboardID uuid.
 	return nil
 }
 
+func validateWidgetConfig(w *models.Widget) error {
+	w.Name = strings.TrimSpace(w.Name)
+	if w.Name == "" || len(w.Name) > 100 {
+		return errors.New("tile title must be between 1 and 100 characters")
+	}
+	if w.WidgetType != "graph" || w.Extra == nil {
+		return nil
+	}
+	if rawSeries, ok := w.Extra["series"]; ok && rawSeries != nil {
+		list, ok := rawSeries.([]any)
+		if !ok {
+			return errors.New("graph series must be a list of registers")
+		}
+		if len(list) == 0 || len(list) > 5 {
+			return errors.New("graph tile supports between 1 and 5 registers")
+		}
+		seen := make(map[string]struct{}, len(list))
+		for _, item := range list {
+			entry, ok := item.(map[string]any)
+			if !ok {
+				return errors.New("invalid graph series entry")
+			}
+			rawID, _ := entry["registerMappingId"].(string)
+			rawID = strings.TrimSpace(rawID)
+			if _, err := uuid.Parse(rawID); err != nil {
+				return errors.New("each graph series must reference a valid register")
+			}
+			if _, dup := seen[rawID]; dup {
+				return errors.New("duplicate registers are not allowed in the same graph tile")
+			}
+			seen[rawID] = struct{}{}
+			if lbl, ok := entry["label"].(string); ok && len(strings.TrimSpace(lbl)) > 64 {
+				return errors.New("graph series label must be 64 characters or fewer")
+			}
+			if u, ok := entry["unit"].(string); ok && len(strings.TrimSpace(u)) > 32 {
+				return errors.New("graph series unit must be 32 characters or fewer")
+			}
+			if rawPrec, ok := entry["precision"]; ok && rawPrec != nil {
+				if p, ok := rawPrec.(float64); !ok || math.Trunc(p) != p || p < -5 || p > 5 {
+					return errors.New("graph series precision must be an integer between -5 and 5")
+				}
+			}
+		}
+	}
+	if rawRange, ok := w.Extra["timeRange"].(string); ok && strings.TrimSpace(rawRange) != "" {
+		switch strings.TrimSpace(rawRange) {
+		case "5m", "15m", "1h", "6h", "24h", "7d":
+		default:
+			return errors.New("graph timeRange must be one of 5m, 15m, 1h, 6h, 24h, 7d")
+		}
+	}
+	yMin, hasMin := w.Extra["yMin"].(float64)
+	yMax, hasMax := w.Extra["yMax"].(float64)
+	if hasMin && (math.IsNaN(yMin) || math.IsInf(yMin, 0)) {
+		return errors.New("graph Y-axis min must be a finite number")
+	}
+	if hasMax && (math.IsNaN(yMax) || math.IsInf(yMax, 0)) {
+		return errors.New("graph Y-axis max must be a finite number")
+	}
+	if hasMin && hasMax && yMin >= yMax {
+		return errors.New("graph Y-axis min must be less than max")
+	}
+	return nil
+}
+
 func (s *Service) CreateWidget(ctx context.Context, siteID, dashboardID uuid.UUID, w *models.Widget) (*models.Widget, error) {
 	exists, err := s.db.NewSelect().Model((*models.Dashboard)(nil)).
 		Where("id = ? AND site_id = ?", dashboardID, siteID).Exists(ctx)
@@ -667,9 +733,8 @@ func (s *Service) CreateWidget(ctx context.Context, siteID, dashboardID uuid.UUI
 	cnt, _ := s.db.NewSelect().Model((*models.Widget)(nil)).Where("dashboard_id = ?", dashboardID).Count(ctx)
 	w.ID = uuid.New()
 	w.DashboardID = dashboardID
-	w.Name = strings.TrimSpace(w.Name)
-	if w.Name == "" || len(w.Name) > 100 {
-		return nil, errors.New("tile title must be between 1 and 100 characters")
+	if err := validateWidgetConfig(w); err != nil {
+		return nil, err
 	}
 	if w.SortOrder == 0 {
 		w.SortOrder = cnt
@@ -701,9 +766,8 @@ func (s *Service) UpdateWidget(ctx context.Context, siteID, widgetID uuid.UUID, 
 		return nil, err
 	}
 	patch(w)
-	w.Name = strings.TrimSpace(w.Name)
-	if w.Name == "" || len(w.Name) > 100 {
-		return nil, errors.New("tile title must be between 1 and 100 characters")
+	if err := validateWidgetConfig(w); err != nil {
+		return nil, err
 	}
 	w.UpdatedAt = time.Now().UTC()
 	if _, err := s.db.NewUpdate().Model(w).

@@ -4,6 +4,8 @@ import type {
   ColorPresetOption,
   DashboardLayoutConfig,
   FontSizeOption,
+  GraphSeriesConfig,
+  GraphTimeRange,
   TileAccent,
   TileAccentPreset,
   TileDensity,
@@ -11,13 +13,13 @@ import type {
   WebviewWidget,
 } from '../types/webview'
 
-export const TILE_SIZE_ORDER: TileSize[] = ['sm', 'wide', 'tall', 'lg']
+export const TILE_SIZE_ORDER: TileSize[] = ['sm', 'wide', 'tall', 'lg', 'xl']
 
 export interface TileSizeMeta {
   value: TileSize
   label: string
   shortLabel: string
-  cols: 1 | 2
+  cols: 1 | 2 | 4
   rows: 1 | 2
   description: string
 }
@@ -27,6 +29,26 @@ export const TILE_SIZES: TileSizeMeta[] = [
   { value: 'wide', label: 'Wide', shortLabel: '2x1', cols: 2, rows: 1, description: 'Standard wide tile' },
   { value: 'tall', label: 'Tall', shortLabel: '1x2', cols: 1, rows: 2, description: 'Vertical stacked tile' },
   { value: 'lg', label: 'Large', shortLabel: '2x2', cols: 2, rows: 2, description: 'Hero featured tile' },
+  { value: 'xl', label: 'Panoramic', shortLabel: '4x2', cols: 4, rows: 2, description: 'Extra-wide graph tile' },
+]
+
+export const MAX_GRAPH_SERIES = 5
+
+export const GRAPH_DEFAULT_SERIES_COLORS: string[] = [
+  '#38bdf8', // Sky
+  '#34d399', // Emerald
+  '#fbbf24', // Amber
+  '#fb7185', // Rose
+  '#a78bfa', // Violet
+]
+
+export const GRAPH_TIME_RANGES: { value: GraphTimeRange; label: string; shortLabel: string; ms: number }[] = [
+  { value: '5m', label: 'Last 5 minutes', shortLabel: '5m', ms: 5 * 60 * 1000 },
+  { value: '15m', label: 'Last 15 minutes', shortLabel: '15m', ms: 15 * 60 * 1000 },
+  { value: '1h', label: 'Last 1 hour', shortLabel: '1h', ms: 60 * 60 * 1000 },
+  { value: '6h', label: 'Last 6 hours', shortLabel: '6h', ms: 6 * 60 * 60 * 1000 },
+  { value: '24h', label: 'Last 24 hours', shortLabel: '24h', ms: 24 * 60 * 60 * 1000 },
+  { value: '7d', label: 'Last 7 days', shortLabel: '7d', ms: 7 * 24 * 60 * 60 * 1000 },
 ]
 
 export interface TileAccentMeta {
@@ -157,7 +179,7 @@ export function readableTextOnHex(hex: string): string {
 
 export function resolveTileSize(widget: Pick<WebviewWidget, 'style'> | undefined): TileSize {
   const raw = widget?.style?.tileSize
-  if (raw === 'sm' || raw === 'wide' || raw === 'tall' || raw === 'lg') return raw
+  if (raw === 'sm' || raw === 'wide' || raw === 'tall' || raw === 'lg' || raw === 'xl') return raw
   return 'wide'
 }
 
@@ -174,6 +196,8 @@ export function tileSizeShortLabel(size: TileSize): string {
       return '1x2'
     case 'lg':
       return '2x2'
+    case 'xl':
+      return '4x2'
     default:
       return '2x1'
   }
@@ -187,9 +211,62 @@ export function tileSlotClass(size: TileSize): string {
       return 'wd-tile-tall'
     case 'lg':
       return 'wd-tile-lg'
+    case 'xl':
+      return 'wd-tile-xl'
     default:
       return 'wd-tile-wide'
   }
+}
+
+export function resolveGraphTimeRange(raw: unknown): GraphTimeRange {
+  if (raw === '5m' || raw === '15m' || raw === '1h' || raw === '6h' || raw === '24h' || raw === '7d') {
+    return raw
+  }
+  return '1h'
+}
+
+export function graphTimeRangeMs(range: GraphTimeRange): number {
+  return GRAPH_TIME_RANGES.find((r) => r.value === range)?.ms ?? 60 * 60 * 1000
+}
+
+export function extractGraphSeries(widget: Pick<WebviewWidget, 'extra' | 'registerMappingId'> | undefined): GraphSeriesConfig[] {
+  const raw = widget?.extra?.series
+  const out: GraphSeriesConfig[] = []
+  if (Array.isArray(raw)) {
+    for (let i = 0; i < raw.length && out.length < MAX_GRAPH_SERIES; i++) {
+      const item = raw[i]
+      if (!item || typeof item !== 'object') continue
+      const rec = item as Record<string, unknown>
+      const id = typeof rec.registerMappingId === 'string' ? rec.registerMappingId.trim() : ''
+      if (!id) continue
+      const fallbackColor = GRAPH_DEFAULT_SERIES_COLORS[out.length % GRAPH_DEFAULT_SERIES_COLORS.length]
+      const color = resolveStateColorValue(rec.color, fallbackColor)
+      const label = typeof rec.label === 'string' && rec.label.trim() ? rec.label.trim() : undefined
+      const unit = typeof rec.unit === 'string' && rec.unit.trim() ? rec.unit.trim() : undefined
+      let precision: number | undefined
+      if (rec.precision !== undefined && rec.precision !== null && rec.precision !== '') {
+        const n = Number(rec.precision)
+        if (Number.isFinite(n)) {
+          precision = Math.max(-5, Math.min(5, Math.trunc(n)))
+        }
+      }
+      out.push({ registerMappingId: id, color, label, unit, precision })
+    }
+  }
+  if (out.length === 0 && widget?.registerMappingId) {
+    out.push({
+      registerMappingId: widget.registerMappingId,
+      color: GRAPH_DEFAULT_SERIES_COLORS[0],
+    })
+  }
+  return out
+}
+
+export function extractWidgetMappingIds(widget: Pick<WebviewWidget, 'widgetType' | 'registerMappingId' | 'extra'>): string[] {
+  if (widget.widgetType === 'graph') {
+    return extractGraphSeries(widget).map((s) => s.registerMappingId)
+  }
+  return widget.registerMappingId ? [widget.registerMappingId] : []
 }
 
 export function resolveTileAccent(widget: Pick<WebviewWidget, 'style'> | undefined): TileAccent {

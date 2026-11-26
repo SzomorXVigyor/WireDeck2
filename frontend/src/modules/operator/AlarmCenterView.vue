@@ -19,7 +19,7 @@ import { useAlarmStore } from '../../stores/alarms'
 import { useSiteStore } from '../../stores/sites'
 import { useToastStore } from '../../stores/toast'
 import { useWebviewStore } from '../../stores/webview'
-import type { AlarmCondition, AlarmEvent, AlarmEventsResponse, AlarmSummary } from '../../types/webview'
+import type { AlarmEvent, AlarmEventsResponse, AlarmSummary } from '../../types/webview'
 import CustomSelect, { type SelectOption } from '../../components/CustomSelect.vue'
 import TablePagination from '../../components/TablePagination.vue'
 import { usePagination } from '../../composables/usePagination'
@@ -102,29 +102,26 @@ watch(searchQuery, () => {
   eventsPag.resetPage()
 })
 
-function conditionSymbol(c: AlarmCondition): string {
-  switch (c) {
-    case 'GT':
-      return '>'
-    case 'GTE':
-      return '>='
-    case 'LT':
-      return '<'
-    case 'LTE':
-      return '<='
-    case 'EQ':
-      return '=='
-    case 'NEQ':
-      return '!='
-    default:
-      return c
-  }
-}
-
 function formatNumber(val: number | undefined | null, unit?: string): string {
   if (val === undefined || val === null || !Number.isFinite(val)) return '-'
   const txt = Number(val.toFixed(5)).toString()
   return unit ? `${txt} ${unit}` : txt
+}
+
+function formatDelta(val: number | undefined | null, unit?: string): string {
+  if (val === undefined || val === null || !Number.isFinite(val)) return '-'
+  const rounded = Number(val.toFixed(5))
+  const sign = rounded > 0 ? '+' : ''
+  const txt = `${sign}${rounded}`
+  return unit ? `${txt} ${unit}` : txt
+}
+
+function eventCurrentValue(ev: AlarmEvent): number {
+  return ev.currentValue !== undefined && ev.currentValue !== null ? ev.currentValue : ev.triggeredValue
+}
+
+function eventMaxDelta(ev: AlarmEvent): number {
+  return ev.maxDelta !== undefined && ev.maxDelta !== null ? ev.maxDelta : ev.triggeredValue - ev.threshold
 }
 
 function formatTime(iso?: string): string {
@@ -237,17 +234,22 @@ function bindLiveUpdates() {
     // Open lightweight site WebSocket (no register subscriptions needed for alarm push)
     webviewStore.connect(routeSiteId.value, [])
     unsubAlarmWS = webviewStore.subscribeAlarmEvents((ev) => {
-      if (ev.siteId === routeSiteId.value) {
+      if (ev.siteId !== routeSiteId.value) return
+      const idx = events.value.findIndex((e) => e.id === ev.id)
+      if (idx >= 0 && ev.state === events.value[idx].state) {
+        const next = [...events.value]
+        next[idx] = ev
+        events.value = next
+      } else {
         void loadAlarms(true)
       }
     })
-  } else {
-    refreshTimer = window.setInterval(() => {
-      if (!document.hidden) {
-        void loadAlarms(true)
-      }
-    }, 15000)
   }
+  refreshTimer = window.setInterval(() => {
+    if (!document.hidden && stateFilter.value !== 'CLEARED') {
+      void loadAlarms(true)
+    }
+  }, routeSiteId.value ? 5000 : 10000)
 }
 
 watch(routeSiteId, () => {
@@ -298,13 +300,6 @@ onUnmounted(() => {
       </div>
 
       <div class="flex items-center gap-2">
-        <span
-          v-if="!isGlobal && webviewStore.connectionState === 'connected'"
-          class="inline-flex h-8 items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 text-[11px] font-medium text-emerald-300"
-        >
-          <span class="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-          Live
-        </span>
         <button
           type="button"
           class="hidden h-9 items-center justify-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3.5 text-xs font-medium leading-none text-slate-200 transition hover:bg-slate-800 sm:inline-flex"
@@ -458,18 +453,36 @@ onUnmounted(() => {
             </p>
           </div>
 
-          <div class="rounded-lg border border-slate-800/80 bg-slate-950/60 px-3 py-2 font-mono text-[11px] space-y-1">
-            <p class="text-slate-100">
-              {{ formatNumber(ev.triggeredValue, ev.unit) }}
-              <span class="text-slate-400">
-                ({{ conditionSymbol(ev.condition) }} {{ formatNumber(ev.threshold, ev.unit) }})
-              </span>
-            </p>
-            <p v-if="ev.state === 'CLEARED' && ev.clearedValue !== undefined" class="text-emerald-300">
-              Cleared at {{ formatNumber(ev.clearedValue, ev.unit) }}
-            </p>
-            <p class="text-[10px] text-slate-400">Triggered: {{ formatTime(ev.triggeredAt) }}</p>
-            <p v-if="ev.clearedAt" class="text-[10px] text-slate-500">Cleared: {{ formatTime(ev.clearedAt) }}</p>
+          <div class="rounded-lg border border-slate-800/80 bg-slate-950/60 px-3 py-2 font-mono text-[11px] space-y-1.5">
+            <div class="flex items-start justify-between gap-3">
+              <div class="space-y-0.5">
+                <p>
+                  <span class="font-sans text-[10px] text-slate-500">Triggered: </span>
+                  <span class="text-slate-200">{{ formatNumber(ev.triggeredValue, ev.unit) }}</span>
+                </p>
+                <p v-if="ev.state === 'ACTIVE'">
+                  <span class="font-sans text-[10px] text-slate-500">Current: </span>
+                  <span class="font-semibold text-white">{{ formatNumber(eventCurrentValue(ev), ev.unit) }}</span>
+                </p>
+                <p v-else-if="ev.clearedValue !== undefined">
+                  <span class="font-sans text-[10px] text-slate-500">Cleared: </span>
+                  <span class="text-emerald-300">{{ formatNumber(ev.clearedValue, ev.unit) }}</span>
+                </p>
+              </div>
+              <div class="shrink-0 text-right">
+                <span class="block font-sans text-[10px] text-slate-500">Max Delta</span>
+                <span
+                  class="font-semibold"
+                  :class="ev.state === 'ACTIVE' ? 'text-rose-300' : 'text-slate-300'"
+                >
+                  {{ formatDelta(eventMaxDelta(ev), ev.unit) }}
+                </span>
+              </div>
+            </div>
+            <div class="border-t border-slate-800/70 pt-1 text-[10px] text-slate-400">
+              <p>Triggered: {{ formatTime(ev.triggeredAt) }}</p>
+              <p v-if="ev.clearedAt" class="text-slate-500">Cleared: {{ formatTime(ev.clearedAt) }}</p>
+            </div>
           </div>
 
           <div class="pt-0.5">
@@ -507,8 +520,9 @@ onUnmounted(() => {
               <th class="px-4 py-3">State</th>
               <th v-if="isGlobal" class="px-4 py-3">Site</th>
               <th class="px-4 py-3">Rule & Register</th>
-              <th class="px-4 py-3">Value / Threshold</th>
-              <th class="px-4 py-3">Triggered / Cleared</th>
+              <th class="px-4 py-3">Triggered / Current</th>
+              <th class="px-4 py-3">Max Delta</th>
+              <th class="px-4 py-3">Time</th>
               <th class="px-4 py-3">Notify</th>
               <th class="px-4 py-3 text-right">Acknowledgement</th>
             </tr>
@@ -561,16 +575,27 @@ onUnmounted(() => {
                 <p class="font-medium text-white">{{ ev.ruleName }}</p>
                 <p class="text-[11px] text-slate-400">{{ ev.registerName }}</p>
               </td>
-              <td class="whitespace-nowrap px-4 py-3 font-mono tabular-nums">
-                <p class="text-slate-100">
-                  {{ formatNumber(ev.triggeredValue, ev.unit) }}
-                  <span class="text-slate-400">
-                    ({{ conditionSymbol(ev.condition) }} {{ formatNumber(ev.threshold, ev.unit) }})
-                  </span>
+              <td class="whitespace-nowrap px-4 py-3 font-mono text-[11px] tabular-nums">
+                <p>
+                  <span class="font-sans text-[10px] text-slate-500">Triggered: </span>
+                  <span class="text-slate-200">{{ formatNumber(ev.triggeredValue, ev.unit) }}</span>
                 </p>
-                <p v-if="ev.state === 'CLEARED' && ev.clearedValue !== undefined" class="text-[11px] text-emerald-300">
-                  Cleared at {{ formatNumber(ev.clearedValue, ev.unit) }}
+                <p v-if="ev.state === 'ACTIVE'">
+                  <span class="font-sans text-[10px] text-slate-500">Current: </span>
+                  <span class="font-semibold text-white">{{ formatNumber(eventCurrentValue(ev), ev.unit) }}</span>
                 </p>
+                <p v-else-if="ev.clearedValue !== undefined">
+                  <span class="font-sans text-[10px] text-slate-500">Cleared: </span>
+                  <span class="text-emerald-300">{{ formatNumber(ev.clearedValue, ev.unit) }}</span>
+                </p>
+              </td>
+              <td class="whitespace-nowrap px-4 py-3 font-mono text-[11px] tabular-nums">
+                <span
+                  class="font-semibold"
+                  :class="ev.state === 'ACTIVE' ? 'text-rose-300' : 'text-slate-300'"
+                >
+                  {{ formatDelta(eventMaxDelta(ev), ev.unit) }}
+                </span>
               </td>
               <td class="whitespace-nowrap px-4 py-3 text-[11px] tabular-nums text-slate-300">
                 <p>{{ formatTime(ev.triggeredAt) }}</p>
@@ -616,7 +641,7 @@ onUnmounted(() => {
               </td>
             </tr>
             <tr v-if="!loading && filteredEvents.length === 0">
-              <td :colspan="isGlobal ? 8 : 7" class="px-4 py-10 text-center text-slate-500">
+              <td :colspan="isGlobal ? 9 : 8" class="px-4 py-10 text-center text-slate-500">
                 No alarms match the current filters.
               </td>
             </tr>
@@ -653,15 +678,36 @@ onUnmounted(() => {
             </button>
           </div>
 
-          <div class="rounded-lg border border-slate-800 bg-slate-950/60 p-3 text-xs space-y-1">
+          <div class="rounded-lg border border-slate-800 bg-slate-950/60 p-3 text-xs space-y-1.5">
             <p class="font-medium text-white">{{ ackTarget.ruleName }}</p>
             <p class="text-slate-400">
               {{ ackTarget.siteName }} / {{ ackTarget.registerName }}
             </p>
-            <p class="font-mono text-slate-300">
-              Triggered: {{ formatNumber(ackTarget.triggeredValue, ackTarget.unit) }}
-              ({{ conditionSymbol(ackTarget.condition) }} {{ formatNumber(ackTarget.threshold, ackTarget.unit) }})
-            </p>
+            <div class="flex items-start justify-between gap-3 pt-0.5 font-mono text-[11px]">
+              <div class="space-y-0.5">
+                <p class="text-slate-200">
+                  <span class="font-sans text-[10px] text-slate-500">Triggered: </span>
+                  {{ formatNumber(ackTarget.triggeredValue, ackTarget.unit) }}
+                </p>
+                <p v-if="ackTarget.state === 'ACTIVE'" class="font-semibold text-white">
+                  <span class="font-sans text-[10px] font-normal text-slate-500">Current: </span>
+                  {{ formatNumber(eventCurrentValue(ackTarget), ackTarget.unit) }}
+                </p>
+                <p v-else-if="ackTarget.clearedValue !== undefined" class="text-emerald-300">
+                  <span class="font-sans text-[10px] text-slate-500">Cleared: </span>
+                  {{ formatNumber(ackTarget.clearedValue, ackTarget.unit) }}
+                </p>
+              </div>
+              <div class="shrink-0 text-right">
+                <span class="block font-sans text-[10px] text-slate-500">Max Delta</span>
+                <span
+                  class="font-semibold"
+                  :class="ackTarget.state === 'ACTIVE' ? 'text-rose-300' : 'text-slate-300'"
+                >
+                  {{ formatDelta(eventMaxDelta(ackTarget), ackTarget.unit) }}
+                </span>
+              </div>
+            </div>
           </div>
 
           <div>

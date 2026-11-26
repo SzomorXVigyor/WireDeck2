@@ -55,6 +55,8 @@ type AlarmEventView struct {
 	IsStale              bool       `json:"isStale"`
 	TriggeredAt          time.Time  `json:"triggeredAt"`
 	TriggeredValue       float64    `json:"triggeredValue"`
+	CurrentValue         *float64   `json:"currentValue,omitempty"`
+	MaxDelta             *float64   `json:"maxDelta,omitempty"`
 	ClearedAt            *time.Time `json:"clearedAt,omitempty"`
 	ClearedValue         *float64   `json:"clearedValue,omitempty"`
 	AcknowledgedAt       *time.Time `json:"acknowledgedAt,omitempty"`
@@ -116,6 +118,16 @@ func (s *Service) ToAlarmEventView(ev models.AlarmEvent) AlarmEventView {
 	if s.cache != nil {
 		siteName = s.cache.SiteName(ev.SiteID)
 	}
+	curVal := ev.LastValue
+	if curVal == nil {
+		v := ev.TriggeredValue
+		curVal = &v
+	}
+	maxDelta := ev.PeakDelta
+	if maxDelta == nil {
+		d := ev.TriggeredValue - ev.Threshold
+		maxDelta = &d
+	}
 	return AlarmEventView{
 		ID:                   ev.ID,
 		SiteID:               ev.SiteID,
@@ -132,6 +144,8 @@ func (s *Service) ToAlarmEventView(ev models.AlarmEvent) AlarmEventView {
 		IsStale:              ev.IsStale,
 		TriggeredAt:          ev.TriggeredAt,
 		TriggeredValue:       ev.TriggeredValue,
+		CurrentValue:         curVal,
+		MaxDelta:             maxDelta,
 		ClearedAt:            ev.ClearedAt,
 		ClearedValue:         ev.ClearedValue,
 		AcknowledgedAt:       ev.AcknowledgedAt,

@@ -3,6 +3,7 @@ import { ref, shallowRef } from 'vue'
 import { apiRequest } from '../services/api'
 import type { AlarmEvent, TelemetrySample, WebviewDashboard, WebviewWorkspace } from '../types/webview'
 import { useAlarmStore } from './alarms'
+import { useToastStore } from './toast'
 
 export const useWebviewStore = defineStore('webview', () => {
   const connectionState = ref<'disconnected' | 'connecting' | 'connected' | 'error'>('disconnected')
@@ -26,6 +27,7 @@ export const useWebviewStore = defineStore('webview', () => {
   let reconnectTimer: number | null = null
   let intentionalClose = false
   let visibilityBound = false
+  let connectionErrorNotified = false
 
   async function fetchSiteDashboards(siteId: string): Promise<WebviewDashboard[]> {
     if (!siteId) return []
@@ -89,6 +91,7 @@ export const useWebviewStore = defineStore('webview', () => {
     }
     activeSiteId = ''
     subscribedIds = []
+    connectionErrorNotified = false
     connectionState.value = 'disconnected'
     connectionError.value = ''
   }
@@ -122,6 +125,7 @@ export const useWebviewStore = defineStore('webview', () => {
         if (ws !== sock) return
         connectionState.value = 'connected'
         connectionError.value = ''
+        connectionErrorNotified = false
         if (!document.hidden && subscribedIds.length > 0) {
           sock.send(JSON.stringify({ type: 'subscribe', mappingIds: subscribedIds, pollIntervalMs: activePollIntervalMs }))
         }
@@ -163,6 +167,13 @@ export const useWebviewStore = defineStore('webview', () => {
         clearTimers()
         if (!intentionalClose && activeSiteId === siteId) {
           connectionState.value = 'error'
+          if (!connectionErrorNotified) {
+            connectionErrorNotified = true
+            useToastStore().error(
+              connectionError.value || 'Connection to live telemetry lost. Reconnecting...',
+              'Connection Problem',
+            )
+          }
           reconnectTimer = window.setTimeout(() => {
             if (!intentionalClose && activeSiteId === siteId) {
               void openSocket(siteId)
@@ -174,6 +185,10 @@ export const useWebviewStore = defineStore('webview', () => {
       connectionState.value = 'error'
       connectionError.value = err instanceof Error ? err.message : 'Failed to connect telemetry stream'
       if (!intentionalClose && activeSiteId === siteId) {
+        if (!connectionErrorNotified) {
+          connectionErrorNotified = true
+          useToastStore().error(err, 'Connection Problem')
+        }
         reconnectTimer = window.setTimeout(() => {
           if (!intentionalClose && activeSiteId === siteId) {
             void openSocket(siteId)

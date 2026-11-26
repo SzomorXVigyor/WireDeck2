@@ -5,11 +5,15 @@ import WidgetLamp from './WidgetLamp.vue'
 import WidgetSwitch from './WidgetSwitch.vue'
 import WidgetButton from './WidgetButton.vue'
 import WidgetNumberInput from './WidgetNumberInput.vue'
+import WidgetGraph from './WidgetGraph.vue'
 
 defineProps<{
   widget: WebviewWidget
+  siteId?: string
   mapping?: RegisterMapping
+  mappingsById?: Record<string, RegisterMapping>
   sample?: TelemetrySample
+  samples?: Record<string, TelemetrySample>
   canWrite: boolean
   preview?: boolean
   previewState?: boolean
@@ -65,5 +69,13 @@ const emit = defineEmits<{
     :can-write="canWrite"
     :preview="preview"
     @write="(mid, val) => emit('write', mid, val)"
+  />
+  <WidgetGraph
+    v-else-if="widget.widgetType === 'graph'"
+    :widget="widget"
+    :site-id="siteId"
+    :mappings-by-id="mappingsById"
+    :samples="samples"
+    :preview="preview"
   />
 </template>

@@ -510,7 +510,7 @@ onUnmounted(() => {
         <button
           v-if="preset !== 'custom' && selectedIds.length > 0"
           type="button"
-          class="inline-flex h-9 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition"
+          class="inline-flex h-9 items-center gap-1.5 rounded-lg border px-3 text-xs font-medium transition"
           :class="
             autoRefresh
               ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-200 hover:bg-emerald-500/25'
@@ -519,13 +519,9 @@ onUnmounted(() => {
           :title="autoRefresh ? `Auto-updating every ${Math.round(autoRefreshIntervalMs / 1000)}s` : 'Auto-update paused'"
           @click="autoRefresh = !autoRefresh"
         >
-          <span
-            v-if="autoRefresh"
-            class="h-2 w-2 rounded-full bg-emerald-400 animate-pulse"
-          />
-          <Pause v-if="autoRefresh" class="h-3 w-3" />
-          <Play v-else class="h-3 w-3" />
-          <span>{{ autoRefresh ? `Live ${Math.round(autoRefreshIntervalMs / 1000)}s` : 'Paused' }}</span>
+          <Play v-if="autoRefresh" class="h-3 w-3 fill-current" />
+          <Pause v-else class="h-3 w-3" />
+          <span>{{ autoRefresh ? 'Live' : 'Paused' }}</span>
         </button>
 
         <button

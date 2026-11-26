@@ -46,15 +46,24 @@ export interface HistoryEntry {
   createdAt: string
 }
 
-export type WidgetType = 'display' | 'lamp' | 'switch' | 'button' | 'number_input'
+export type WidgetType = 'display' | 'lamp' | 'switch' | 'button' | 'number_input' | 'graph'
+export type GraphTimeRange = '5m' | '15m' | '1h' | '6h' | '24h' | '7d'
 export type FontSizeOption = 'sm' | 'md' | 'lg' | 'xl'
 export type LampMode = 'off' | 'blink' | 'on'
 export type ColorPresetOption = 'tile_accent' | 'emerald' | 'sky' | 'rose' | 'amber' | 'slate' | 'indigo'
 export type ColorOption = ColorPresetOption | (string & {})
-export type TileSize = 'sm' | 'wide' | 'tall' | 'lg'
+export type TileSize = 'sm' | 'wide' | 'tall' | 'lg' | 'xl'
 export type TileAccentPreset = 'default' | 'sky' | 'emerald' | 'amber' | 'rose' | 'indigo'
 export type TileAccent = TileAccentPreset | (string & {})
 export type TileDensity = 'compact' | 'comfortable' | 'spacious'
+
+export interface GraphSeriesConfig {
+  registerMappingId: string
+  color: ColorOption
+  label?: string
+  unit?: string
+  precision?: number
+}
 
 export interface DashboardLayoutConfig {
   density?: TileDensity
@@ -195,6 +204,8 @@ export interface AlarmEvent {
   isStale: boolean
   triggeredAt: string
   triggeredValue: number
+  currentValue?: number
+  maxDelta?: number
   clearedAt?: string
   clearedValue?: number
   acknowledgedAt?: string

@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { Trash2, X } from 'lucide-vue-next'
+import { Pencil, Plus, Trash2, X } from 'lucide-vue-next'
 import type {
   ColorOption,
   FontSizeOption,
+  GraphSeriesConfig,
+  GraphTimeRange,
   LampMode,
   LampStateConfig,
   RegisterMapping,
@@ -16,7 +18,13 @@ import type {
 } from '../../types/webview'
 import { clampPrecision, effectiveDisplayBounds } from '../../utils/precision'
 import {
+  extractGraphSeries,
+  GRAPH_DEFAULT_SERIES_COLORS,
+  GRAPH_TIME_RANGES,
+  MAX_GRAPH_SERIES,
+  resolveGraphTimeRange,
   resolveStateColorValue,
+  resolveStateVisual,
   resolveTileAccent,
   resolveTileAccentHex,
   resolveTileSize,
@@ -69,7 +77,13 @@ const TILE_TYPE_OPTIONS: SelectOption<WidgetType>[] = [
   { value: 'switch', label: 'Switch' },
   { value: 'button', label: 'Button' },
   { value: 'number_input', label: 'Number Input' },
+  { value: 'graph', label: 'Graph' },
 ]
+
+const GRAPH_RANGE_OPTIONS: SelectOption<GraphTimeRange>[] = GRAPH_TIME_RANGES.map((r) => ({
+  value: r.value,
+  label: r.label,
+}))
 
 const FONT_SIZE_OPTIONS: SelectOption<FontSizeOption>[] = [
   { value: 'sm', label: 'Small' },
@@ -114,6 +128,131 @@ const widBtnLabel = ref('Trigger')
 const widBtnTriggeredLabel = ref('Triggered...')
 const widBtnTriggerMs = ref('1000')
 
+// Graph (up to 5 registers, Y-axis scale, time range, per-variable color/unit/precision)
+interface GraphSeriesDraft {
+  uid: number
+  registerMappingId: string
+  color: ColorOption
+  label: string
+  unit: string
+  precision: string
+}
+let graphSeriesSeq = 1
+const widGraphSeries = ref<GraphSeriesDraft[]>([])
+const widGraphTimeRange = ref<GraphTimeRange>('1h')
+const widGraphYMin = ref('')
+const widGraphYMax = ref('')
+const widGraphSmooth = ref(false)
+
+// Separate Graph Register Edit Modal state
+const seriesModalOpen = ref(false)
+const editingSeriesUid = ref<number | null>(null)
+const seriesDraftMappingId = ref('')
+const seriesDraftLabel = ref('')
+const seriesDraftColor = ref<ColorOption>(GRAPH_DEFAULT_SERIES_COLORS[0])
+const seriesDraftUnit = ref('')
+const seriesDraftPrecision = ref('')
+const seriesDraftSubmitted = ref(false)
+const seriesDraftTouched = ref<Record<string, boolean>>({})
+
+const seriesDraftMapping = computed(() =>
+  seriesDraftMappingId.value ? mappingsById.value[seriesDraftMappingId.value] ?? null : null,
+)
+
+const seriesDraftErrors = computed(() => {
+  let mappingErr: string | null = null
+  if (!seriesDraftMappingId.value) {
+    mappingErr = 'Please select a register.'
+  } else {
+    const dup = widGraphSeries.value.some(
+      (s) => s.uid !== editingSeriesUid.value && s.registerMappingId === seriesDraftMappingId.value,
+    )
+    if (dup) {
+      mappingErr = 'This register is already added to the graph.'
+    }
+  }
+  return {
+    mappingId: mappingErr,
+    label: validateOptionalText(seriesDraftLabel.value, 'Legend label', 64),
+    unit: validateOptionalText(seriesDraftUnit.value, 'Unit', 32),
+    precision: validateIntegerRange(seriesDraftPrecision.value, 'Decimal places', -5, 5, { required: false }),
+  }
+})
+
+function showSeriesDraftErr(field: 'mappingId' | 'label' | 'unit' | 'precision'): string | null {
+  return seriesDraftSubmitted.value || seriesDraftTouched.value[field] ? seriesDraftErrors.value[field] : null
+}
+
+function openAddGraphSeriesModal() {
+  if (widGraphSeries.value.length >= MAX_GRAPH_SERIES) return
+  const usedIds = new Set(widGraphSeries.value.map((s) => s.registerMappingId).filter(Boolean))
+  editingSeriesUid.value = null
+  seriesDraftMappingId.value = props.mappings.find((m) => !usedIds.has(m.id))?.id || ''
+  seriesDraftLabel.value = ''
+  seriesDraftColor.value =
+    GRAPH_DEFAULT_SERIES_COLORS[widGraphSeries.value.length % GRAPH_DEFAULT_SERIES_COLORS.length]
+  seriesDraftUnit.value = ''
+  seriesDraftPrecision.value = ''
+  seriesDraftSubmitted.value = false
+  seriesDraftTouched.value = {}
+  seriesModalOpen.value = true
+}
+
+function openEditGraphSeriesModal(row: GraphSeriesDraft) {
+  editingSeriesUid.value = row.uid
+  seriesDraftMappingId.value = row.registerMappingId
+  seriesDraftLabel.value = row.label
+  seriesDraftColor.value = row.color
+  seriesDraftUnit.value = row.unit
+  seriesDraftPrecision.value = row.precision
+  seriesDraftSubmitted.value = false
+  seriesDraftTouched.value = {}
+  seriesModalOpen.value = true
+}
+
+function saveGraphSeriesModal() {
+  seriesDraftSubmitted.value = true
+  const err = firstError(seriesDraftErrors.value)
+  if (err) {
+    toast.error(err, 'Validation Error')
+    return
+  }
+  const normalizedPrecision =
+    seriesDraftPrecision.value.trim() !== '' ? String(clampPrecision(seriesDraftPrecision.value)) : ''
+  if (editingSeriesUid.value !== null) {
+    widGraphSeries.value = widGraphSeries.value.map((s) =>
+      s.uid === editingSeriesUid.value
+        ? {
+            ...s,
+            registerMappingId: seriesDraftMappingId.value,
+            label: seriesDraftLabel.value.trim(),
+            color: seriesDraftColor.value,
+            unit: seriesDraftUnit.value.trim(),
+            precision: normalizedPrecision,
+          }
+        : s,
+    )
+  } else {
+    widGraphSeries.value = [
+      ...widGraphSeries.value,
+      {
+        uid: graphSeriesSeq++,
+        registerMappingId: seriesDraftMappingId.value,
+        label: seriesDraftLabel.value.trim(),
+        color: seriesDraftColor.value,
+        unit: seriesDraftUnit.value.trim(),
+        precision: normalizedPrecision,
+      },
+    ]
+  }
+  seriesModalOpen.value = false
+}
+
+function removeGraphSeriesRow(uid: number) {
+  if (widGraphSeries.value.length <= 1) return
+  widGraphSeries.value = widGraphSeries.value.filter((s) => s.uid !== uid)
+}
+
 // Preview interactive state for Lamp, Switch & Button
 const previewBoolState = ref(true)
 const previewBtnTriggered = ref(false)
@@ -121,6 +260,13 @@ const submitted = ref(false)
 const touched = ref<Record<string, boolean>>({})
 
 const isEditing = computed(() => Boolean(props.widget))
+const mappingsById = computed<Record<string, RegisterMapping>>(() => {
+  const out: Record<string, RegisterMapping> = {}
+  for (const m of props.mappings) {
+    out[m.id] = m
+  }
+  return out
+})
 const boundMapping = computed(() => props.mappings.find((m) => m.id === widMappingId.value) ?? undefined)
 const boundSample = computed(() => (widMappingId.value && props.samples ? props.samples[widMappingId.value] : undefined))
 const colorPickerHex = computed(() => resolveTileAccentHex(widTileColor.value))
@@ -145,6 +291,9 @@ const fieldErrors = computed<Record<string, string | null>>(() => {
     min: null,
     max: null,
     triggerMs: null,
+    graphSeries: null,
+    graphYMin: null,
+    graphYMax: null,
   }
 
   if (widType.value === 'display' || widType.value === 'number_input') {
@@ -166,6 +315,37 @@ const fieldErrors = computed<Record<string, string | null>>(() => {
 
   if (widType.value === 'button') {
     errs.triggerMs = validateIntegerRange(widBtnTriggerMs.value, 'Trigger time', 100, 60000, { required: true })
+  }
+
+  if (widType.value === 'graph') {
+    if (widGraphSeries.value.length === 0 || widGraphSeries.value.length > MAX_GRAPH_SERIES) {
+      errs.graphSeries = `Select between 1 and ${MAX_GRAPH_SERIES} registers.`
+    } else {
+      const seen = new Set<string>()
+      for (let i = 0; i < widGraphSeries.value.length; i++) {
+        const row = widGraphSeries.value[i]
+        if (!row.registerMappingId) {
+          errs.graphSeries = `Select a register for variable #${i + 1}.`
+          break
+        }
+        if (seen.has(row.registerMappingId)) {
+          errs.graphSeries = 'Each variable in the graph must use a different register.'
+          break
+        }
+        seen.add(row.registerMappingId)
+        if (row.label.trim().length > 64) {
+          errs.graphSeries = `Variable #${i + 1} label must be 64 characters or fewer.`
+          break
+        }
+      }
+    }
+    errs.graphYMin = validateNumberRange(widGraphYMin.value, 'Y-axis min', undefined, undefined, { required: false })
+    errs.graphYMax = validateNumberRange(widGraphYMax.value, 'Y-axis max', undefined, undefined, { required: false })
+    if (!errs.graphYMin && !errs.graphYMax && widGraphYMin.value.trim() !== '' && widGraphYMax.value.trim() !== '') {
+      if (Number(widGraphYMin.value) >= Number(widGraphYMax.value)) {
+        errs.graphYMin = 'Y-axis min must be less than max.'
+      }
+    }
   }
 
   return errs
@@ -219,6 +399,26 @@ function buildStyleAndExtra(): { style: Record<string, unknown>; extra: Record<s
       extra.triggeredLabel = widBtnTriggeredLabel.value.trim()
     }
     extra.triggerTimeMs = Math.max(100, Math.min(60000, Math.round(Number(widBtnTriggerMs.value) || 1000)))
+  } else if (widType.value === 'graph') {
+    const series: GraphSeriesConfig[] = widGraphSeries.value
+      .filter((s) => Boolean(s.registerMappingId))
+      .slice(0, MAX_GRAPH_SERIES)
+      .map((s) => ({
+        registerMappingId: s.registerMappingId,
+        color: s.color,
+        ...(s.label.trim() ? { label: s.label.trim() } : {}),
+        ...(s.unit.trim() ? { unit: s.unit.trim() } : {}),
+        ...(s.precision.trim() !== '' ? { precision: clampPrecision(s.precision) } : {}),
+      }))
+    extra.series = series
+    extra.timeRange = widGraphTimeRange.value
+    extra.smooth = widGraphSmooth.value
+    if (widGraphYMin.value.trim() !== '' && Number.isFinite(Number(widGraphYMin.value))) {
+      extra.yMin = Number(widGraphYMin.value)
+    }
+    if (widGraphYMax.value.trim() !== '' && Number.isFinite(Number(widGraphYMax.value))) {
+      extra.yMax = Number(widGraphYMax.value)
+    }
   }
 
   return { style, extra }
@@ -226,10 +426,14 @@ function buildStyleAndExtra(): { style: Record<string, unknown>; extra: Record<s
 
 const previewWidget = computed<WebviewWidget>(() => {
   const { style, extra } = buildStyleAndExtra()
+  const primaryMappingId =
+    widType.value === 'graph'
+      ? widGraphSeries.value[0]?.registerMappingId || undefined
+      : widMappingId.value || undefined
   return {
     id: props.widget?.id || 'preview',
     dashboardId: props.widget?.dashboardId || 'preview',
-    registerMappingId: widMappingId.value || undefined,
+    registerMappingId: primaryMappingId,
     name: widName.value.trim() || defaultPlaceholderName(widType.value),
     widgetType: widType.value,
     sortOrder: props.widget?.sortOrder ?? 0,
@@ -248,6 +452,8 @@ function defaultPlaceholderName(t: WidgetType): string {
       return 'Reset Alarm'
     case 'number_input':
       return 'Target Setpoint'
+    case 'graph':
+      return 'Process Trend'
     default:
       return 'Water Temperature'
   }
@@ -256,13 +462,15 @@ function defaultPlaceholderName(t: WidgetType): string {
 const previewBoxStyle = computed(() => {
   switch (widTileSize.value) {
     case 'sm':
-      return { width: '164px', height: '136px' }
+      return { width: '156px', height: '138px' }
     case 'tall':
-      return { width: '164px', height: '276px' }
+      return { width: '156px', height: '288px' }
     case 'lg':
-      return { width: '320px', height: '276px' }
+      return { width: '324px', height: '288px' }
+    case 'xl':
+      return { width: '100%', maxWidth: '616px', aspectRatio: '660 / 288' }
     default:
-      return { width: '320px', height: '136px' }
+      return { width: '324px', height: '138px' }
   }
 })
 
@@ -294,6 +502,23 @@ function hydrateFromProps() {
     widBtnLabel.value = 'Trigger'
     widBtnTriggeredLabel.value = 'Triggered...'
     widBtnTriggerMs.value = '1000'
+    widGraphSeries.value = props.mappings[0]
+      ? [
+          {
+            uid: graphSeriesSeq++,
+            registerMappingId: props.mappings[0].id,
+            color: GRAPH_DEFAULT_SERIES_COLORS[0],
+            label: '',
+            unit: '',
+            precision: '',
+          },
+        ]
+      : []
+    seriesModalOpen.value = false
+    widGraphTimeRange.value = '1h'
+    widGraphYMin.value = ''
+    widGraphYMax.value = ''
+    widGraphSmooth.value = false
     return
   }
 
@@ -334,7 +559,59 @@ function hydrateFromProps() {
   widBtnLabel.value = String(w.extra?.label ?? w.name)
   widBtnTriggeredLabel.value = String(w.extra?.triggeredLabel ?? 'Triggered...')
   widBtnTriggerMs.value = String(Number(w.extra?.triggerTimeMs ?? 1000))
+
+  const existingSeries = extractGraphSeries(w)
+  widGraphSeries.value =
+    existingSeries.length > 0
+      ? existingSeries.map((s) => ({
+          uid: graphSeriesSeq++,
+          registerMappingId: s.registerMappingId,
+          color: s.color,
+          label: s.label || '',
+          unit: s.unit || '',
+          precision: s.precision !== undefined ? String(s.precision) : '',
+        }))
+      : w.registerMappingId || props.mappings[0]?.id
+        ? [
+            {
+              uid: graphSeriesSeq++,
+              registerMappingId: w.registerMappingId || props.mappings[0]?.id || '',
+              color: GRAPH_DEFAULT_SERIES_COLORS[0],
+              label: '',
+              unit: '',
+              precision: '',
+            },
+          ]
+        : []
+  seriesModalOpen.value = false
+  widGraphTimeRange.value = resolveGraphTimeRange(w.extra?.timeRange)
+  widGraphYMin.value = w.extra?.yMin !== undefined && w.extra?.yMin !== null ? String(w.extra.yMin) : ''
+  widGraphYMax.value = w.extra?.yMax !== undefined && w.extra?.yMax !== null ? String(w.extra.yMax) : ''
+  widGraphSmooth.value = Boolean(w.extra?.smooth)
 }
+
+watch(widType, (next, prev) => {
+  if (next === 'graph') {
+    if (widGraphSeries.value.length === 0) {
+      const firstId = widMappingId.value || props.mappings[0]?.id || ''
+      if (firstId) {
+        widGraphSeries.value = [
+          {
+            uid: graphSeriesSeq++,
+            registerMappingId: firstId,
+            color: GRAPH_DEFAULT_SERIES_COLORS[0],
+            label: '',
+            unit: '',
+            precision: '',
+          },
+        ]
+      }
+    }
+    if (!isEditing.value && prev !== 'graph' && (widTileSize.value === 'sm' || widTileSize.value === 'wide')) {
+      widTileSize.value = 'lg'
+    }
+  }
+})
 
 watch(
   () => [props.open, props.widget] as const,
@@ -352,20 +629,27 @@ function handleSubmit() {
     return
   }
   const { style, extra } = buildStyleAndExtra()
+  const primaryMappingId =
+    widType.value === 'graph'
+      ? widGraphSeries.value[0]?.registerMappingId || undefined
+      : widMappingId.value || undefined
   emit('save', {
     id: props.widget?.id,
     name: widName.value.trim(),
     widgetType: widType.value,
-    registerMappingId: widMappingId.value || undefined,
+    registerMappingId: primaryMappingId,
     style,
     extra,
   })
 }
 
 function onKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape' && props.open) {
-    emit('close')
+  if (e.key !== 'Escape' || !props.open) return
+  if (seriesModalOpen.value) {
+    seriesModalOpen.value = false
+    return
   }
+  emit('close')
 }
 
 onMounted(() => document.addEventListener('keydown', onKeydown))
@@ -381,7 +665,8 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
     >
       <form
         novalidate
-        class="flex max-h-[92dvh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl"
+        class="flex max-h-[92dvh] w-full flex-col overflow-hidden rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl transition-[max-width] duration-200"
+        :class="widTileSize === 'xl' ? 'max-w-7xl' : 'max-w-6xl'"
         @submit.prevent="handleSubmit"
       >
         <!-- Header -->
@@ -437,13 +722,13 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
                 <label class="mb-2 block text-[11px] font-semibold uppercase tracking-wider text-slate-400">
                   Tile Size
                 </label>
-                <div class="grid grid-cols-4 gap-1.5">
+                <div class="grid grid-cols-5 gap-1.5">
                   <button
                     v-for="sz in TILE_SIZES"
                     :key="sz.value"
                     type="button"
                     :title="`${sz.label} (${sz.shortLabel}) - ${sz.description}`"
-                    class="flex flex-col items-center justify-center gap-1.5 rounded-lg border px-2 py-2 text-[11px] font-medium transition"
+                    class="flex flex-col items-center justify-center gap-1.5 rounded-lg border px-1.5 py-2 text-[11px] font-medium transition"
                     :class="
                       widTileSize === sz.value
                         ? 'border-amber-500/70 bg-amber-500/15 text-amber-200'
@@ -451,7 +736,18 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
                     "
                     @click="widTileSize = sz.value"
                   >
-                    <span class="grid h-5 w-5 grid-cols-2 grid-rows-2 gap-0.5">
+                    <span
+                      v-if="sz.cols === 4"
+                      class="grid h-5 w-7 grid-cols-4 grid-rows-2 gap-0.5"
+                    >
+                      <span
+                        v-for="cell in 8"
+                        :key="cell"
+                        class="rounded-[2px]"
+                        :class="widTileSize === sz.value ? 'bg-amber-400' : 'bg-slate-500'"
+                      />
+                    </span>
+                    <span v-else class="grid h-5 w-5 grid-cols-2 grid-rows-2 gap-0.5">
                       <span
                         class="rounded-[2px]"
                         :class="widTileSize === sz.value ? 'bg-amber-400' : 'bg-slate-500'"
@@ -500,8 +796,9 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
               </div>
             </div>
 
-            <!-- REGISTER BINDING -->
+            <!-- REGISTER BINDING (single-register tiles) -->
             <RegisterPicker
+              v-if="widType !== 'graph'"
               v-model="widMappingId"
               :devices="devices"
               :mappings="mappings"
@@ -708,10 +1005,143 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
                 Sends 1 immediately, then automatically resets and sends 0 after the trigger time.
               </p>
             </div>
+
+            <!-- GRAPH EXTRA PARAMS (Scale & Compact Register List + Separate Register Edit Modal) -->
+            <div v-else-if="widType === 'graph'" class="space-y-4">
+              <!-- Graph Scale & Axes -->
+              <div class="space-y-3 rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+                <p class="text-[11px] font-semibold uppercase tracking-wider text-sky-300">Graph Scale & Window</p>
+                <div class="grid gap-3 sm:grid-cols-3">
+                  <div>
+                    <label class="mb-1 block text-xs text-slate-400">Time Scale</label>
+                    <CustomSelect
+                      v-model="widGraphTimeRange"
+                      :options="GRAPH_RANGE_OPTIONS"
+                      aria-label="Graph time window"
+                      trigger-class="bg-slate-900"
+                    />
+                  </div>
+                  <div>
+                    <label class="mb-1 block text-xs text-slate-400">Y-Axis Min (optional)</label>
+                    <NumericTextInput
+                      v-model="widGraphYMin"
+                      allow-decimal
+                      allow-negative
+                      placeholder="Auto"
+                      input-class="bg-slate-900"
+                      :external-error="showErr('graphYMin')"
+                      @blur="markTouched('graphYMin')"
+                    />
+                  </div>
+                  <div>
+                    <label class="mb-1 block text-xs text-slate-400">Y-Axis Max (optional)</label>
+                    <NumericTextInput
+                      v-model="widGraphYMax"
+                      allow-decimal
+                      allow-negative
+                      placeholder="Auto"
+                      input-class="bg-slate-900"
+                      :external-error="showErr('graphYMax')"
+                      @blur="markTouched('graphYMax')"
+                    />
+                  </div>
+                </div>
+
+                <label class="inline-flex items-center gap-2 pt-0.5 text-xs text-slate-300">
+                  <input v-model="widGraphSmooth" type="checkbox" />
+                  Smooth trend lines
+                </label>
+              </div>
+
+              <!-- Compact Register List (1 to 5 Registers) -->
+              <div class="space-y-3 rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+                <div class="flex items-center justify-between gap-2">
+                  <p class="text-[11px] font-semibold uppercase tracking-wider text-emerald-300">
+                    Registers ({{ widGraphSeries.length }} / {{ MAX_GRAPH_SERIES }})
+                  </p>
+                  <button
+                    v-if="widGraphSeries.length < MAX_GRAPH_SERIES"
+                    type="button"
+                    class="inline-flex h-8 items-center gap-1 rounded-lg border border-amber-500/45 bg-amber-500/15 px-2.5 text-[11px] font-semibold text-amber-200 transition hover:bg-amber-500/25"
+                    @click="openAddGraphSeriesModal"
+                  >
+                    <Plus class="h-3.5 w-3.5" />
+                    Add Register
+                  </button>
+                </div>
+
+                <p v-if="showErr('graphSeries')" class="text-[11px] text-rose-400">
+                  {{ showErr('graphSeries') }}
+                </p>
+
+                <div v-if="widGraphSeries.length > 0" class="divide-y divide-slate-800/80 overflow-hidden rounded-lg border border-slate-800 bg-slate-900/70">
+                  <div
+                    v-for="(row, idx) in widGraphSeries"
+                    :key="row.uid"
+                    class="flex items-center justify-between gap-2.5 px-3 py-2.5"
+                  >
+                    <div class="flex min-w-0 items-center gap-2.5">
+                      <span
+                        class="h-3.5 w-3.5 shrink-0 rounded-full border border-white/25"
+                        :style="{ backgroundColor: resolveStateVisual(row.color, widTileColor).hex }"
+                      />
+                      <div class="min-w-0">
+                        <p class="truncate text-xs font-medium text-white">
+                          {{ row.label || mappingsById[row.registerMappingId]?.name || `Variable #${idx + 1}` }}
+                        </p>
+                        <div class="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-slate-400">
+                          <span class="truncate font-mono">
+                            {{ mappingsById[row.registerMappingId]?.name || 'Unbound register' }}
+                          </span>
+                          <span
+                            v-if="row.unit || mappingsById[row.registerMappingId]?.protocolAttributes?.unit"
+                            class="rounded bg-slate-800 px-1 py-0.2 font-mono text-slate-300"
+                          >
+                            {{ row.unit || mappingsById[row.registerMappingId]?.protocolAttributes?.unit }}
+                          </span>
+                          <span class="font-mono text-slate-500">
+                            10^-{{ row.precision !== '' ? row.precision : (mappingsById[row.registerMappingId]?.protocolAttributes?.precision ?? 0) }}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div class="flex shrink-0 items-center gap-1">
+                      <button
+                        type="button"
+                        title="Edit register"
+                        aria-label="Edit register"
+                        class="inline-flex h-7 items-center gap-1 rounded-md border border-slate-700 bg-slate-800 px-2 text-[11px] font-medium text-slate-200 transition hover:bg-slate-700"
+                        @click="openEditGraphSeriesModal(row)"
+                      >
+                        <Pencil class="h-3 w-3" />
+                        Edit
+                      </button>
+                      <button
+                        v-if="widGraphSeries.length > 1"
+                        type="button"
+                        title="Remove register"
+                        aria-label="Remove register"
+                        class="inline-flex h-7 w-7 items-center justify-center rounded-md border border-rose-500/30 bg-rose-500/10 text-rose-300 transition hover:bg-rose-500/20"
+                        @click="removeGraphSeriesRow(row.uid)"
+                      >
+                        <Trash2 class="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <p v-else class="rounded-lg border border-dashed border-slate-800 px-3 py-4 text-center text-xs text-slate-500">
+                  No registers added yet. Click Add Register to bind up to {{ MAX_GRAPH_SERIES }} variables.
+                </p>
+              </div>
+            </div>
           </div>
 
           <!-- RIGHT COLUMN: Sticky End-Result Live Tile Preview -->
-          <aside class="flex shrink-0 flex-col justify-between gap-4 border-t border-slate-800 bg-slate-950/60 p-5 lg:w-[372px] lg:border-t-0 lg:border-l xl:w-[400px]">
+          <aside
+            class="flex shrink-0 flex-col justify-between gap-4 border-t border-slate-800 bg-slate-950/60 p-5 transition-[width] duration-200 lg:border-t-0 lg:border-l"
+            :class="widTileSize === 'xl' ? 'lg:w-[540px] xl:w-[660px]' : 'lg:w-[420px] xl:w-[460px]'"
+          >
             <div class="flex flex-wrap items-center justify-between gap-2">
               <div class="flex items-center gap-2">
                 <span class="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
@@ -770,7 +1200,9 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
                 <WidgetTileRenderer
                   :widget="previewWidget"
                   :mapping="boundMapping"
+                  :mappings-by-id="mappingsById"
                   :sample="widType === 'lamp' || widType === 'switch' ? undefined : boundSample"
+                  :samples="samples"
                   :can-write="true"
                   :preview="true"
                   :preview-state="previewBoolState"
@@ -782,8 +1214,14 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
             <!-- Live Spec Summary -->
             <div class="space-y-1.5 rounded-lg border border-slate-800/80 bg-slate-900/55 px-3 py-2.5 text-[11px]">
               <div class="flex items-center justify-between gap-2">
-                <span class="text-slate-500">Register</span>
-                <span class="truncate font-mono text-slate-300">{{ boundMapping?.name || 'Unbound' }}</span>
+                <span class="text-slate-500">{{ widType === 'graph' ? 'Registers' : 'Register' }}</span>
+                <span class="truncate font-mono text-slate-300">
+                  {{
+                    widType === 'graph'
+                      ? `${widGraphSeries.filter((s) => s.registerMappingId).length} bound (${widGraphTimeRange})`
+                      : boundMapping?.name || 'Unbound'
+                  }}
+                </span>
               </div>
               <div class="flex items-center justify-between gap-2">
                 <span class="text-slate-500">Tile Accent</span>
@@ -827,6 +1265,112 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
               {{ submitLabel || (isEditing ? 'Save Tile' : 'Add Tile') }}
             </button>
           </div>
+        </div>
+      </form>
+    </div>
+
+    <!-- SEPARATE MODAL: ADD / EDIT GRAPH REGISTER VARIABLE -->
+    <div
+      v-if="open && seriesModalOpen"
+      class="fixed inset-0 z-[60] flex items-center justify-center bg-black/75 p-4 backdrop-blur-xs"
+      @click.self="seriesModalOpen = false"
+    >
+      <form
+        novalidate
+        class="max-h-[90dvh] w-full max-w-lg overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl space-y-4 sm:p-6"
+        @submit.prevent="saveGraphSeriesModal"
+      >
+        <div class="flex items-center justify-between gap-2">
+          <h3 class="text-sm font-semibold text-white">
+            {{ editingSeriesUid !== null ? 'Edit Graph Register' : 'Add Graph Register' }}
+          </h3>
+          <button
+            type="button"
+            aria-label="Close modal"
+            class="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white"
+            @click="seriesModalOpen = false"
+          >
+            <X class="h-4 w-4" />
+          </button>
+        </div>
+
+        <div>
+          <RegisterPicker
+            v-model="seriesDraftMappingId"
+            :devices="devices"
+            :mappings="mappings"
+            register-label="Register"
+            placeholder="Search register..."
+          />
+          <p v-if="showSeriesDraftErr('mappingId')" class="mt-1 text-[11px] text-rose-400">
+            {{ showSeriesDraftErr('mappingId') }}
+          </p>
+        </div>
+
+        <div>
+          <label class="mb-1 block text-xs text-slate-400">Legend Label (optional)</label>
+          <input
+            v-model="seriesDraftLabel"
+            maxlength="64"
+            :placeholder="seriesDraftMapping?.name || 'Defaults to register name'"
+            class="w-full rounded-lg border bg-slate-950 px-3 py-2 text-xs text-white focus:outline-none"
+            :class="showSeriesDraftErr('label') ? 'border-rose-500 focus:border-rose-400' : 'border-slate-700 focus:border-amber-500'"
+            @blur="seriesDraftTouched.label = true"
+          />
+          <p v-if="showSeriesDraftErr('label')" class="mt-1 text-[11px] text-rose-400">
+            {{ showSeriesDraftErr('label') }}
+          </p>
+        </div>
+
+        <div>
+          <label class="mb-1.5 block text-xs text-slate-400">Line Color</label>
+          <ColorMatrixPicker v-model="seriesDraftColor" mode="state" :tile-accent="widTileColor" />
+        </div>
+
+        <div class="grid gap-3 sm:grid-cols-2">
+          <div>
+            <label class="mb-1 block text-xs text-slate-400">Unit Override (optional)</label>
+            <input
+              v-model="seriesDraftUnit"
+              maxlength="32"
+              :placeholder="seriesDraftMapping?.protocolAttributes?.unit ? `Default: ${seriesDraftMapping.protocolAttributes.unit}` : 'e.g. C, bar, %'"
+              class="w-full rounded-lg border bg-slate-950 px-3 py-2 text-xs text-white focus:outline-none"
+              :class="showSeriesDraftErr('unit') ? 'border-rose-500 focus:border-rose-400' : 'border-slate-700 focus:border-amber-500'"
+              @blur="seriesDraftTouched.unit = true"
+            />
+            <p v-if="showSeriesDraftErr('unit')" class="mt-1 text-[11px] text-rose-400">
+              {{ showSeriesDraftErr('unit') }}
+            </p>
+          </div>
+          <div>
+            <label class="mb-1 block text-xs text-slate-400">Decimal Places (10^-x)</label>
+            <NumericTextInput
+              v-model="seriesDraftPrecision"
+              :min="-5"
+              :max="5"
+              allow-negative
+              :placeholder="`Default: ${seriesDraftMapping?.protocolAttributes?.precision ?? 0}`"
+              input-class="bg-slate-950"
+              :external-error="showSeriesDraftErr('precision')"
+              @blur="seriesDraftTouched.precision = true"
+            />
+          </div>
+        </div>
+
+        <div class="flex justify-end gap-2 pt-2">
+          <button
+            type="button"
+            class="h-9 rounded-lg border border-slate-700 px-3.5 text-xs font-medium text-slate-300 hover:bg-slate-800"
+            @click="seriesModalOpen = false"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            class="h-9 rounded-lg bg-amber-500 px-4 text-xs font-semibold text-slate-950 hover:bg-amber-400"
+          >
+            {{ editingSeriesUid !== null ? 'Save Register' : 'Add Register' }}
+          </button>
         </div>
       </form>
     </div>

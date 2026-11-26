@@ -13,6 +13,7 @@ import WidgetTileRenderer from '../widgets/WidgetTileRenderer.vue'
 
 const props = defineProps<{
   widgets: WebviewWidget[]
+  siteId?: string
   layout?: Record<string, unknown>
   mappingsById: Record<string, RegisterMapping>
   samples?: Record<string, TelemetrySample>
@@ -91,8 +92,11 @@ function cycleSize(w: WebviewWidget) {
       >
         <WidgetTileRenderer
           :widget="w"
+          :site-id="siteId"
           :mapping="w.registerMappingId ? mappingsById[w.registerMappingId] : undefined"
+          :mappings-by-id="mappingsById"
           :sample="w.registerMappingId && samples ? samples[w.registerMappingId] : undefined"
+          :samples="samples"
           :can-write="canWrite"
           @write="(mid, val, pulse) => emit('write', mid, val, pulse)"
         />
@@ -131,8 +135,11 @@ function cycleSize(w: WebviewWidget) {
         <WidgetTileRenderer
           class="pointer-events-none"
           :widget="w"
+          :site-id="siteId"
           :mapping="w.registerMappingId ? mappingsById[w.registerMappingId] : undefined"
+          :mappings-by-id="mappingsById"
           :sample="w.registerMappingId && samples ? samples[w.registerMappingId] : undefined"
+          :samples="samples"
           :can-write="canWrite"
           :preview="true"
         />
