@@ -66,12 +66,19 @@ func main() {
 	}
 	defer dockerBackend.Close()
 
+	runnerImage := mustEnv("RUNNER_IMAGE")
+	pullCtx, pullCancel := context.WithTimeout(ctx, 2*time.Minute)
+	if err := dockerBackend.EnsureImage(pullCtx, runnerImage); err != nil {
+		slog.Warn("startup_runner_image_pull_failed", "image", runnerImage, "error", err)
+	}
+	pullCancel()
+
 	internalToken := mustEnv("INTERNAL_API_TOKEN")
 	orchSvc := orchestrator.NewService(
 		dbBundle.Bun,
 		dockerBackend,
 		orchestrator.Config{
-			RunnerImage: mustEnv("RUNNER_IMAGE"),
+			RunnerImage: runnerImage,
 		},
 		tokenCipher,
 		internalclient.NewHTTPClient(mustEnv("CORE_IAM_INTERNAL_URL"), internalToken, 15*time.Second),

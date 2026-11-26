@@ -30,6 +30,7 @@ type RunnerState struct {
 // RunnerBackend is the K8s-portability seam implemented by DockerBackend in v1
 // and swapped for client-go Deployments + headless Services + Secrets on Kubernetes.
 type RunnerBackend interface {
+	EnsureImage(ctx context.Context, imageRef string) error
 	Ensure(ctx context.Context, spec RunnerSpec) (RunnerState, error)
 	Stop(ctx context.Context, siteID string) error
 	Remove(ctx context.Context, siteID string) error

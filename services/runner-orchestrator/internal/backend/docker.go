@@ -3,11 +3,16 @@ package backend
 import (
 	"context"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
+	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
@@ -26,8 +31,9 @@ type DockerConfig struct {
 }
 
 type DockerBackend struct {
-	cli *client.Client
-	cfg DockerConfig
+	cli    *client.Client
+	cfg    DockerConfig
+	pullMu sync.Mutex
 }
 
 func NewDockerBackend(cfg DockerConfig) (*DockerBackend, error) {
@@ -40,6 +46,43 @@ func NewDockerBackend(cfg DockerConfig) (*DockerBackend, error) {
 
 func (d *DockerBackend) Close() error {
 	return d.cli.Close()
+}
+
+// EnsureImage checks whether imageRef exists in the local Docker daemon and pulls it
+// from its registry if missing. Concurrent calls are serialized to avoid duplicate pulls.
+func (d *DockerBackend) EnsureImage(ctx context.Context, imageRef string) error {
+	ref := strings.TrimSpace(imageRef)
+	if ref == "" {
+		return fmt.Errorf("runner image reference is empty")
+	}
+	if _, err := d.cli.ImageInspect(ctx, ref); err == nil {
+		return nil
+	} else if !errdefs.IsNotFound(err) {
+		return fmt.Errorf("inspect runner image %s: %w", ref, err)
+	}
+
+	d.pullMu.Lock()
+	defer d.pullMu.Unlock()
+
+	// Re-check after acquiring lock in case another goroutine just completed the pull.
+	if _, err := d.cli.ImageInspect(ctx, ref); err == nil {
+		return nil
+	} else if !errdefs.IsNotFound(err) {
+		return fmt.Errorf("inspect runner image %s: %w", ref, err)
+	}
+
+	slog.Info("pulling_runner_image", "image", ref)
+	rc, err := d.cli.ImagePull(ctx, ref, image.PullOptions{})
+	if err != nil {
+		return fmt.Errorf("pull runner image %s: %w", ref, err)
+	}
+	defer rc.Close()
+
+	if _, err := io.Copy(io.Discard, rc); err != nil {
+		return fmt.Errorf("read pull stream for runner image %s: %w", ref, err)
+	}
+	slog.Info("runner_image_pulled", "image", ref)
+	return nil
 }
 
 func (d *DockerBackend) confFilePath(siteID string) string {
@@ -86,6 +129,12 @@ func (d *DockerBackend) Ensure(ctx context.Context, spec RunnerSpec) (RunnerStat
 			}
 		}
 		return d.Get(ctx, spec.SiteID)
+	}
+
+	// Ensure the target image is present locally (pulling if absent) BEFORE tearing down
+	// any existing running runner container so a failed pull never disrupts an active site.
+	if err := d.EnsureImage(ctx, spec.Image); err != nil {
+		return RunnerState{}, err
 	}
 
 	if existing.ObservedState != "missing" {

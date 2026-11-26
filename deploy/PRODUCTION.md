@@ -138,6 +138,11 @@ If GHCR packages are private, log in once on the host:
 echo "<GITHUB_PAT_WITH_READ_PACKAGES>" | docker login ghcr.io -u <GITHUB_USERNAME> --password-stdin
 ```
 
+### WireRelay Site Runner Image (`WIRERELAY_IMAGE_URL`)
+`runner-orchestrator` automatically checks the local Docker daemon for `WIRERELAY_IMAGE_URL` on startup and before starting or upgrading any site runner container. If the image is not present locally, it pulls it automatically - no manual `docker pull` is needed for public GHCR releases (even though `docker compose pull` does not pull dynamically spawned runner containers).
+
+- **Local-only tags** (e.g. `WIRERELAY_IMAGE_URL=wirerelay:local`) are detected in the local Docker cache and used directly without attempting a registry pull.
+
 ---
 
 ## 5. Upstream Reverse Proxy Config (Staging Only)
@@ -209,6 +214,12 @@ Staging includes **Watchtower** (`nickfedor/watchtower:1.24.1`, opt-in scoped to
 mkdir -p /tmp/wiredeck-local-runners && chmod 700 /tmp/wiredeck-local-runners
 docker compose -f deploy/docker-compose.local.yml --env-file deploy/.env.local up -d --build
 # App: http://localhost:8080  |  Mailpit: http://localhost:18025
+```
+To test a locally modified `WireRelay` build on the local stack, build it as a local tag and point `deploy/.env.local` at it:
+```bash
+docker build -t wirerelay:local ../WireRelay
+# Set WIRERELAY_IMAGE_URL=wirerelay:local in deploy/.env.local, then recreate runner-orchestrator:
+docker compose -f deploy/docker-compose.local.yml --env-file deploy/.env.local up -d runner-orchestrator
 ```
 
 ---
