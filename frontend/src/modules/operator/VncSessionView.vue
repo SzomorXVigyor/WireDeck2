@@ -19,6 +19,7 @@ import {
 } from 'lucide-vue-next'
 import { apiRequest } from '../../services/api'
 import type { VncTarget } from '../../types/vnc'
+import CustomSelect, { type SelectOption } from '../../components/CustomSelect.vue'
 
 type QualityPresetKey = 'high' | 'balanced' | 'low' | 'performance'
 
@@ -28,6 +29,10 @@ const QUALITY_PRESETS: Record<QualityPresetKey, { label: string; quality: number
   low: { label: 'Low', quality: 2, compression: 6 },
   performance: { label: 'Performance', quality: 0, compression: 0 },
 }
+
+const QUALITY_PRESET_OPTIONS: SelectOption<QualityPresetKey>[] = (
+  Object.entries(QUALITY_PRESETS) as [QualityPresetKey, { label: string }][]
+).map(([value, preset]) => ({ value, label: preset.label }))
 
 const route = useRoute()
 const siteId = computed(() => String(route.params.siteId || ''))
@@ -392,16 +397,13 @@ onUnmounted(() => {
         <div class="flex shrink-0 items-center gap-1.5 text-xs sm:gap-2">
           <!-- Desktop inline controls -->
           <div class="hidden items-center gap-2 lg:flex">
-            <select
+            <CustomSelect
               v-model="qualityPreset"
+              :options="QUALITY_PRESET_OPTIONS"
+              size="sm"
               aria-label="VNC quality preset"
-              title="Image quality and compression level"
-              class="h-8 rounded-md border border-slate-700 bg-slate-950 px-2.5 text-xs text-slate-200"
-            >
-              <option v-for="(preset, key) in QUALITY_PRESETS" :key="key" :value="key">
-                {{ preset.label }}
-              </option>
-            </select>
+              class="w-32"
+            />
 
             <button
               type="button"
@@ -475,15 +477,12 @@ onUnmounted(() => {
             >
               <div>
                 <label class="block px-1 pb-1 text-[11px] font-medium text-slate-400">Quality</label>
-                <select
+                <CustomSelect
                   v-model="qualityPreset"
+                  :options="QUALITY_PRESET_OPTIONS"
+                  size="sm"
                   aria-label="VNC quality preset"
-                  class="w-full rounded-md border border-slate-700 bg-slate-950 px-2.5 py-1.5 text-xs text-slate-200"
-                >
-                  <option v-for="(preset, key) in QUALITY_PRESETS" :key="key" :value="key">
-                    {{ preset.label }}
-                  </option>
-                </select>
+                />
               </div>
 
               <div class="border-t border-slate-800 pt-2 space-y-1">

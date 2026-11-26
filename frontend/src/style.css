@@ -182,3 +182,110 @@ html.light select,
 html.light textarea {
   background-color: #ffffff;
 }
+
+/* ============================================================================
+ * WebView Modular Tile Canvas (Windows 8 inspired, web-scale container-driven)
+ * Adapts column count to the ACTUAL canvas width (sidebar open/closed, zoom,
+ * phone portrait, tablet, desktop, ultrawide) using CSS Container Queries.
+ * Even column counts (2 / 4 / 6 / 8 / 10) guarantee clean packing of 1x1,
+ * 2x1, 1x2, and 2x2 tiles with zero orphan gaps or horizontal overflow.
+ * ============================================================================ */
+.wd-tile-canvas {
+  container-type: inline-size;
+  container-name: tile-canvas;
+  width: 100%;
+}
+
+.wd-tile-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-auto-rows: var(--wd-tile-row, 138px);
+  gap: var(--wd-tile-gap, 12px);
+  grid-auto-flow: dense;
+  align-items: stretch;
+}
+
+.wd-tile-grid.wd-density-compact {
+  --wd-tile-row: 112px;
+  --wd-tile-gap: 10px;
+}
+
+.wd-tile-grid.wd-density-comfortable {
+  --wd-tile-row: 138px;
+  --wd-tile-gap: 12px;
+}
+
+.wd-tile-grid.wd-density-spacious {
+  --wd-tile-row: 168px;
+  --wd-tile-gap: 16px;
+}
+
+@container tile-canvas (min-width: 560px) {
+  .wd-tile-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@container tile-canvas (min-width: 920px) {
+  .wd-tile-grid {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+}
+
+@container tile-canvas (min-width: 1320px) {
+  .wd-tile-grid {
+    grid-template-columns: repeat(8, minmax(0, 1fr));
+  }
+}
+
+@container tile-canvas (min-width: 1760px) {
+  .wd-tile-grid {
+    grid-template-columns: repeat(10, minmax(0, 1fr));
+  }
+}
+
+.wd-tile-slot {
+  container-type: inline-size;
+  container-name: tile;
+  min-width: 0;
+  min-height: 0;
+}
+
+.wd-tile-sm {
+  grid-column: span 1;
+  grid-row: span 1;
+}
+
+.wd-tile-wide {
+  grid-column: span 2;
+  grid-row: span 1;
+}
+
+.wd-tile-tall {
+  grid-column: span 1;
+  grid-row: span 2;
+}
+
+.wd-tile-lg {
+  grid-column: span 2;
+  grid-row: span 2;
+}
+
+/* Tile architectural crispness and subtle light-mode elevation */
+.wd-tile-surface {
+  position: relative;
+  overflow: hidden;
+  border-radius: 0.5rem;
+  box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.04);
+}
+
+html.light .wd-tile-surface {
+  box-shadow: 0 1px 2px 0 rgba(15, 23, 42, 0.05), inset 0 1px 0 0 rgba(255, 255, 255, 0.7);
+}
+
+/* Reduced motion support for blinking lamps and tile transitions */
+@media (prefers-reduced-motion: reduce) {
+  .wd-tile-blink {
+    animation: none !important;
+  }
+}

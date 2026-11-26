@@ -13,6 +13,7 @@ const props = withDefaults(
     placeholder?: string
     disabled?: boolean
     inputClass?: string
+    externalError?: string | null
   }>(),
   {
     allowDecimal: false,
@@ -21,11 +22,13 @@ const props = withDefaults(
     placeholder: '',
     disabled: false,
     inputClass: '',
+    externalError: null,
   },
 )
 
 const emit = defineEmits<{
   'update:modelValue': [value: string]
+  blur: []
 }>()
 
 const rawText = ref('')
@@ -123,16 +126,16 @@ function onInput(e: Event) {
       class="w-full rounded-lg border px-3 py-2 font-mono text-xs text-white focus:outline-none disabled:opacity-50"
       :class="[
         inputClass || 'bg-slate-950',
-        touched && validationError
+        externalError || (touched && validationError)
           ? 'border-rose-500 focus:border-rose-400'
           : 'border-slate-700 focus:border-amber-500',
       ]"
       @keydown="onKeyDown"
       @input="onInput"
-      @blur="touched = true"
+      @blur="touched = true; emit('blur')"
     />
-    <p v-if="touched && validationError" class="mt-1 text-[11px] text-rose-400">
-      {{ validationError }}
+    <p v-if="externalError || (touched && validationError)" class="mt-1 text-[11px] text-rose-400">
+      {{ externalError || validationError }}
     </p>
   </div>
 </template>

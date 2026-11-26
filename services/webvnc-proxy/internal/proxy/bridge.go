@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -108,12 +109,23 @@ type CreateTargetInput struct {
 }
 
 func (s *Service) CreateTarget(ctx context.Context, in CreateTargetInput) (*models.VncTarget, error) {
-	if !s.cfg.DevDirectDial && len(in.LanSubnets) > 0 && !wireguard.ContainsHost(in.Host, in.LanSubnets) {
+	name := strings.TrimSpace(in.Name)
+	if name == "" || len(name) > 100 {
+		return nil, errors.New("display name must be between 1 and 100 characters")
+	}
+	host := strings.TrimSpace(in.Host)
+	if _, err := netip.ParseAddr(host); err != nil {
+		return nil, errors.New("host must be a valid IPv4 or IPv6 address")
+	}
+	if !s.cfg.DevDirectDial && len(in.LanSubnets) > 0 && !wireguard.ContainsHost(host, in.LanSubnets) {
 		return nil, ErrHostOutOfSubnets
 	}
 	port := in.Port
 	if port == 0 {
 		port = 5900
+	}
+	if port < 1 || port > 65535 {
+		return nil, errors.New("port must be between 1 and 65535")
 	}
 	var encPass []byte
 	if in.Password != "" {
@@ -127,8 +139,8 @@ func (s *Service) CreateTarget(ctx context.Context, in CreateTargetInput) (*mode
 	t := &models.VncTarget{
 		ID:                uuid.New(),
 		SiteID:            in.SiteID,
-		Name:              strings.TrimSpace(in.Name),
-		Host:              strings.TrimSpace(in.Host),
+		Name:              name,
+		Host:              host,
 		Port:              port,
 		PasswordEncrypted: encPass,
 		IsActive:          true,
@@ -163,16 +175,26 @@ func (s *Service) UpdateTarget(ctx context.Context, in UpdateTargetInput) (*mode
 		return nil, err
 	}
 	if in.Name != nil {
-		t.Name = strings.TrimSpace(*in.Name)
+		name := strings.TrimSpace(*in.Name)
+		if name == "" || len(name) > 100 {
+			return nil, errors.New("display name must be between 1 and 100 characters")
+		}
+		t.Name = name
 	}
 	if in.Host != nil {
 		h := strings.TrimSpace(*in.Host)
+		if _, err := netip.ParseAddr(h); err != nil {
+			return nil, errors.New("host must be a valid IPv4 or IPv6 address")
+		}
 		if !s.cfg.DevDirectDial && len(in.LanSubnets) > 0 && !wireguard.ContainsHost(h, in.LanSubnets) {
 			return nil, ErrHostOutOfSubnets
 		}
 		t.Host = h
 	}
 	if in.Port != nil {
+		if *in.Port < 1 || *in.Port > 65535 {
+			return nil, errors.New("port must be between 1 and 65535")
+		}
 		t.Port = *in.Port
 	}
 	if in.ClearPassword {

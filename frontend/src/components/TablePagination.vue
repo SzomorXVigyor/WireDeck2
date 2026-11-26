@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { ChevronLeft, ChevronRight } from 'lucide-vue-next'
 import { PAGE_SIZE_OPTIONS } from '../composables/usePagination'
+import CustomSelect, { type SelectOption } from './CustomSelect.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -42,8 +43,12 @@ const visiblePages = computed<(number | 'ellipsis')[]>(() => {
   return pages
 })
 
-function onSizeChange(ev: Event) {
-  const next = Number((ev.target as HTMLSelectElement).value)
+const sizeSelectOptions = computed<SelectOption<number>[]>(() =>
+  props.pageSizeOptions.map((opt) => ({ value: opt, label: String(opt) })),
+)
+
+function onSizeChange(nextVal: string | number) {
+  const next = Number(nextVal)
   if (Number.isFinite(next) && next > 0) {
     emit('update:pageSize', next)
     emit('update:page', 1)
@@ -72,16 +77,18 @@ function go(next: number) {
     </div>
 
     <div class="flex flex-wrap items-center gap-2.5 sm:gap-3">
-      <label class="inline-flex items-center gap-1.5 text-[11px] text-slate-400">
+      <div class="inline-flex items-center gap-1.5 text-[11px] text-slate-400">
         <span>Rows</span>
-        <select
-          :value="pageSize"
-          class="h-8 rounded-md border border-slate-700 bg-slate-950 px-2 text-xs text-slate-200 focus:border-sky-500 focus:outline-none sm:h-7"
+        <CustomSelect
+          :model-value="pageSize"
+          :options="sizeSelectOptions"
+          size="sm"
+          :menu-min-width="76"
+          aria-label="Rows per page"
+          trigger-class="w-16"
           @change="onSizeChange"
-        >
-          <option v-for="opt in pageSizeOptions" :key="opt" :value="opt">{{ opt }}</option>
-        </select>
-      </label>
+        />
+      </div>
 
       <div class="inline-flex items-center gap-1">
         <button

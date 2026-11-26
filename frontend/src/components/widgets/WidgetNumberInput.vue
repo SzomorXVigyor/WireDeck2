@@ -1,8 +1,15 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { Pencil } from 'lucide-vue-next'
+import { Lock, Pencil } from 'lucide-vue-next'
 import type { FontSizeOption, RegisterMapping, TelemetrySample, WebviewWidget } from '../../types/webview'
 import { clampPrecision, formatPrecisionValue } from '../../utils/precision'
+import {
+  getTileAccentVisual,
+  resolveNumericAffixClass,
+  resolveNumericValueClass,
+  resolveTileAccent,
+  resolveTileSize,
+} from '../../utils/tiles'
 import NumberInputModal from './NumberInputModal.vue'
 
 const props = defineProps<{
@@ -10,6 +17,7 @@ const props = defineProps<{
   mapping?: RegisterMapping
   sample?: TelemetrySample
   canWrite: boolean
+  preview?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -17,28 +25,64 @@ const emit = defineEmits<{
 }>()
 
 const modalOpen = ref(false)
-const quality = computed(() => props.sample?.quality ?? 'STALE')
+const tileSize = computed(() => resolveTileSize(props.widget))
+const accentVisual = computed(() => getTileAccentVisual(resolveTileAccent(props.widget)))
+
+const quality = computed(() => {
+  if (props.sample) return props.sample.quality
+  return props.preview ? 'GOOD' : 'STALE'
+})
+
 const precision = computed(() => {
   const raw = props.widget.extra?.precision
   if (raw !== undefined && raw !== null && raw !== '') return clampPrecision(raw)
   return clampPrecision(props.mapping?.protocolAttributes?.precision ?? 0)
 })
+
 const prefix = computed(() => String(props.widget.extra?.prefix || ''))
 const unit = computed(() => {
   const raw = props.widget.extra?.unit
   if (raw !== undefined && raw !== null && String(raw).trim() !== '') return String(raw)
   return String(props.mapping?.protocolAttributes?.unit || '')
 })
-const formatted = computed(() => formatPrecisionValue(props.sample?.value, precision.value))
-const writable = computed(() => props.canWrite && props.mapping && props.mapping.protocolAttributes?.accessMode === 'READ_WRITE')
 
-const fontSizeMap: Record<FontSizeOption, string> = {
-  sm: 'text-lg sm:text-xl',
-  md: 'text-xl sm:text-2xl',
-  lg: 'text-2xl sm:text-3xl',
-  xl: 'text-3xl sm:text-4xl',
-}
-const sizeClass = computed(() => fontSizeMap[(props.widget.style?.fontSize as FontSizeOption) || 'lg'] || 'text-2xl sm:text-3xl')
+const displayValue = computed(() => {
+  if (props.sample) {
+    return formatPrecisionValue(props.sample.value, precision.value)
+  }
+  if (props.preview) {
+    const p = precision.value
+    const sampleRaw = p > 0 ? Math.round(50.0 * Math.pow(10, p)) : 50
+    return formatPrecisionValue(sampleRaw, p)
+  }
+  return formatPrecisionValue(undefined, precision.value)
+})
+
+const writable = computed(
+  () => !props.preview && props.canWrite && Boolean(props.mapping) && props.mapping?.protocolAttributes?.accessMode === 'READ_WRITE',
+)
+
+const fontSize = computed<FontSizeOption>(() => (props.widget.style?.fontSize as FontSizeOption) || 'lg')
+const valueClass = computed(() => resolveNumericValueClass(fontSize.value, tileSize.value))
+const affixClass = computed(() => resolveNumericAffixClass(fontSize.value, tileSize.value))
+
+const surfaceClass = computed(() => {
+  if (quality.value === 'BAD') return 'border-rose-500/45 bg-rose-950/25'
+  if (quality.value === 'STALE') return 'border-amber-500/35 bg-slate-900/75'
+  return accentVisual.value.surfaceClass
+})
+
+const surfaceStyle = computed(() => (quality.value === 'GOOD' ? accentVisual.value.surfaceStyle : undefined))
+
+const topBarClass = computed(() => {
+  if (quality.value === 'BAD') return 'bg-rose-500'
+  if (quality.value === 'STALE') return 'bg-amber-400/80'
+  return accentVisual.value.barClass
+})
+
+const topBarStyle = computed(() => (quality.value === 'GOOD' ? accentVisual.value.barStyle : undefined))
+
+const isHero = computed(() => tileSize.value === 'lg' || tileSize.value === 'tall')
 
 function openModal() {
   if (!writable.value) return
@@ -53,51 +97,84 @@ function handleSubmit(rawValue: number) {
 
 <template>
   <div
-    class="group flex flex-col justify-between rounded-xl border p-4 transition"
+    class="wd-tile-surface group flex h-full w-full flex-col justify-between border transition-colors"
     :class="[
-      quality === 'BAD'
-        ? 'border-rose-500/40 bg-rose-950/20'
-        : quality === 'STALE'
-          ? 'border-amber-500/30 bg-slate-900/60'
-          : 'border-slate-800 bg-slate-900/75',
-      writable ? 'cursor-pointer hover:border-sky-500/50 hover:bg-slate-900' : '',
+      surfaceClass,
+      tileSize === 'sm' ? 'p-3' : 'p-3.5 sm:p-4',
+      writable ? 'cursor-pointer hover:border-sky-500/60' : '',
     ]"
+    :style="surfaceStyle"
     @click="openModal"
   >
-    <div class="flex items-start justify-between gap-2">
-      <p class="truncate text-xs font-semibold text-slate-200">{{ widget.name }}</p>
-      <span
-        v-if="quality !== 'GOOD'"
-        class="rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase"
-        :class="quality === 'BAD' ? 'bg-rose-500/20 text-rose-300' : 'bg-amber-500/20 text-amber-300'"
-        :title="sample?.error || 'Waiting for fresh telemetry'"
+    <div class="pointer-events-none absolute inset-x-0 top-0 h-[3px]" :class="topBarClass" :style="topBarStyle" />
+
+    <!-- Header -->
+    <div class="flex items-start justify-between gap-2 pt-0.5">
+      <p
+        class="font-semibold leading-snug tracking-tight text-slate-200"
+        :class="tileSize === 'sm' ? 'line-clamp-2 text-[11px] sm:text-xs' : 'truncate text-xs sm:text-[13px]'"
       >
-        {{ quality }}
-      </span>
+        {{ widget.name || 'Untitled Input' }}
+      </p>
+      <div class="flex shrink-0 items-center gap-1">
+        <Lock v-if="!preview && !writable" class="h-3.5 w-3.5 text-slate-500" title="Read only" />
+        <span
+          v-if="quality !== 'GOOD'"
+          class="rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide"
+          :class="quality === 'BAD' ? 'bg-rose-500/20 text-rose-300' : 'bg-amber-500/20 text-amber-300'"
+          :title="sample?.error || 'Waiting for fresh telemetry'"
+        >
+          {{ quality }}
+        </span>
+      </div>
     </div>
 
-    <!-- Same visual layout as Display card + edit pencil affordance -->
-    <div class="mt-3 mb-1 flex items-baseline justify-between gap-2">
-      <div class="flex min-w-0 items-baseline gap-1">
-        <span v-if="prefix" :class="sizeClass" class="shrink-0 font-bold leading-none text-slate-300">{{ prefix }}</span>
-        <span :class="sizeClass" class="truncate font-mono font-bold tabular-nums leading-none tracking-tight text-white">
-          {{ formatted }}
+    <!-- Value + Set Value Affordance -->
+    <div
+      class="flex min-w-0 flex-1 items-end justify-between gap-2"
+      :class="isHero ? 'items-center py-2' : 'pt-2'"
+    >
+      <div class="flex min-w-0 flex-wrap items-baseline gap-x-1 gap-y-0.5">
+        <span v-if="prefix" :class="affixClass" class="shrink-0 font-semibold leading-none text-slate-400">
+          {{ prefix }}
         </span>
-        <span v-if="unit" :class="sizeClass" class="ml-0.5 shrink-0 font-bold leading-none text-slate-300">{{ unit }}</span>
+        <span
+          :class="valueClass"
+          class="min-w-0 break-all font-mono font-bold tabular-nums leading-none tracking-tight text-white"
+        >
+          {{ displayValue }}
+        </span>
+        <span v-if="unit" :class="affixClass" class="shrink-0 font-semibold leading-none text-slate-300">
+          {{ unit }}
+        </span>
       </div>
 
       <button
-        v-if="writable"
+        v-if="writable || preview"
         type="button"
         title="Set value"
-        class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-slate-500 transition hover:bg-sky-500/15 hover:text-sky-300 group-hover:text-sky-400"
+        aria-label="Set value"
+        class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-slate-700/70 bg-slate-800/70 text-slate-300 transition hover:border-sky-500/50 hover:bg-sky-500/15 hover:text-sky-300 group-hover:border-sky-500/40 group-hover:text-sky-300"
+        :class="preview ? 'pointer-events-none' : ''"
         @click.stop="openModal"
       >
-        <Pencil class="h-4 w-4" />
+        <Pencil class="h-3.5 w-3.5" />
       </button>
     </div>
 
+    <!-- Subtle Footer on Tall / Large Tiles -->
+    <div
+      v-if="isHero"
+      class="flex items-center justify-between gap-2 border-t border-slate-800/60 pt-2 text-[10px] text-slate-400"
+    >
+      <span class="truncate font-mono">{{ mapping?.name || 'Setpoint' }}</span>
+      <span v-if="widget.extra?.min !== undefined || widget.extra?.max !== undefined" class="shrink-0 font-mono text-slate-500">
+        {{ widget.extra?.min ?? '*' }}..{{ widget.extra?.max ?? '*' }}
+      </span>
+    </div>
+
     <NumberInputModal
+      v-if="!preview"
       :open="modalOpen"
       :widget="widget"
       :mapping="mapping"

@@ -3,7 +3,9 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { Edit3, KeyRound, Monitor, Plus, Trash2, X } from 'lucide-vue-next'
 import { apiRequest } from '../../services/api'
+import { useToastStore } from '../../stores/toast'
 import type { VncSession, VncTarget } from '../../types/vnc'
+import { firstError, validateIpAddress, validatePort, validateRequiredText } from '../../utils/validation'
 import StatusBadge from '../../components/StatusBadge.vue'
 import NumericTextInput from '../../components/NumericTextInput.vue'
 import DeleteConfirmModal from '../../components/DeleteConfirmModal.vue'
@@ -11,14 +13,13 @@ import TablePagination from '../../components/TablePagination.vue'
 import { usePagination } from '../../composables/usePagination'
 
 const route = useRoute()
+const toast = useToastStore()
 const siteId = computed(() => String(route.params.siteId || ''))
 
 const targets = ref<VncTarget[]>([])
 const sessions = ref<VncSession[]>([])
 const targetPag = usePagination(targets)
 const sessionPag = usePagination(sessions)
-const errMsg = ref<string | null>(null)
-const okMsg = ref<string | null>(null)
 
 // Create / Edit modal state
 const showModal = ref(false)
@@ -29,11 +30,22 @@ const formPort = ref('5900')
 const formPassword = ref('')
 const formClearPassword = ref(false)
 const formActive = ref(true)
+const formSubmitted = ref(false)
+const formTouched = ref<Record<string, boolean>>({})
 const saving = ref(false)
 const deleteTarget = ref<VncTarget | null>(null)
 
+const formErrors = computed(() => ({
+  name: validateRequiredText(formName.value, 'Display name', { min: 1, max: 100 }),
+  host: validateIpAddress(formHost.value, 'Host IP'),
+  port: validatePort(formPort.value, 'Port'),
+}))
+
+function showFormErr(field: 'name' | 'host' | 'port'): string | null {
+  return formSubmitted.value || formTouched.value[field] ? formErrors.value[field] : null
+}
+
 async function loadData() {
-  errMsg.value = null
   try {
     const [tRes, sRes] = await Promise.all([
       apiRequest<{ targets: VncTarget[] }>(`/api/v1/vnc/sites/${siteId.value}/operator/targets`),
@@ -42,7 +54,7 @@ async function loadData() {
     targets.value = tRes.targets || []
     sessions.value = sRes.sessions || []
   } catch (err) {
-    errMsg.value = err instanceof Error ? err.message : 'Failed to load VNC edge points'
+    toast.error(err, 'Failed to load VNC edge points')
   }
 }
 
@@ -69,6 +81,8 @@ function openCreate() {
   formPassword.value = ''
   formClearPassword.value = false
   formActive.value = true
+  formSubmitted.value = false
+  formTouched.value = {}
   showModal.value = true
 }
 
@@ -80,43 +94,49 @@ function openEdit(t: VncTarget) {
   formPassword.value = ''
   formClearPassword.value = false
   formActive.value = t.isActive
+  formSubmitted.value = false
+  formTouched.value = {}
   showModal.value = true
 }
 
 async function saveTarget() {
-  errMsg.value = null
-  okMsg.value = null
+  formSubmitted.value = true
+  const vErr = firstError(formErrors.value)
+  if (vErr) {
+    toast.error(vErr, 'Validation Error')
+    return
+  }
   saving.value = true
   try {
     if (editingId.value) {
       await apiRequest(`/api/v1/vnc/sites/${siteId.value}/operator/targets/${editingId.value}`, {
         method: 'PATCH',
         body: JSON.stringify({
-          name: formName.value,
-          host: formHost.value,
+          name: formName.value.trim(),
+          host: formHost.value.trim(),
           port: Number(formPort.value),
           isActive: formActive.value,
           clearPassword: formClearPassword.value,
           ...(formPassword.value ? { password: formPassword.value } : {}),
         }),
       })
-      okMsg.value = `Updated VNC edge point "${formName.value}".`
+      toast.success(`Updated VNC edge point "${formName.value.trim()}".`)
     } else {
       await apiRequest(`/api/v1/vnc/sites/${siteId.value}/operator/targets`, {
         method: 'POST',
         body: JSON.stringify({
-          name: formName.value,
-          host: formHost.value,
+          name: formName.value.trim(),
+          host: formHost.value.trim(),
           port: Number(formPort.value),
           ...(formPassword.value ? { password: formPassword.value } : {}),
         }),
       })
-      okMsg.value = `Added VNC edge point "${formName.value}".`
+      toast.success(`Added VNC edge point "${formName.value.trim()}".`)
     }
     showModal.value = false
     await loadData()
   } catch (err) {
-    errMsg.value = err instanceof Error ? err.message : 'Failed to save VNC edge point'
+    toast.error(err, 'Failed to save VNC edge point')
   } finally {
     saving.value = false
   }
@@ -130,14 +150,14 @@ async function confirmRemoveTarget() {
   const t = deleteTarget.value
   deleteTarget.value = null
   if (!t) return
-  errMsg.value = null
   try {
     await apiRequest(`/api/v1/vnc/sites/${siteId.value}/operator/targets/${t.id}`, {
       method: 'DELETE',
     })
+    toast.success(`Deleted VNC edge point "${t.name}".`)
     await loadData()
   } catch (err) {
-    errMsg.value = err instanceof Error ? err.message : 'Failed to delete VNC edge point'
+    toast.error(err, 'Failed to delete VNC edge point')
   }
 }
 
@@ -166,9 +186,6 @@ function formatBytes(n: number): string {
         Add VNC Edge Point
       </button>
     </div>
-
-    <p v-if="errMsg" class="rounded-lg border border-rose-500/40 bg-rose-500/10 p-3 text-xs text-rose-200">{{ errMsg }}</p>
-    <p v-if="okMsg" class="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-200">{{ okMsg }}</p>
 
     <!-- Targets Table & Mobile Cards -->
     <section class="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60">
@@ -357,19 +374,41 @@ function formatBytes(n: number): string {
               <X class="h-4 w-4" />
             </button>
           </div>
-          <form class="mt-4 space-y-4" @submit.prevent="saveTarget">
+          <form novalidate class="mt-4 space-y-4" @submit.prevent="saveTarget">
             <div>
               <label class="mb-1 block text-xs text-slate-400">Display Name</label>
-              <input v-model="formName" required placeholder="HMI Panel 1" class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white focus:border-amber-500 focus:outline-none" />
+              <input
+                v-model="formName"
+                placeholder="HMI Panel 1"
+                class="w-full rounded-lg border bg-slate-950 px-3 py-2 text-sm text-white focus:outline-none"
+                :class="showFormErr('name') ? 'border-rose-500 focus:border-rose-400' : 'border-slate-700 focus:border-amber-500'"
+                @blur="formTouched.name = true"
+              />
+              <p v-if="showFormErr('name')" class="mt-1 text-[11px] text-rose-400">{{ showFormErr('name') }}</p>
             </div>
             <div class="grid gap-3 sm:grid-cols-3">
               <div class="sm:col-span-2">
                 <label class="mb-1 block text-xs text-slate-400">Host IP (inside site LAN)</label>
-                <input v-model="formHost" required placeholder="192.168.10.25" class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs text-white focus:border-amber-500 focus:outline-none" />
+                <input
+                  v-model="formHost"
+                  placeholder="192.168.10.25"
+                  class="w-full rounded-lg border bg-slate-950 px-3 py-2 font-mono text-xs text-white focus:outline-none"
+                  :class="showFormErr('host') ? 'border-rose-500 focus:border-rose-400' : 'border-slate-700 focus:border-amber-500'"
+                  @blur="formTouched.host = true"
+                />
+                <p v-if="showFormErr('host')" class="mt-1 text-[11px] text-rose-400">{{ showFormErr('host') }}</p>
               </div>
               <div>
                 <label class="mb-1 block text-xs text-slate-400">Port</label>
-                <NumericTextInput v-model="formPort" :min="1" :max="65535" required placeholder="5900" />
+                <NumericTextInput
+                  v-model="formPort"
+                  :min="1"
+                  :max="65535"
+                  required
+                  placeholder="5900"
+                  :external-error="showFormErr('port')"
+                  @blur="formTouched.port = true"
+                />
               </div>
             </div>
             <div>

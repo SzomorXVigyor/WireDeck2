@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -231,7 +232,14 @@ type CreateDeviceInput struct {
 }
 
 func (s *Service) CreateDevice(ctx context.Context, in CreateDeviceInput) (*models.Device, error) {
+	name := strings.TrimSpace(in.Name)
+	if name == "" || len(name) > 100 {
+		return nil, errors.New("device name must be between 1 and 100 characters")
+	}
 	host := strings.TrimSpace(in.Host)
+	if _, err := netip.ParseAddr(host); err != nil {
+		return nil, errors.New("host must be a valid IPv4 or IPv6 address")
+	}
 	if !s.devDirectDial && len(in.LanSubnets) > 0 && !wireguard.ContainsHost(host, in.LanSubnets) {
 		return nil, ErrHostOutOfSubnets
 	}
@@ -246,11 +254,14 @@ func (s *Service) CreateDevice(ctx context.Context, in CreateDeviceInput) (*mode
 	if port == 0 {
 		port = 502
 	}
+	if port < 1 || port > 65535 {
+		return nil, errors.New("port must be between 1 and 65535")
+	}
 	now := time.Now().UTC()
 	dev := &models.Device{
 		ID:        uuid.New(),
 		SiteID:    in.SiteID,
-		Name:      strings.TrimSpace(in.Name),
+		Name:      name,
 		Host:      host,
 		Port:      port,
 		Protocol:  proto,
@@ -286,16 +297,26 @@ func (s *Service) UpdateDevice(ctx context.Context, siteID, deviceID uuid.UUID, 
 		return nil, err
 	}
 	if in.Name != nil {
-		dev.Name = strings.TrimSpace(*in.Name)
+		name := strings.TrimSpace(*in.Name)
+		if name == "" || len(name) > 100 {
+			return nil, errors.New("device name must be between 1 and 100 characters")
+		}
+		dev.Name = name
 	}
 	if in.Host != nil {
 		h := strings.TrimSpace(*in.Host)
+		if _, err := netip.ParseAddr(h); err != nil {
+			return nil, errors.New("host must be a valid IPv4 or IPv6 address")
+		}
 		if !s.devDirectDial && len(in.LanSubnets) > 0 && !wireguard.ContainsHost(h, in.LanSubnets) {
 			return nil, ErrHostOutOfSubnets
 		}
 		dev.Host = h
 	}
 	if in.Port != nil {
+		if *in.Port < 1 || *in.Port > 65535 {
+			return nil, errors.New("port must be between 1 and 65535")
+		}
 		dev.Port = *in.Port
 	}
 	if in.Protocol != nil {
@@ -342,6 +363,10 @@ func (s *Service) ListMappings(ctx context.Context, siteID uuid.UUID) ([]models.
 }
 
 func (s *Service) CreateMapping(ctx context.Context, siteID, deviceID uuid.UUID, name string, rawAttrs map[string]any) (*models.RegisterMapping, error) {
+	trimmedName := strings.TrimSpace(name)
+	if trimmedName == "" || len(trimmedName) > 100 {
+		return nil, errors.New("register name must be between 1 and 100 characters")
+	}
 	dev := new(models.Device)
 	if err := s.db.NewSelect().Model(dev).Where("id = ? AND site_id = ?", deviceID, siteID).Scan(ctx); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -363,7 +388,7 @@ func (s *Service) CreateMapping(ctx context.Context, siteID, deviceID uuid.UUID,
 		ID:                 uuid.New(),
 		DeviceID:           deviceID,
 		SiteID:             siteID,
-		Name:               strings.TrimSpace(name),
+		Name:               trimmedName,
 		ProtocolAttributes: normAttrs,
 		FunctionCode:       sum.FunctionCode,
 		RegisterAddress:    sum.RegisterAddress,
@@ -408,7 +433,11 @@ func (s *Service) UpdateMapping(ctx context.Context, siteID, mappingID uuid.UUID
 		return nil, ErrNotFound
 	}
 	if in.Name != nil {
-		m.Name = strings.TrimSpace(*in.Name)
+		trimmedName := strings.TrimSpace(*in.Name)
+		if trimmedName == "" || len(trimmedName) > 100 {
+			return nil, errors.New("register name must be between 1 and 100 characters")
+		}
+		m.Name = trimmedName
 	}
 	if in.ProtocolAttributes != nil {
 		prov, err := s.providers.Get(dev.Protocol)
@@ -497,26 +526,45 @@ func (s *Service) ListDashboards(ctx context.Context, siteID uuid.UUID) ([]model
 	return list, err
 }
 
-func (s *Service) CreateDashboard(ctx context.Context, siteID uuid.UUID, name string, isDefault bool, pollIntervalMs int) (*models.Dashboard, error) {
+func (s *Service) CreateDashboard(ctx context.Context, siteID uuid.UUID, name string, isDefault bool, pollIntervalMs int, layout map[string]any) (*models.Dashboard, error) {
+	trimmedName := strings.TrimSpace(name)
+	if trimmedName == "" || len(trimmedName) > 100 {
+		return nil, errors.New("dashboard name must be between 1 and 100 characters")
+	}
 	if pollIntervalMs < 1000 {
 		pollIntervalMs = 1000
 	} else if pollIntervalMs > 60000 {
 		pollIntervalMs = 60000
+	}
+	if layout == nil {
+		layout = map[string]any{}
 	}
 	cnt, _ := s.db.NewSelect().Model((*models.Dashboard)(nil)).Where("site_id = ?", siteID).Count(ctx)
 	now := time.Now().UTC()
 	d := &models.Dashboard{
 		ID:             uuid.New(),
 		SiteID:         siteID,
-		Name:           strings.TrimSpace(name),
-		Layout:         map[string]any{},
+		Name:           trimmedName,
+		Layout:         layout,
 		IsDefault:      isDefault,
 		SortOrder:      cnt,
 		PollIntervalMs: pollIntervalMs,
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
-	if _, err := s.db.NewInsert().Model(d).Exec(ctx); err != nil {
+	err := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if isDefault {
+			if _, err := tx.NewUpdate().Model((*models.Dashboard)(nil)).
+				Set("is_default = FALSE, updated_at = ?", now).
+				Where("site_id = ? AND is_default = TRUE", siteID).
+				Exec(ctx); err != nil {
+				return err
+			}
+		}
+		_, err := tx.NewInsert().Model(d).Exec(ctx)
+		return err
+	})
+	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") {
 			return nil, ErrConflict
 		}
@@ -525,7 +573,7 @@ func (s *Service) CreateDashboard(ctx context.Context, siteID uuid.UUID, name st
 	return d, nil
 }
 
-func (s *Service) UpdateDashboard(ctx context.Context, siteID, dashboardID uuid.UUID, name *string, isDefault *bool, sortOrder *int, pollIntervalMs *int) (*models.Dashboard, error) {
+func (s *Service) UpdateDashboard(ctx context.Context, siteID, dashboardID uuid.UUID, name *string, isDefault *bool, sortOrder *int, pollIntervalMs *int, layout map[string]any) (*models.Dashboard, error) {
 	d := new(models.Dashboard)
 	if err := s.db.NewSelect().Model(d).Where("id = ? AND site_id = ?", dashboardID, siteID).Scan(ctx); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -534,7 +582,11 @@ func (s *Service) UpdateDashboard(ctx context.Context, siteID, dashboardID uuid.
 		return nil, err
 	}
 	if name != nil {
-		d.Name = strings.TrimSpace(*name)
+		trimmedName := strings.TrimSpace(*name)
+		if trimmedName == "" || len(trimmedName) > 100 {
+			return nil, errors.New("dashboard name must be between 1 and 100 characters")
+		}
+		d.Name = trimmedName
 	}
 	if isDefault != nil {
 		d.IsDefault = *isDefault
@@ -551,8 +603,26 @@ func (s *Service) UpdateDashboard(ctx context.Context, siteID, dashboardID uuid.
 		}
 		d.PollIntervalMs = v
 	}
-	d.UpdatedAt = time.Now().UTC()
-	if _, err := s.db.NewUpdate().Model(d).Column("name", "is_default", "sort_order", "poll_interval_ms", "updated_at").WherePK().Exec(ctx); err != nil {
+	if layout != nil {
+		d.Layout = layout
+	}
+	now := time.Now().UTC()
+	d.UpdatedAt = now
+	err := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if isDefault != nil && *isDefault {
+			if _, err := tx.NewUpdate().Model((*models.Dashboard)(nil)).
+				Set("is_default = FALSE, updated_at = ?", now).
+				Where("site_id = ? AND id <> ? AND is_default = TRUE", siteID, dashboardID).
+				Exec(ctx); err != nil {
+				return err
+			}
+		}
+		_, err := tx.NewUpdate().Model(d).
+			Column("name", "layout", "is_default", "sort_order", "poll_interval_ms", "updated_at").
+			WherePK().Exec(ctx)
+		return err
+	})
+	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") {
 			return nil, ErrConflict
 		}
@@ -598,6 +668,9 @@ func (s *Service) CreateWidget(ctx context.Context, siteID, dashboardID uuid.UUI
 	w.ID = uuid.New()
 	w.DashboardID = dashboardID
 	w.Name = strings.TrimSpace(w.Name)
+	if w.Name == "" || len(w.Name) > 100 {
+		return nil, errors.New("tile title must be between 1 and 100 characters")
+	}
 	if w.SortOrder == 0 {
 		w.SortOrder = cnt
 	}
@@ -628,6 +701,10 @@ func (s *Service) UpdateWidget(ctx context.Context, siteID, widgetID uuid.UUID, 
 		return nil, err
 	}
 	patch(w)
+	w.Name = strings.TrimSpace(w.Name)
+	if w.Name == "" || len(w.Name) > 100 {
+		return nil, errors.New("tile title must be between 1 and 100 characters")
+	}
 	w.UpdatedAt = time.Now().UTC()
 	if _, err := s.db.NewUpdate().Model(w).
 		Column("name", "widget_type", "register_mapping_id", "sort_order", "style", "extra", "updated_at").

@@ -2,10 +2,11 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import * as echarts from 'echarts'
-import { Calendar, ChevronDown, Download, LineChart, PanelLeftClose, PanelLeftOpen, RefreshCw, Search } from 'lucide-vue-next'
+import { Calendar, ChevronDown, Download, LineChart, PanelLeftClose, PanelLeftOpen, Pause, Play, RefreshCw, Search } from 'lucide-vue-next'
 import { apiRequest } from '../../services/api'
 import { useAuthStore } from '../../stores/auth'
 import { useThemeStore } from '../../stores/theme'
+import { useToastStore } from '../../stores/toast'
 import type { HistoryKeyInfo, HistoryQueryResponse, HistorySeries } from '../../types/webview'
 import { clampPrecision, decodePrecision, formatPrecisionValue } from '../../utils/precision'
 import TablePagination from '../../components/TablePagination.vue'
@@ -14,6 +15,7 @@ import { usePagination } from '../../composables/usePagination'
 const route = useRoute()
 const auth = useAuthStore()
 const theme = useThemeStore()
+const toast = useToastStore()
 const siteId = computed(() => String(route.params.siteId || ''))
 
 const SERIES_COLORS = [
@@ -51,13 +53,35 @@ const customTo = ref('')
 const loadingKeys = ref(false)
 const loadingChart = ref(false)
 const exporting = ref(false)
-const errMsg = ref<string | null>(null)
 const result = ref<HistoryQueryResponse | null>(null)
 const keysPanelOpen = ref(typeof window !== 'undefined' ? window.innerWidth >= 1024 : true)
+const autoRefresh = ref(true)
+const lastUpdatedAt = ref<Date | null>(null)
 
 const chartEl = ref<HTMLDivElement | null>(null)
 let chartInstance: echarts.ECharts | null = null
 let resizeObserver: ResizeObserver | null = null
+let pollTimer: number | null = null
+let backgroundQueryInflight = false
+
+const autoRefreshIntervalMs = computed(() => {
+  switch (preset.value) {
+    case '15m':
+    case '1h':
+      return 5000
+    case '6h':
+    case '24h':
+      return 10000
+    case 'custom':
+      return 0
+    default:
+      return 20000
+  }
+})
+
+const isLivePolling = computed(
+  () => autoRefresh.value && preset.value !== 'custom' && selectedIds.value.length > 0 && autoRefreshIntervalMs.value > 0,
+)
 
 const filteredKeys = computed(() => {
   const q = keySearch.value.trim().toLowerCase()
@@ -189,10 +213,19 @@ const summaries = computed<SeriesSummary[]>(() => {
 
 const summaryPag = usePagination(summaries)
 
-function renderChart() {
+function renderChart(preserveZoom = false) {
   if (!chartEl.value) return
   if (!chartInstance) {
     chartInstance = echarts.init(chartEl.value)
+  }
+
+  let savedZoom: { start?: number; end?: number } | null = null
+  if (preserveZoom) {
+    const cur = chartInstance.getOption() as { dataZoom?: Array<{ start?: number; end?: number }> } | undefined
+    const dz = cur?.dataZoom?.[0]
+    if (dz && (dz.start !== 0 || dz.end !== 100)) {
+      savedZoom = { start: dz.start, end: dz.end }
+    }
   }
 
   const isDark = theme.resolvedTheme === 'dark'
@@ -225,7 +258,7 @@ function renderChart() {
   const isCompact = (chartEl.value?.clientWidth ?? 800) < 520
 
   const option: echarts.EChartsOption = {
-    animationDuration: 220,
+    animationDuration: preserveZoom ? 0 : 220,
     backgroundColor: 'transparent',
     tooltip: {
       trigger: 'axis',
@@ -261,7 +294,11 @@ function renderChart() {
       splitLine: { lineStyle: { color: gridLine } },
     },
     dataZoom: [
-      { type: 'inside', xAxisIndex: 0 },
+      {
+        type: 'inside',
+        xAxisIndex: 0,
+        ...(savedZoom ? { start: savedZoom.start, end: savedZoom.end } : {}),
+      },
       {
         type: 'slider',
         xAxisIndex: 0,
@@ -270,6 +307,7 @@ function renderChart() {
         borderColor: gridLine,
         fillerColor: isDark ? 'rgba(56,189,248,0.18)' : 'rgba(2,132,199,0.16)',
         textStyle: { color: textColor, fontSize: 10 },
+        ...(savedZoom ? { start: savedZoom.start, end: savedZoom.end } : {}),
       },
     ],
     series: seriesData,
@@ -281,7 +319,6 @@ function renderChart() {
 async function loadKeys() {
   if (!siteId.value) return
   loadingKeys.value = true
-  errMsg.value = null
   try {
     const res = await apiRequest<{ keys: HistoryKeyInfo[] }>(`/api/v1/webview/sites/${siteId.value}/history/keys`)
     keys.value = res.keys || []
@@ -298,20 +335,24 @@ async function loadKeys() {
       renderChart()
     }
   } catch (err) {
-    errMsg.value = err instanceof Error ? err.message : 'Failed to load history keys'
+    toast.error(err, 'Failed to load history keys')
   } finally {
     loadingKeys.value = false
   }
 }
 
-async function queryHistory() {
+async function queryHistory(silent = false) {
   if (!siteId.value || selectedIds.value.length === 0) {
     result.value = null
     renderChart()
     return
   }
-  loadingChart.value = true
-  errMsg.value = null
+  if (silent && (backgroundQueryInflight || document.hidden)) return
+  if (silent) {
+    backgroundQueryInflight = true
+  } else {
+    loadingChart.value = true
+  }
   try {
     const { from, to } = resolveRange()
     const params = new URLSearchParams({
@@ -323,18 +364,41 @@ async function queryHistory() {
       `/api/v1/webview/sites/${siteId.value}/history?${params.toString()}`,
     )
     result.value = res
-    renderChart()
+    lastUpdatedAt.value = new Date()
+    renderChart(silent)
   } catch (err) {
-    errMsg.value = err instanceof Error ? err.message : 'Failed to query history'
+    if (!silent) {
+      toast.error(err, 'Failed to query history')
+    }
   } finally {
-    loadingChart.value = false
+    if (silent) {
+      backgroundQueryInflight = false
+    } else {
+      loadingChart.value = false
+    }
+  }
+}
+
+function restartAutoRefresh() {
+  if (pollTimer !== null) {
+    window.clearInterval(pollTimer)
+    pollTimer = null
+  }
+  if (!isLivePolling.value) return
+  pollTimer = window.setInterval(() => {
+    void queryHistory(true)
+  }, autoRefreshIntervalMs.value)
+}
+
+function onVisibilityChange() {
+  if (!document.hidden && isLivePolling.value) {
+    void queryHistory(true)
   }
 }
 
 async function exportCsv() {
   if (!siteId.value || selectedIds.value.length === 0) return
   exporting.value = true
-  errMsg.value = null
   try {
     const { from, to } = resolveRange()
     const params = new URLSearchParams({
@@ -362,8 +426,9 @@ async function exportCsv() {
     a.click()
     a.remove()
     URL.revokeObjectURL(url)
+    toast.success('History CSV exported.')
   } catch (err) {
-    errMsg.value = err instanceof Error ? err.message : 'CSV export failed'
+    toast.error(err, 'CSV export failed')
   } finally {
     exporting.value = false
   }
@@ -395,8 +460,12 @@ watch(keysPanelOpen, async () => {
   chartInstance?.resize()
 })
 
+watch([isLivePolling, autoRefreshIntervalMs], restartAutoRefresh, { immediate: true })
+
 onMounted(() => {
+  document.addEventListener('visibilitychange', onVisibilityChange)
   void loadKeys()
+  restartAutoRefresh()
 })
 
 watch(siteId, () => {
@@ -412,6 +481,11 @@ watch(
 )
 
 onUnmounted(() => {
+  document.removeEventListener('visibilitychange', onVisibilityChange)
+  if (pollTimer !== null) {
+    window.clearInterval(pollTimer)
+    pollTimer = null
+  }
   resizeObserver?.disconnect()
   chartInstance?.dispose()
   chartInstance = null
@@ -434,6 +508,27 @@ onUnmounted(() => {
 
       <div class="flex flex-wrap items-center gap-2">
         <button
+          v-if="preset !== 'custom' && selectedIds.length > 0"
+          type="button"
+          class="inline-flex h-9 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition"
+          :class="
+            autoRefresh
+              ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-200 hover:bg-emerald-500/25'
+              : 'border-slate-700 bg-slate-900 text-slate-300 hover:bg-slate-800'
+          "
+          :title="autoRefresh ? `Auto-updating every ${Math.round(autoRefreshIntervalMs / 1000)}s` : 'Auto-update paused'"
+          @click="autoRefresh = !autoRefresh"
+        >
+          <span
+            v-if="autoRefresh"
+            class="h-2 w-2 rounded-full bg-emerald-400 animate-pulse"
+          />
+          <Pause v-if="autoRefresh" class="h-3 w-3" />
+          <Play v-else class="h-3 w-3" />
+          <span>{{ autoRefresh ? `Live ${Math.round(autoRefreshIntervalMs / 1000)}s` : 'Paused' }}</span>
+        </button>
+
+        <button
           v-if="keys.length > 0"
           type="button"
           class="hidden h-9 items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3 text-xs font-medium text-slate-200 transition hover:bg-slate-800 lg:inline-flex"
@@ -447,7 +542,7 @@ onUnmounted(() => {
           type="button"
           :disabled="loadingChart || selectedIds.length === 0"
           class="hidden h-9 items-center justify-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3 text-xs font-medium leading-none text-slate-200 transition hover:bg-slate-800 disabled:opacity-40 sm:inline-flex"
-          @click="queryHistory"
+          @click="queryHistory(false)"
         >
           <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': loadingChart }" />
           Refresh
@@ -499,16 +594,12 @@ onUnmounted(() => {
         <button
           type="button"
           class="h-9 rounded-lg bg-sky-500 px-3.5 text-xs font-semibold text-slate-950 transition hover:bg-sky-400 sm:h-8"
-          @click="queryHistory"
+          @click="queryHistory(false)"
         >
           Apply Range
         </button>
       </div>
     </div>
-
-    <p v-if="errMsg" class="rounded-lg border border-rose-500/40 bg-rose-500/10 px-4 py-2.5 text-xs text-rose-200">
-      {{ errMsg }}
-    </p>
 
     <!-- Empty State -->
     <div

@@ -1,12 +1,16 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { Lock } from 'lucide-vue-next'
 import type { ColorOption, RegisterMapping, TelemetrySample, WebviewWidget } from '../../types/webview'
+import { resolveStateColorValue, resolveStateVisual, resolveTileAccent, resolveTileSize } from '../../utils/tiles'
 
 const props = defineProps<{
   widget: WebviewWidget
   mapping?: RegisterMapping
   sample?: TelemetrySample
   canWrite: boolean
+  preview?: boolean
+  previewState?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -14,20 +18,60 @@ const emit = defineEmits<{
 }>()
 
 const busy = ref(false)
-const quality = computed(() => props.sample?.quality ?? 'STALE')
-const isOn = computed(() => (props.sample?.value ?? 0) !== 0)
-const writable = computed(() => props.canWrite && props.mapping && props.mapping.protocolAttributes?.accessMode === 'READ_WRITE')
+const tileSize = computed(() => resolveTileSize(props.widget))
+const tileAccent = computed(() => resolveTileAccent(props.widget))
+
+const quality = computed(() => {
+  if (props.sample) return props.sample.quality
+  return props.preview ? 'GOOD' : 'STALE'
+})
+
+const isOn = computed(() => {
+  if (props.sample) return (props.sample.value ?? 0) !== 0
+  if (props.preview) return props.previewState ?? true
+  return false
+})
+
+const writable = computed(
+  () => !props.preview && props.canWrite && Boolean(props.mapping) && props.mapping?.protocolAttributes?.accessMode === 'READ_WRITE',
+)
 const onLabel = computed(() => String(props.widget.extra?.onLabel || 'ON'))
 const offLabel = computed(() => String(props.widget.extra?.offLabel || 'OFF'))
-const color = computed<ColorOption>(() => (props.widget.style?.color as ColorOption) || 'emerald')
 
-const activeTrackMap: Record<ColorOption, string> = {
-  emerald: 'border-emerald-400 bg-emerald-500/80',
-  sky: 'border-sky-400 bg-sky-500/80',
-  rose: 'border-rose-400 bg-rose-500/80',
-  amber: 'border-amber-400 bg-amber-500/80',
-  slate: 'border-slate-400 bg-slate-500/80',
-}
+const onColor = computed<ColorOption>(() => resolveStateColorValue(props.widget.style?.color, 'tile_accent'))
+const offColor = computed<ColorOption>(() => resolveStateColorValue(props.widget.style?.offColor, 'tile_accent'))
+
+const activeStateVisual = computed(() =>
+  resolveStateVisual(isOn.value ? onColor.value : offColor.value, tileAccent.value, 'tile_accent'),
+)
+
+// Both ON and OFF switch state colors override the base tile accent entirely when quality is GOOD.
+const surfaceClass = computed(() => {
+  if (quality.value === 'BAD') return 'border-rose-500/45 bg-rose-950/25'
+  if (quality.value === 'STALE') return 'border-amber-500/35 bg-slate-900/75'
+  return activeStateVisual.value.surfaceClass
+})
+
+const surfaceStyle = computed(() => (quality.value === 'GOOD' ? activeStateVisual.value.surfaceStyle : undefined))
+
+const topBarClass = computed(() => {
+  if (quality.value === 'BAD') return 'bg-rose-500'
+  if (quality.value === 'STALE') return 'bg-amber-400/80'
+  return activeStateVisual.value.barClass
+})
+
+const topBarStyle = computed(() => (quality.value === 'GOOD' ? activeStateVisual.value.barStyle : undefined))
+
+const trackClass = computed(() => {
+  if (isOn.value) return ''
+  return activeStateVisual.value.isNeutral ? 'border-slate-700 bg-slate-800' : ''
+})
+
+const trackStyle = computed(() =>
+  isOn.value ? activeStateVisual.value.switchOnTrackStyle : activeStateVisual.value.switchOffTrackStyle,
+)
+
+const isHero = computed(() => tileSize.value === 'lg' || tileSize.value === 'tall')
 
 function toggle() {
   if (!writable.value || !props.mapping || busy.value) return
@@ -41,45 +85,101 @@ function toggle() {
 
 <template>
   <div
-    class="flex flex-col justify-between rounded-xl border p-4 transition"
-    :class="
-      quality === 'BAD'
-        ? 'border-rose-500/40 bg-rose-950/20'
-        : quality === 'STALE'
-          ? 'border-amber-500/30 bg-slate-900/60'
-          : 'border-slate-800 bg-slate-900/75'
-    "
+    class="wd-tile-surface flex h-full w-full flex-col justify-between border transition-colors"
+    :class="[surfaceClass, tileSize === 'sm' ? 'p-3' : 'p-3.5 sm:p-4']"
+    :style="surfaceStyle"
   >
-    <div class="flex items-start justify-between gap-2">
-      <p class="truncate text-xs font-semibold text-slate-200">{{ widget.name }}</p>
-      <span
-        v-if="quality !== 'GOOD'"
-        class="rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase"
-        :class="quality === 'BAD' ? 'bg-rose-500/20 text-rose-300' : 'bg-amber-500/20 text-amber-300'"
-        :title="sample?.error || 'Waiting for fresh telemetry'"
+    <div class="pointer-events-none absolute inset-x-0 top-0 h-[3px] transition-colors" :class="topBarClass" :style="topBarStyle" />
+
+    <!-- Header -->
+    <div class="flex items-start justify-between gap-2 pt-0.5">
+      <p
+        class="font-semibold leading-snug tracking-tight text-slate-200"
+        :class="tileSize === 'sm' ? 'line-clamp-2 text-[11px] sm:text-xs' : 'truncate text-xs sm:text-[13px]'"
       >
-        {{ quality }}
-      </span>
+        {{ widget.name || 'Untitled Switch' }}
+      </p>
+      <div class="flex shrink-0 items-center gap-1">
+        <Lock
+          v-if="!preview && !writable"
+          class="h-3.5 w-3.5 text-slate-500"
+          title="Read only"
+        />
+        <span
+          v-if="quality !== 'GOOD'"
+          class="rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide"
+          :class="quality === 'BAD' ? 'bg-rose-500/20 text-rose-300' : 'bg-amber-500/20 text-amber-300'"
+          :title="sample?.error || 'Waiting for fresh telemetry'"
+        >
+          {{ quality }}
+        </span>
+      </div>
     </div>
 
-    <div class="mt-3 mb-1 flex items-center justify-between gap-3">
-      <span class="text-sm font-semibold" :class="isOn ? 'text-white' : 'text-slate-400'">
+    <!-- Switch Control -->
+    <div
+      class="flex flex-1"
+      :class="
+        isHero
+          ? 'flex-col items-center justify-center gap-4 py-2 text-center'
+          : 'items-end justify-between gap-2 pt-2'
+      "
+    >
+      <span
+        class="min-w-0 truncate font-bold tracking-tight transition-colors"
+        :class="[
+          isOn ? 'text-white' : 'text-slate-300',
+          tileSize === 'lg'
+            ? 'text-xl sm:text-2xl'
+            : tileSize === 'tall'
+              ? 'text-base sm:text-lg'
+              : tileSize === 'sm'
+                ? 'text-xs sm:text-sm'
+                : 'text-sm sm:text-base',
+        ]"
+      >
         {{ isOn ? onLabel : offLabel }}
       </span>
+
       <button
         type="button"
         role="switch"
         :aria-checked="isOn"
-        :disabled="!writable || busy"
-        class="relative inline-flex h-7 w-13 shrink-0 cursor-pointer items-center rounded-full border transition disabled:cursor-not-allowed disabled:opacity-40"
-        :class="isOn ? (activeTrackMap[color] || activeTrackMap.emerald) : 'border-slate-700 bg-slate-800'"
+        :aria-label="`${widget.name || 'Switch'} (${isOn ? onLabel : offLabel})`"
+        :disabled="(!preview && !writable) || busy"
+        class="relative inline-flex shrink-0 items-center rounded-full border transition-colors disabled:opacity-45"
+        :class="[
+          trackClass,
+          isHero ? 'h-9 w-16' : 'h-7 w-13',
+          preview ? 'pointer-events-none' : '',
+        ]"
+        :style="trackStyle"
         @click="toggle"
       >
         <span
-          class="inline-block h-5 w-5 transform rounded-full bg-white shadow transition"
-          :class="isOn ? 'translate-x-6.5' : 'translate-x-1'"
+          class="inline-block transform rounded-full bg-white shadow transition-transform"
+          :class="[
+            isHero
+              ? isOn
+                ? 'h-7 w-7 translate-x-8'
+                : 'h-7 w-7 translate-x-1'
+              : isOn
+                ? 'h-5 w-5 translate-x-6.5'
+                : 'h-5 w-5 translate-x-1',
+          ]"
         />
       </button>
+    </div>
+
+    <!-- Subtle Footer on Tall / Large Tiles -->
+    <div
+      v-if="isHero"
+      class="flex items-center justify-between gap-2 border-t border-slate-800/60 pt-2 text-[10px] text-slate-400"
+    >
+      <span class="truncate font-mono">{{ mapping?.name || 'Toggle Switch' }}</span>
+      <span class="shrink-0 font-mono uppercase text-slate-500">
+        {{ writable || preview ? 'R/W' : 'R' }}
+      </span>
     </div>
   </div>
 </template>

@@ -17,21 +17,41 @@ import {
 import { apiRequest } from '../../services/api'
 import { useAlarmStore } from '../../stores/alarms'
 import { useSiteStore } from '../../stores/sites'
+import { useToastStore } from '../../stores/toast'
 import { useWebviewStore } from '../../stores/webview'
 import type { AlarmCondition, AlarmEvent, AlarmEventsResponse, AlarmSummary } from '../../types/webview'
+import CustomSelect, { type SelectOption } from '../../components/CustomSelect.vue'
 import TablePagination from '../../components/TablePagination.vue'
 import { usePagination } from '../../composables/usePagination'
 
 const route = useRoute()
 const siteStore = useSiteStore()
+const toast = useToastStore()
 const webviewStore = useWebviewStore()
 const alarmStore = useAlarmStore()
+
+const SEVERITY_OPTIONS: SelectOption<'ALL' | 'CRITICAL' | 'WARNING' | 'INFO'>[] = [
+  { value: 'ALL', label: 'All Severities' },
+  { value: 'CRITICAL', label: 'Critical' },
+  { value: 'WARNING', label: 'Warning' },
+  { value: 'INFO', label: 'Info' },
+]
+
+const ACK_OPTIONS: SelectOption<'ALL' | 'false' | 'true'>[] = [
+  { value: 'ALL', label: 'All Ack States' },
+  { value: 'false', label: 'Unacknowledged' },
+  { value: 'true', label: 'Acknowledged' },
+]
+
+const siteFilterOptions = computed<SelectOption<string>[]>(() => [
+  { value: '', label: 'All Accessible Sites' },
+  ...siteStore.sites.map((s) => ({ value: s.id, label: s.name })),
+])
 
 const routeSiteId = computed(() => (typeof route.params.siteId === 'string' ? route.params.siteId : ''))
 const isGlobal = computed(() => !routeSiteId.value)
 
 const loading = ref(false)
-const errMsg = ref<string | null>(null)
 const events = ref<AlarmEvent[]>([])
 const summary = ref<AlarmSummary>({
   activeCount: 0,
@@ -129,7 +149,6 @@ async function loadAlarms(silent = false) {
   if (!silent) {
     loading.value = true
   }
-  errMsg.value = null
   try {
     const params = new URLSearchParams()
     params.set('state', stateFilter.value)
@@ -161,7 +180,9 @@ async function loadAlarms(silent = false) {
       unacknowledgedCount: 0,
     }
   } catch (err) {
-    errMsg.value = err instanceof Error ? err.message : 'Failed to load alarms'
+    if (!silent) {
+      toast.error(err, 'Failed to load alarms')
+    }
   } finally {
     loading.value = false
   }
@@ -176,7 +197,6 @@ function openAckModal(ev: AlarmEvent) {
 async function submitAck() {
   if (!ackTarget.value) return
   ackSubmitting.value = true
-  errMsg.value = null
   try {
     const updated = await apiRequest<AlarmEvent>(
       `/api/v1/webview/sites/${ackTarget.value.siteId}/alarms/${ackTarget.value.id}/ack`,
@@ -193,10 +213,11 @@ async function submitAck() {
     }
     ackModalOpen.value = false
     ackTarget.value = null
+    toast.success('Alarm acknowledged.')
     void loadAlarms(true)
     void alarmStore.fetchSummary()
   } catch (err) {
-    errMsg.value = err instanceof Error ? err.message : 'Failed to acknowledge alarm'
+    toast.error(err, 'Failed to acknowledge alarm')
   } finally {
     ackSubmitting.value = false
   }
@@ -345,36 +366,31 @@ onUnmounted(() => {
       </div>
 
       <div class="grid grid-cols-2 gap-2 sm:contents">
-        <select
+        <CustomSelect
           v-model="severityFilter"
-          class="rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-2 text-xs text-white sm:py-1.5"
-        >
-          <option value="ALL">All Severities</option>
-          <option value="CRITICAL">Critical</option>
-          <option value="WARNING">Warning</option>
-          <option value="INFO">Info</option>
-        </select>
+          :options="SEVERITY_OPTIONS"
+          size="sm"
+          aria-label="Filter by severity"
+          class="sm:w-36"
+        />
 
-        <select
+        <CustomSelect
           v-model="ackFilter"
-          class="rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-2 text-xs text-white sm:py-1.5"
-        >
-          <option value="ALL">All Ack States</option>
-          <option value="false">Unacknowledged</option>
-          <option value="true">Acknowledged</option>
-        </select>
+          :options="ACK_OPTIONS"
+          size="sm"
+          aria-label="Filter by acknowledge state"
+          class="sm:w-40"
+        />
       </div>
 
-      <select
+      <CustomSelect
         v-if="isGlobal"
         v-model="siteFilter"
-        class="w-full rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-2 text-xs text-white sm:w-auto sm:py-1.5"
-      >
-        <option value="">All Accessible Sites</option>
-        <option v-for="s in siteStore.sites" :key="s.id" :value="s.id">
-          {{ s.name }}
-        </option>
-      </select>
+        :options="siteFilterOptions"
+        size="sm"
+        aria-label="Filter by site"
+        class="w-full sm:w-48"
+      />
 
       <div class="relative w-full sm:ml-auto sm:min-w-[200px] sm:w-auto sm:flex-initial">
         <Search class="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" />
@@ -386,10 +402,6 @@ onUnmounted(() => {
         />
       </div>
     </div>
-
-    <p v-if="errMsg" class="rounded-lg border border-rose-500/40 bg-rose-500/10 p-3 text-xs text-rose-200">
-      {{ errMsg }}
-    </p>
 
     <!-- Events Container (Mobile Cards + Desktop Table) -->
     <div class="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60">

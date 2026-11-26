@@ -52,10 +52,10 @@ type RegisterMapping struct {
 	Name               string         `bun:",notnull"`
 	ProtocolAttributes map[string]any `bun:",notnull,type:jsonb"`
 	// Mirrored columns kept in sync for SQL constraints / indexing compatibility
-	FunctionCode    string    `bun:",notnull,default:'READ_HOLDING'"`
-	RegisterAddress int       `bun:",notnull,default:0"`
+	FunctionCode    string    `bun:",notnull"`
+	RegisterAddress int       `bun:",notnull"`
 	RegisterCount   int       `bun:",notnull,default:1"`
-	DataType        string    `bun:",notnull,default:'UINT16'"`
+	DataType        string    `bun:",notnull"`
 	WordOrder       string    `bun:",notnull,default:'BIG'"`
 	AccessMode      string    `bun:",notnull,default:'READ'"`
 	IsActive        bool      `bun:",notnull,default:true"`

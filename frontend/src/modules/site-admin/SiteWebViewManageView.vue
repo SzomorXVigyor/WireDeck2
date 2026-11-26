@@ -2,34 +2,33 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import {
-  ArrowDown,
-  ArrowUp,
   Bell,
   Cpu,
   Database,
   Edit3,
+  ExternalLink,
+  GripVertical,
   LayoutGrid,
   Mail,
   Play,
   Plus,
   ShieldCheck,
   Sliders,
+  SlidersHorizontal,
+  Star,
   Trash2,
   X,
 } from 'lucide-vue-next'
 import { apiRequest } from '../../services/api'
+import { useToastStore } from '../../stores/toast'
 import { useWebviewStore } from '../../stores/webview'
 import type { SiteMember } from '../../types/iam'
 import type {
   AlarmCondition,
   AlarmRule,
   AlarmSeverity,
-  ColorOption,
   DeviceProtocol,
-  FontSizeOption,
   HistoryEntry,
-  LampMode,
-  LampStateConfig,
   MemberWritePolicy,
   ModbusAccessMode,
   ModbusDataType,
@@ -37,25 +36,110 @@ import type {
   ModbusWordOrder,
   RegisterMapping,
   TelemetrySample,
+  TileDensity,
+  TileSize,
   WebviewDashboard,
   WebviewDevice,
   WebviewWidget,
-  WidgetType,
 } from '../../types/webview'
-import { clampPrecision, effectiveDisplayBounds } from '../../utils/precision'
+import { clampPrecision } from '../../utils/precision'
+import { resolveDashboardLayout } from '../../utils/tiles'
+import {
+  firstError,
+  validateIntegerRange,
+  validateIpAddress,
+  validateNumberRange,
+  validateOptionalText,
+  validatePort,
+  validateRequiredText,
+} from '../../utils/validation'
+import CustomSelect, { type SelectOption } from '../../components/CustomSelect.vue'
 import StatusBadge from '../../components/StatusBadge.vue'
 import DeleteConfirmModal from '../../components/DeleteConfirmModal.vue'
 import NumericTextInput from '../../components/NumericTextInput.vue'
 import RegisterPicker from '../../components/RegisterPicker.vue'
 import TablePagination from '../../components/TablePagination.vue'
+import DashboardTileGrid from '../../components/webview/DashboardTileGrid.vue'
+import DashboardOptionsModal, { type DashboardOptionsPayload } from '../../components/webview/DashboardOptionsModal.vue'
+import WidgetEditModal, { type WidgetDraftPayload } from '../../components/webview/WidgetEditModal.vue'
 import { usePagination } from '../../composables/usePagination'
 
 const route = useRoute()
+const toast = useToastStore()
 const siteId = computed(() => String(route.params.siteId || ''))
 const webviewStore = useWebviewStore()
 
+const PROTOCOL_OPTIONS: SelectOption<DeviceProtocol>[] = [
+  { value: 'MODBUS_TCP', label: 'Modbus TCP' },
+]
+
+const FC_OPTIONS: SelectOption<ModbusFunctionCode>[] = [
+  { value: 'READ_HOLDING', label: 'FC03 Holding' },
+  { value: 'READ_INPUT', label: 'FC04 Input' },
+  { value: 'READ_COIL', label: 'FC01 Coil' },
+  { value: 'READ_DISCRETE', label: 'FC02 Discrete' },
+]
+
+const DATA_TYPE_OPTIONS: SelectOption<ModbusDataType>[] = [
+  { value: 'BOOL', label: 'BOOL' },
+  { value: 'UINT16', label: 'UINT16' },
+  { value: 'INT16', label: 'INT16' },
+  { value: 'UINT32', label: 'UINT32' },
+  { value: 'INT32', label: 'INT32' },
+  { value: 'FLOAT32', label: 'FLOAT32' },
+]
+
+const WORD_ORDER_OPTIONS: SelectOption<ModbusWordOrder>[] = [
+  { value: 'BIG', label: 'BIG' },
+  { value: 'LITTLE', label: 'LITTLE' },
+]
+
+const ACCESS_OPTIONS: SelectOption<ModbusAccessMode>[] = [
+  { value: 'READ', label: 'Read only (R)' },
+  { value: 'READ_WRITE', label: 'Read / Write (R/W)' },
+]
+
+const HIST_POLL_OPTIONS: SelectOption<number>[] = [
+  { value: 10, label: '10s' },
+  { value: 30, label: '30s' },
+  { value: 60, label: '1 min' },
+  { value: 300, label: '5 min' },
+  { value: 900, label: '15 min' },
+  { value: 3600, label: '1 hour' },
+]
+
+const HIST_RETENTION_OPTIONS: SelectOption<number>[] = [
+  { value: 1, label: '1 day' },
+  { value: 7, label: '7 days' },
+  { value: 30, label: '30 days' },
+  { value: 90, label: '90 days' },
+  { value: 365, label: '1 year' },
+]
+
+const ALARM_SEVERITY_OPTIONS: SelectOption<AlarmSeverity>[] = [
+  { value: 'CRITICAL', label: 'Critical' },
+  { value: 'WARNING', label: 'Warning' },
+  { value: 'INFO', label: 'Info' },
+]
+
+const ALARM_CONDITION_OPTIONS: SelectOption<AlarmCondition>[] = [
+  { value: 'GT', label: 'Greater than (>)' },
+  { value: 'GTE', label: 'Greater or equal (>=)' },
+  { value: 'LT', label: 'Less than (<)' },
+  { value: 'LTE', label: 'Less or equal (<=)' },
+  { value: 'EQ', label: 'Equal to (==)' },
+  { value: 'NEQ', label: 'Not equal to (!=)' },
+]
+
 type TabKey = 'devices' | 'mappings' | 'dashboards' | 'history' | 'alarms' | 'policies'
-const activeTab = ref<TabKey>('devices')
+const VALID_TABS: TabKey[] = ['devices', 'mappings', 'dashboards', 'history', 'alarms', 'policies']
+
+function resolveRouteTab(): TabKey {
+  const q = typeof route.query.tab === 'string' ? route.query.tab : ''
+  return (VALID_TABS as string[]).includes(q) ? (q as TabKey) : 'devices'
+}
+
+const activeTab = ref<TabKey>(resolveRouteTab())
 
 const devices = ref<WebviewDevice[]>([])
 const mappings = ref<RegisterMapping[]>([])
@@ -67,8 +151,9 @@ const policies = ref<MemberWritePolicy[]>([])
 const testResults = ref<Record<string, TelemetrySample>>({})
 const testingId = ref<string | null>(null)
 
-const errMsg = ref<string | null>(null)
-const okMsg = ref<string | null>(null)
+const deviceSelectOptions = computed<SelectOption<string>[]>(() =>
+  devices.value.map((d) => ({ value: d.id, label: `${d.name} (${d.protocol})` })),
+)
 
 // --- Delete Confirm Modal State (zero window.confirm) ---
 const deleteModal = ref<{
@@ -103,6 +188,18 @@ const devHost = ref('')
 const devPort = ref('502')
 const devProto = ref<DeviceProtocol>('MODBUS_TCP')
 const devActive = ref(true)
+const devSubmitted = ref(false)
+const devTouched = ref<Record<string, boolean>>({})
+
+const devErrors = computed(() => ({
+  name: validateRequiredText(devName.value, 'Device name', { min: 1, max: 100 }),
+  host: validateIpAddress(devHost.value, 'IP address'),
+  port: validatePort(devPort.value, 'Port'),
+}))
+
+function showDevErr(field: 'name' | 'host' | 'port'): string | null {
+  return devSubmitted.value || devTouched.value[field] ? devErrors.value[field] : null
+}
 
 function openCreateDevice() {
   editingDeviceId.value = null
@@ -111,6 +208,8 @@ function openCreateDevice() {
   devPort.value = '502'
   devProto.value = 'MODBUS_TCP'
   devActive.value = true
+  devSubmitted.value = false
+  devTouched.value = {}
   deviceModalOpen.value = true
 }
 
@@ -121,6 +220,8 @@ function openEditDevice(d: WebviewDevice) {
   devPort.value = String(d.port)
   devProto.value = d.protocol
   devActive.value = d.isActive
+  devSubmitted.value = false
+  devTouched.value = {}
   deviceModalOpen.value = true
 }
 
@@ -139,8 +240,23 @@ const regWordOrder = ref<ModbusWordOrder>('BIG')
 const regAccess = ref<ModbusAccessMode>('READ')
 const regUnit = ref('')
 const regPrecision = ref('')
+const regSubmitted = ref(false)
+const regTouched = ref<Record<string, boolean>>({})
 
 const selectedRegDevice = computed(() => devices.value.find((d) => d.id === regDeviceId.value) ?? null)
+
+const regErrors = computed(() => ({
+  deviceId: regDeviceId.value ? null : 'Device is required.',
+  name: validateRequiredText(regName.value, 'Register name', { min: 1, max: 100 }),
+  slave: validateIntegerRange(regSlave.value, 'Slave address', 0, 255, { required: true }),
+  addr: validateIntegerRange(regAddr.value, 'Register address', 0, 65535, { required: true }),
+  unit: validateOptionalText(regUnit.value, 'Unit', 32),
+  precision: validateIntegerRange(regPrecision.value, 'Precision', -5, 5, { required: false }),
+}))
+
+function showRegErr(field: 'deviceId' | 'name' | 'slave' | 'addr' | 'unit' | 'precision'): string | null {
+  return regSubmitted.value || regTouched.value[field] ? regErrors.value[field] : null
+}
 
 function openCreateRegister() {
   editingRegId.value = null
@@ -155,6 +271,8 @@ function openCreateRegister() {
   regAccess.value = 'READ'
   regUnit.value = ''
   regPrecision.value = ''
+  regSubmitted.value = false
+  regTouched.value = {}
   regModalOpen.value = true
 }
 
@@ -172,125 +290,37 @@ function openEditRegister(m: RegisterMapping) {
   regAccess.value = (a?.accessMode as ModbusAccessMode) || 'READ'
   regUnit.value = typeof a?.unit === 'string' ? a.unit : ''
   regPrecision.value = a?.precision !== undefined && a?.precision !== null ? String(clampPrecision(a.precision)) : ''
+  regSubmitted.value = false
+  regTouched.value = {}
   regModalOpen.value = true
 }
 
 // --- Dashboard Create/Edit Modal ---
 const dashModalOpen = ref(false)
-const editingDashId = ref<string | null>(null)
-const dashName = ref('')
-const dashIsDefault = ref(false)
-const dashPollIntervalMs = ref('1000')
+const editingDash = ref<WebviewDashboard | null>(null)
 const selectedDashId = ref('')
 
 function openCreateDashboard() {
-  editingDashId.value = null
-  dashName.value = ''
-  dashIsDefault.value = dashboards.value.length === 0
-  dashPollIntervalMs.value = '1000'
+  editingDash.value = null
   dashModalOpen.value = true
 }
 
 function openEditDashboard(d: WebviewDashboard) {
-  editingDashId.value = d.id
-  dashName.value = d.name
-  dashIsDefault.value = d.isDefault
-  dashPollIntervalMs.value = String(d.pollIntervalMs || 1000)
+  editingDash.value = d
   dashModalOpen.value = true
 }
 
-// --- Widget Create/Edit Modal (Card-type-specific parameters) ---
+// --- Widget Create/Edit Modal (WYSIWYG Tile Preview) ---
 const widgetModalOpen = ref(false)
-const editingWidgetId = ref<string | null>(null)
-const widName = ref('')
-const widType = ref<WidgetType>('display')
-const widMappingId = ref('')
-// Display & Number Input params
-const widFontSize = ref<FontSizeOption>('lg')
-const widPrefix = ref('')
-const widUnit = ref('')
-const widPrecision = ref('0')
-const widMin = ref<string>('')
-const widMax = ref<string>('')
-// Lamp params (for both states)
-const widLampOn = ref<LampStateConfig>({ mode: 'on', color: 'emerald', text: 'ON' })
-const widLampOff = ref<LampStateConfig>({ mode: 'off', color: 'slate', text: 'OFF' })
-// Switch params
-const widSwitchColor = ref<ColorOption>('emerald')
-const widSwitchOnLabel = ref('ON')
-const widSwitchOffLabel = ref('OFF')
-// Button params
-const widBtnColor = ref<ColorOption>('sky')
-const widBtnLabel = ref('Trigger')
-const widBtnTriggerMs = ref('1000')
-
-const widBoundMapping = computed(() => mappings.value.find((m) => m.id === widMappingId.value) ?? null)
-const widEffectivePrecision = computed(() => {
-  if (widPrecision.value.trim() !== '') return clampPrecision(widPrecision.value)
-  return clampPrecision(widBoundMapping.value?.protocolAttributes?.precision ?? 0)
-})
-const widBoundTypeBounds = computed(() => {
-  const dt = widBoundMapping.value?.protocolAttributes?.dataType
-  return effectiveDisplayBounds(dt, widEffectivePrecision.value)
-})
+const editingWidget = ref<WebviewWidget | null>(null)
 
 function openCreateWidget() {
-  editingWidgetId.value = null
-  widName.value = ''
-  widType.value = 'display'
-  widMappingId.value = mappings.value[0]?.id || ''
-  widFontSize.value = 'lg'
-  widPrefix.value = ''
-  widUnit.value = ''
-  widPrecision.value = ''
-  widMin.value = ''
-  widMax.value = ''
-  widLampOn.value = { mode: 'on', color: 'emerald', text: 'ON' }
-  widLampOff.value = { mode: 'off', color: 'slate', text: 'OFF' }
-  widSwitchColor.value = 'emerald'
-  widSwitchOnLabel.value = 'ON'
-  widSwitchOffLabel.value = 'OFF'
-  widBtnColor.value = 'sky'
-  widBtnLabel.value = 'Trigger'
-  widBtnTriggerMs.value = '1000'
+  editingWidget.value = null
   widgetModalOpen.value = true
 }
 
 function openEditWidget(w: WebviewWidget) {
-  editingWidgetId.value = w.id
-  widName.value = w.name
-  widType.value = w.widgetType
-  widMappingId.value = w.registerMappingId || ''
-  widFontSize.value = (w.style?.fontSize as FontSizeOption) || 'lg'
-  widPrefix.value = String(w.extra?.prefix ?? '')
-  widUnit.value = w.extra?.unit !== undefined && w.extra?.unit !== null ? String(w.extra.unit) : ''
-  widPrecision.value =
-    w.extra?.precision !== undefined && w.extra?.precision !== null && w.extra?.precision !== ''
-      ? String(clampPrecision(w.extra.precision))
-      : ''
-  widMin.value = w.extra?.min !== undefined && w.extra?.min !== null ? String(w.extra.min) : ''
-  widMax.value = w.extra?.max !== undefined && w.extra?.max !== null ? String(w.extra.max) : ''
-
-  const onCfg = (w.extra?.on as Partial<LampStateConfig> | undefined) || {}
-  const offCfg = (w.extra?.off as Partial<LampStateConfig> | undefined) || {}
-  widLampOn.value = {
-    mode: (onCfg.mode as LampMode) || 'on',
-    color: (onCfg.color as ColorOption) || 'emerald',
-    text: onCfg.text ?? 'ON',
-  }
-  widLampOff.value = {
-    mode: (offCfg.mode as LampMode) || 'off',
-    color: (offCfg.color as ColorOption) || 'slate',
-    text: offCfg.text ?? 'OFF',
-  }
-
-  widSwitchColor.value = (w.style?.color as ColorOption) || 'emerald'
-  widSwitchOnLabel.value = String(w.extra?.onLabel ?? 'ON')
-  widSwitchOffLabel.value = String(w.extra?.offLabel ?? 'OFF')
-
-  widBtnColor.value = (w.style?.color as ColorOption) || 'sky'
-  widBtnLabel.value = String(w.extra?.label ?? w.name)
-  widBtnTriggerMs.value = String(Number(w.extra?.triggerTimeMs ?? 1000))
+  editingWidget.value = w
   widgetModalOpen.value = true
 }
 
@@ -361,9 +391,26 @@ const alarmEmailDraft = ref('')
 const alarmEmailErr = ref<string | null>(null)
 const alarmNotifyOnClear = ref(false)
 const alarmActive = ref(true)
+const alarmSubmitted = ref(false)
+const alarmTouched = ref<Record<string, boolean>>({})
 
 const alarmBoundMapping = computed(() => (alarmMappingId.value ? mappingMap.value[alarmMappingId.value] ?? null : null))
 const alarmNeedsDeadband = computed(() => alarmCondition.value !== 'EQ' && alarmCondition.value !== 'NEQ')
+
+const alarmErrors = computed(() => ({
+  name: validateRequiredText(alarmName.value, 'Rule name', { min: 1, max: 120 }),
+  mappingId: alarmMappingId.value ? null : 'Please select a monitored register.',
+  threshold: validateNumberRange(alarmThreshold.value, 'Threshold', undefined, undefined, { required: true }),
+  deadband: alarmNeedsDeadband.value
+    ? validateNumberRange(alarmDeadband.value || '0', 'Clear deadband', 0, undefined, { required: false })
+    : null,
+  holdSec: validateIntegerRange(alarmHoldSec.value || '0', 'Hold time', 0, 86400, { required: false }),
+  pollSec: validateIntegerRange(alarmPollSec.value || '10', 'Poll interval', 1, 3600, { required: true }),
+}))
+
+function showAlarmErr(field: 'name' | 'mappingId' | 'threshold' | 'deadband' | 'holdSec' | 'pollSec'): string | null {
+  return alarmSubmitted.value || alarmTouched.value[field] ? alarmErrors.value[field] : null
+}
 
 function openCreateAlarmRule() {
   editingAlarmId.value = null
@@ -380,6 +427,8 @@ function openCreateAlarmRule() {
   alarmEmailErr.value = null
   alarmNotifyOnClear.value = false
   alarmActive.value = true
+  alarmSubmitted.value = false
+  alarmTouched.value = {}
   alarmModalOpen.value = true
 }
 
@@ -398,6 +447,8 @@ function openEditAlarmRule(r: AlarmRule) {
   alarmEmailErr.value = null
   alarmNotifyOnClear.value = r.notifyOnClear
   alarmActive.value = r.isActive
+  alarmSubmitted.value = false
+  alarmTouched.value = {}
   alarmModalOpen.value = true
 }
 
@@ -503,18 +554,62 @@ const availableHistoryMappings = computed(() => {
   return mappings.value.filter((m) => !used.has(m.id))
 })
 
-// Pagination for every list/table (25, 50, 100)
+// Pagination for list/table tabs (25, 50, 100)
 const devicesPag = usePagination(devices)
 const mappingsPag = usePagination(mappings)
-const dashboardsPag = usePagination(dashboards)
-const widgetsPag = usePagination(() => selectedDash.value?.widgets ?? [])
 const historyPag = usePagination(historyEntries)
 const alarmsPag = usePagination(alarmRules)
 const policiesPag = usePagination(siteMembersOnly)
 
-watch(selectedDashId, () => {
-  widgetsPag.resetPage()
-})
+const selectedDashLayout = computed(() => resolveDashboardLayout(selectedDash.value?.layout))
+
+// --- Drag-to-Reorder Dashboard Tabs ---
+const draggedDashId = ref<string | null>(null)
+const dragDashList = ref<WebviewDashboard[] | null>(null)
+const orderedDashboards = computed(() => dragDashList.value ?? dashboards.value)
+
+function onDashDragStart(e: DragEvent, dashId: string) {
+  draggedDashId.value = dashId
+  dragDashList.value = [...dashboards.value]
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', dashId)
+  }
+}
+
+function onDashDragOver(targetId: string) {
+  if (!draggedDashId.value || draggedDashId.value === targetId || !dragDashList.value) return
+  const fromIdx = dragDashList.value.findIndex((d) => d.id === draggedDashId.value)
+  const toIdx = dragDashList.value.findIndex((d) => d.id === targetId)
+  if (fromIdx === -1 || toIdx === -1) return
+  const next = [...dragDashList.value]
+  const [moved] = next.splice(fromIdx, 1)
+  if (!moved) return
+  next.splice(toIdx, 0, moved)
+  dragDashList.value = next
+}
+
+async function finishDashDrag() {
+  const finalOrder = dragDashList.value
+  draggedDashId.value = null
+  dragDashList.value = null
+  if (!finalOrder) return
+  const changed =
+    finalOrder.length === dashboards.value.length &&
+    finalOrder.some((d, i) => d.id !== dashboards.value[i]?.id)
+  if (!changed) return
+  dashboards.value = finalOrder
+  try {
+    await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/dashboards/reorder`, {
+      method: 'POST',
+      body: JSON.stringify({ dashboardIds: finalOrder.map((d) => d.id) }),
+    })
+    webviewStore.setSiteDashboards(siteId.value, finalOrder)
+  } catch (err) {
+    toast.error(err, 'Failed to reorder dashboards')
+    await loadAll()
+  }
+}
 
 function registerKeyLabel(m: RegisterMapping): string {
   const dev = deviceMap.value[m.deviceId]
@@ -524,7 +619,6 @@ function registerKeyLabel(m: RegisterMapping): string {
 }
 
 async function loadAll() {
-  errMsg.value = null
   try {
     const [dRes, mRes, dbRes, hRes, aRes, pRes, memRes] = await Promise.all([
       apiRequest<{ devices: WebviewDevice[] }>(`/api/v1/webview/sites/${siteId.value}/operator/devices`),
@@ -544,14 +638,17 @@ async function loadAll() {
     members.value = memRes.members || []
     webviewStore.setSiteDashboards(siteId.value, dashboards.value)
 
-    if (dashboards.value.length > 0 && !dashboards.value.some((d) => d.id === selectedDashId.value)) {
+    const queryDashId = typeof route.query.dashboard === 'string' ? route.query.dashboard : ''
+    if (!selectedDashId.value && queryDashId && dashboards.value.some((d) => d.id === queryDashId)) {
+      selectedDashId.value = queryDashId
+    } else if (dashboards.value.length > 0 && !dashboards.value.some((d) => d.id === selectedDashId.value)) {
       selectedDashId.value = dashboards.value[0].id
     }
     if (!histMappingId.value && availableHistoryMappings.value.length > 0) {
       histMappingId.value = availableHistoryMappings.value[0].id
     }
   } catch (err) {
-    errMsg.value = err instanceof Error ? err.message : 'Failed to load WebView configuration'
+    toast.error(err, 'Failed to load WebView configuration')
   }
 }
 
@@ -573,59 +670,78 @@ onUnmounted(() => {
   document.removeEventListener('keydown', onKeydown)
 })
 watch(siteId, loadAll)
+watch(
+  () => [route.query.tab, route.query.dashboard] as const,
+  ([tabParam, dashParam]) => {
+    if (typeof tabParam === 'string' && (VALID_TABS as string[]).includes(tabParam)) {
+      activeTab.value = tabParam as TabKey
+    }
+    if (typeof dashParam === 'string' && dashParam && dashboards.value.some((d) => d.id === dashParam)) {
+      selectedDashId.value = dashParam
+    }
+  },
+)
 
 // --- Device Actions ---
 async function saveDevice() {
-  errMsg.value = null
-  okMsg.value = null
+  devSubmitted.value = true
+  const vErr = firstError(devErrors.value)
+  if (vErr) {
+    toast.error(vErr, 'Validation Error')
+    return
+  }
   try {
     if (editingDeviceId.value) {
       await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/devices/${editingDeviceId.value}`, {
         method: 'PATCH',
         body: JSON.stringify({
-          name: devName.value,
-          host: devHost.value,
+          name: devName.value.trim(),
+          host: devHost.value.trim(),
           port: Number(devPort.value),
           protocol: devProto.value,
           isActive: devActive.value,
         }),
       })
-      okMsg.value = `Updated device "${devName.value}".`
+      toast.success(`Updated device "${devName.value.trim()}".`)
     } else {
       await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/devices`, {
         method: 'POST',
         body: JSON.stringify({
-          name: devName.value,
-          host: devHost.value,
+          name: devName.value.trim(),
+          host: devHost.value.trim(),
           port: Number(devPort.value),
           protocol: devProto.value,
         }),
       })
-      okMsg.value = `Added device "${devName.value}".`
+      toast.success(`Added device "${devName.value.trim()}".`)
     }
     deviceModalOpen.value = false
     await loadAll()
   } catch (err) {
-    errMsg.value = err instanceof Error ? err.message : 'Failed to save device'
+    toast.error(err, 'Failed to save device')
   }
 }
 
 function confirmDeleteDevice(d: WebviewDevice) {
   askDelete('Delete Device', d.name, 'All registers belonging to this device will also be deleted.', async () => {
-    errMsg.value = null
     try {
       await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/devices/${d.id}`, { method: 'DELETE' })
+      toast.success(`Deleted device "${d.name}".`)
       await loadAll()
     } catch (err) {
-      errMsg.value = err instanceof Error ? err.message : 'Failed to delete device'
+      toast.error(err, 'Failed to delete device')
     }
   })
 }
 
 // --- Register Actions ---
 async function saveRegister() {
-  errMsg.value = null
-  okMsg.value = null
+  regSubmitted.value = true
+  const vErr = firstError(regErrors.value)
+  if (vErr) {
+    toast.error(vErr, 'Validation Error')
+    return
+  }
   const attrs: Record<string, unknown> = {
     slaveAddress: Number(regSlave.value),
     functionCode: regFC.value,
@@ -646,241 +762,207 @@ async function saveRegister() {
         method: 'PATCH',
         body: JSON.stringify({
           deviceId: regDeviceId.value,
-          name: regName.value,
+          name: regName.value.trim(),
           protocolAttributes: attrs,
           isActive: regActive.value,
         }),
       })
-      okMsg.value = `Updated register "${regName.value}".`
+      toast.success(`Updated register "${regName.value.trim()}".`)
     } else {
       await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/mappings`, {
         method: 'POST',
         body: JSON.stringify({
           deviceId: regDeviceId.value,
-          name: regName.value,
+          name: regName.value.trim(),
           protocolAttributes: attrs,
         }),
       })
-      okMsg.value = `Added register "${regName.value}".`
+      toast.success(`Added register "${regName.value.trim()}".`)
     }
     regModalOpen.value = false
     await loadAll()
   } catch (err) {
-    errMsg.value = err instanceof Error ? err.message : 'Failed to save register'
+    toast.error(err, 'Failed to save register')
   }
 }
 
 function confirmDeleteRegister(m: RegisterMapping) {
   askDelete('Delete Register', m.name, 'Widgets referencing this register will become unbound.', async () => {
-    errMsg.value = null
     try {
       await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/mappings/${m.id}`, { method: 'DELETE' })
+      toast.success(`Deleted register "${m.name}".`)
       await loadAll()
     } catch (err) {
-      errMsg.value = err instanceof Error ? err.message : 'Failed to delete register'
+      toast.error(err, 'Failed to delete register')
     }
   })
 }
 
 async function testRead(m: RegisterMapping) {
   testingId.value = m.id
-  errMsg.value = null
   try {
     const sample = await apiRequest<TelemetrySample>(
       `/api/v1/webview/sites/${siteId.value}/operator/mappings/${m.id}/test-read`,
       { method: 'POST' },
     )
     testResults.value = { ...testResults.value, [m.id]: sample }
+    if (sample.quality !== 'GOOD' && sample.error) {
+      toast.warning(`${m.name}: ${sample.error}`, 'Test Read Failed')
+    }
   } catch (err) {
-    errMsg.value = err instanceof Error ? err.message : 'Test read failed'
+    toast.error(err, 'Test read failed')
   } finally {
     testingId.value = null
   }
 }
 
-// --- Dashboard Actions + Reorder ---
-async function saveDashboard() {
-  errMsg.value = null
-  okMsg.value = null
-  const pollMs = Math.round(Number(dashPollIntervalMs.value))
-  if (!Number.isFinite(pollMs) || pollMs < 1000 || pollMs > 60000) {
-    errMsg.value = 'Dashboard poll interval must be between 1000 and 60000 ms.'
-    return
-  }
+// --- Dashboard Actions + Reorder + Layout ---
+async function saveDashboard(payload: DashboardOptionsPayload) {
   try {
-    if (editingDashId.value) {
-      await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/dashboards/${editingDashId.value}`, {
+    if (editingDash.value) {
+      await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/dashboards/${editingDash.value.id}`, {
         method: 'PATCH',
-        body: JSON.stringify({ name: dashName.value, isDefault: dashIsDefault.value, pollIntervalMs: pollMs }),
+        body: JSON.stringify({
+          name: payload.name,
+          isDefault: payload.isDefault,
+          pollIntervalMs: payload.pollIntervalMs,
+          layout: payload.layout,
+        }),
       })
-      okMsg.value = `Updated dashboard "${dashName.value}".`
+      toast.success(`Updated dashboard "${payload.name}".`)
     } else {
       const created = await apiRequest<WebviewDashboard>(`/api/v1/webview/sites/${siteId.value}/operator/dashboards`, {
         method: 'POST',
-        body: JSON.stringify({ name: dashName.value, isDefault: dashIsDefault.value, pollIntervalMs: pollMs }),
+        body: JSON.stringify({
+          name: payload.name,
+          isDefault: payload.isDefault,
+          pollIntervalMs: payload.pollIntervalMs,
+          layout: payload.layout,
+        }),
       })
       selectedDashId.value = created.id
-      okMsg.value = `Created dashboard "${dashName.value}".`
+      toast.success(`Created dashboard "${payload.name}".`)
     }
     dashModalOpen.value = false
+    editingDash.value = null
     await loadAll()
   } catch (err) {
-    errMsg.value = err instanceof Error ? err.message : 'Failed to save dashboard'
+    toast.error(err, 'Failed to save dashboard')
   }
 }
 
-async function moveDashboard(idx: number, delta: number) {
-  const target = idx + delta
-  if (target < 0 || target >= dashboards.value.length) return
-  const reordered = [...dashboards.value]
-  const [moved] = reordered.splice(idx, 1)
-  reordered.splice(target, 0, moved)
-  dashboards.value = reordered
+async function updateSelectedDashLayout(patch: { density?: TileDensity }) {
+  const dash = selectedDash.value
+  if (!dash) return
+  const nextLayout = { ...resolveDashboardLayout(dash.layout), ...patch }
+  dash.layout = nextLayout
   try {
-    await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/dashboards/reorder`, {
-      method: 'POST',
-      body: JSON.stringify({ dashboardIds: reordered.map((d) => d.id) }),
+    await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/dashboards/${dash.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ layout: nextLayout }),
     })
-    webviewStore.setSiteDashboards(siteId.value, reordered)
+    webviewStore.setSiteDashboards(siteId.value, dashboards.value)
   } catch (err) {
-    errMsg.value = err instanceof Error ? err.message : 'Failed to reorder dashboards'
+    toast.error(err, 'Failed to update dashboard layout')
     await loadAll()
   }
 }
 
 function confirmDeleteDashboard(d: WebviewDashboard) {
-  askDelete('Delete Dashboard', d.name, 'All widgets on this dashboard will be permanently removed.', async () => {
-    errMsg.value = null
+  askDelete('Delete Dashboard', d.name, 'All tiles on this dashboard will be permanently removed.', async () => {
     try {
       await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/dashboards/${d.id}`, { method: 'DELETE' })
       selectedDashId.value = ''
+      toast.success(`Deleted dashboard "${d.name}".`)
       await loadAll()
     } catch (err) {
-      errMsg.value = err instanceof Error ? err.message : 'Failed to delete dashboard'
+      toast.error(err, 'Failed to delete dashboard')
     }
   })
 }
 
-// --- Widget Actions + Reorder ---
-async function saveWidget() {
+// --- Widget Actions + Live Canvas Resize / Reorder ---
+async function saveWidget(payload: WidgetDraftPayload) {
   if (!selectedDash.value) return
-  errMsg.value = null
-  okMsg.value = null
-
-  const style: Record<string, unknown> = {}
-  const extra: Record<string, unknown> = {}
-
-  if (widType.value === 'display') {
-    style.fontSize = widFontSize.value
-    extra.prefix = widPrefix.value
-    if (widUnit.value.trim() !== '') {
-      extra.unit = widUnit.value.trim()
-    }
-    if (widPrecision.value.trim() !== '') {
-      extra.precision = clampPrecision(widPrecision.value)
-    }
-  } else if (widType.value === 'number_input') {
-    style.fontSize = widFontSize.value
-    extra.prefix = widPrefix.value
-    if (widUnit.value.trim() !== '') {
-      extra.unit = widUnit.value.trim()
-    }
-    if (widPrecision.value.trim() !== '') {
-      extra.precision = clampPrecision(widPrecision.value)
-    }
-    if (widMin.value.trim() !== '' && Number.isFinite(Number(widMin.value))) {
-      extra.min = Number(widMin.value)
-    }
-    if (widMax.value.trim() !== '' && Number.isFinite(Number(widMax.value))) {
-      extra.max = Number(widMax.value)
-    }
-    if (extra.min !== undefined && extra.max !== undefined && Number(extra.min) > Number(extra.max)) {
-      errMsg.value = 'Minimum value cannot exceed maximum value.'
-      return
-    }
-  } else if (widType.value === 'lamp') {
-    extra.on = { ...widLampOn.value }
-    extra.off = { ...widLampOff.value }
-  } else if (widType.value === 'switch') {
-    style.color = widSwitchColor.value
-    extra.onLabel = widSwitchOnLabel.value || 'ON'
-    extra.offLabel = widSwitchOffLabel.value || 'OFF'
-  } else if (widType.value === 'button') {
-    style.color = widBtnColor.value
-    extra.label = widBtnLabel.value || widName.value
-    extra.triggerTimeMs = Math.max(100, Math.min(60000, Math.round(Number(widBtnTriggerMs.value) || 1000)))
-  }
-
   try {
-    if (editingWidgetId.value) {
-      await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/widgets/${editingWidgetId.value}`, {
+    if (payload.id) {
+      await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/widgets/${payload.id}`, {
         method: 'PATCH',
         body: JSON.stringify({
-          name: widName.value,
-          widgetType: widType.value,
-          registerMappingId: widMappingId.value || undefined,
-          style,
-          extra,
+          name: payload.name,
+          widgetType: payload.widgetType,
+          registerMappingId: payload.registerMappingId || undefined,
+          style: payload.style,
+          extra: payload.extra,
         }),
       })
-      okMsg.value = `Updated widget "${widName.value}".`
+      toast.success(`Updated tile "${payload.name}".`)
     } else {
       await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/dashboards/${selectedDash.value.id}/widgets`, {
         method: 'POST',
         body: JSON.stringify({
-          name: widName.value,
-          widgetType: widType.value,
-          registerMappingId: widMappingId.value || undefined,
+          name: payload.name,
+          widgetType: payload.widgetType,
+          registerMappingId: payload.registerMappingId || undefined,
           sortOrder: selectedDash.value.widgets.length,
-          style,
-          extra,
+          style: payload.style,
+          extra: payload.extra,
         }),
       })
-      okMsg.value = `Added widget "${widName.value}".`
+      toast.success(`Added tile "${payload.name}".`)
     }
     widgetModalOpen.value = false
+    editingWidget.value = null
     await loadAll()
   } catch (err) {
-    errMsg.value = err instanceof Error ? err.message : 'Failed to save widget'
+    toast.error(err, 'Failed to save tile')
   }
 }
 
-async function moveWidget(idx: number, delta: number) {
+async function resizeWidgetOnCanvas(w: WebviewWidget, nextSize: TileSize) {
   if (!selectedDash.value) return
-  const list = selectedDash.value.widgets
-  const target = idx + delta
-  if (target < 0 || target >= list.length) return
-  const reordered = [...list]
-  const [moved] = reordered.splice(idx, 1)
-  reordered.splice(target, 0, moved)
-  selectedDash.value.widgets = reordered
+  const nextStyle = { ...(w.style || {}), tileSize: nextSize }
+  w.style = nextStyle
+  try {
+    await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/widgets/${w.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ style: nextStyle }),
+    })
+  } catch (err) {
+    toast.error(err, 'Failed to resize tile')
+    await loadAll()
+  }
+}
+
+async function reorderWidgetsOnCanvas(orderedWidgets: WebviewWidget[]) {
+  if (!selectedDash.value) return
+  selectedDash.value.widgets = orderedWidgets.map((w, idx) => ({ ...w, sortOrder: idx }))
   try {
     await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/dashboards/${selectedDash.value.id}/widgets/reorder`, {
       method: 'POST',
-      body: JSON.stringify({ widgetIds: reordered.map((w) => w.id) }),
+      body: JSON.stringify({ widgetIds: orderedWidgets.map((w) => w.id) }),
     })
   } catch (err) {
-    errMsg.value = err instanceof Error ? err.message : 'Failed to reorder widgets'
+    toast.error(err, 'Failed to reorder tiles')
     await loadAll()
   }
 }
 
 function confirmDeleteWidget(w: WebviewWidget) {
-  askDelete('Delete Widget', w.name, 'This widget will be removed from the dashboard.', async () => {
-    errMsg.value = null
+  widgetModalOpen.value = false
+  askDelete('Remove Tile', w.name, 'This tile will be removed from the dashboard.', async () => {
     try {
       await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/widgets/${w.id}`, { method: 'DELETE' })
+      toast.success(`Removed tile "${w.name}".`)
       await loadAll()
     } catch (err) {
-      errMsg.value = err instanceof Error ? err.message : 'Failed to delete widget'
+      toast.error(err, 'Failed to remove tile')
     }
   })
 }
 
 // --- History Entry Actions ---
 async function saveHistoryEntry() {
-  errMsg.value = null
-  okMsg.value = null
   try {
     if (editingHistId.value) {
       await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/history-entries/${editingHistId.value}`, {
@@ -891,9 +973,12 @@ async function saveHistoryEntry() {
           isActive: histActive.value,
         }),
       })
-      okMsg.value = 'Updated history archival key.'
+      toast.success('Updated history archival key.')
     } else {
-      if (!histMappingId.value) return
+      if (!histMappingId.value) {
+        toast.error('Please select a register key.', 'Validation Error')
+        return
+      }
       await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/history-entries`, {
         method: 'POST',
         body: JSON.stringify({
@@ -902,84 +987,66 @@ async function saveHistoryEntry() {
           retentionDays: Number(histRetentionDays.value),
         }),
       })
-      okMsg.value = 'Added register to history archival.'
+      toast.success('Added register to history archival.')
     }
     histModalOpen.value = false
     await loadAll()
   } catch (err) {
-    errMsg.value = err instanceof Error ? err.message : 'Failed to save history entry'
+    toast.error(err, 'Failed to save history entry')
   }
 }
 
 function confirmDeleteHistoryEntry(he: HistoryEntry) {
   const m = mappingMap.value[he.registerMappingId]
   askDelete('Remove History Entry', m ? registerKeyLabel(m) : he.registerMappingId, 'Scheduled background polling for this register will stop unless a dashboard is open.', async () => {
-    errMsg.value = null
     try {
       await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/history-entries/${he.id}`, { method: 'DELETE' })
+      toast.success('Removed history archival key.')
       await loadAll()
     } catch (err) {
-      errMsg.value = err instanceof Error ? err.message : 'Failed to remove history entry'
+      toast.error(err, 'Failed to remove history entry')
     }
   })
 }
 
 async function toggleMemberWrite(member: SiteMember, canWrite: boolean) {
-  errMsg.value = null
-  okMsg.value = null
   try {
     await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/member-policies`, {
       method: 'PUT',
       body: JSON.stringify({ userId: member.userId, canWrite }),
     })
-    okMsg.value = `Updated write permission for ${member.email}.`
+    toast.success(`Updated write permission for ${member.email}.`)
     await loadAll()
   } catch (err) {
-    errMsg.value = err instanceof Error ? err.message : 'Failed to update member write policy'
+    toast.error(err, 'Failed to update member write policy')
   }
 }
 
 // --- Alarm Rule Actions ---
 async function saveAlarmRule() {
-  errMsg.value = null
-  okMsg.value = null
+  alarmSubmitted.value = true
   if (alarmEmailDraft.value.trim()) {
     addAlarmEmailsFromDraft()
-    if (alarmEmailErr.value) return
+    if (alarmEmailErr.value) {
+      toast.error(alarmEmailErr.value, 'Validation Error')
+      return
+    }
   }
-  const threshold = Number(alarmThreshold.value)
-  if (!Number.isFinite(threshold)) {
-    errMsg.value = 'Threshold must be a valid number.'
+  const vErr = firstError(alarmErrors.value)
+  if (vErr) {
+    toast.error(vErr, 'Validation Error')
     return
   }
   const deadband = alarmNeedsDeadband.value ? Number(alarmDeadband.value || '0') : 0
-  if (!Number.isFinite(deadband) || deadband < 0) {
-    errMsg.value = 'Clear deadband must be 0 or greater.'
-    return
-  }
-  const holdSec = Math.round(Number(alarmHoldSec.value || '0'))
-  if (!Number.isFinite(holdSec) || holdSec < 0 || holdSec > 86400) {
-    errMsg.value = 'Hold time must be between 0 and 86400 seconds.'
-    return
-  }
-  const pollSec = Math.round(Number(alarmPollSec.value || '10'))
-  if (!Number.isFinite(pollSec) || pollSec < 1 || pollSec > 3600) {
-    errMsg.value = 'Poll interval must be between 1 and 3600 seconds.'
-    return
-  }
-  if (!alarmMappingId.value) {
-    errMsg.value = 'Please select a register.'
-    return
-  }
 
   const payload = {
     registerMappingId: alarmMappingId.value,
     name: alarmName.value.trim(),
     condition: alarmCondition.value,
-    threshold,
+    threshold: Number(alarmThreshold.value),
     clearDeadband: deadband,
-    holdSeconds: holdSec,
-    pollIntervalSeconds: pollSec,
+    holdSeconds: Math.round(Number(alarmHoldSec.value || '0')),
+    pollIntervalSeconds: Math.round(Number(alarmPollSec.value || '10')),
     severity: alarmSeverity.value,
     notifyEmails: alarmEmails.value,
     notifyOnClear: alarmNotifyOnClear.value,
@@ -992,18 +1059,18 @@ async function saveAlarmRule() {
         method: 'PATCH',
         body: JSON.stringify(payload),
       })
-      okMsg.value = `Updated alarm rule "${payload.name}".`
+      toast.success(`Updated alarm rule "${payload.name}".`)
     } else {
       await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/alarm-rules`, {
         method: 'POST',
         body: JSON.stringify(payload),
       })
-      okMsg.value = `Created alarm rule "${payload.name}".`
+      toast.success(`Created alarm rule "${payload.name}".`)
     }
     alarmModalOpen.value = false
     await loadAll()
   } catch (err) {
-    errMsg.value = err instanceof Error ? err.message : 'Failed to save alarm rule'
+    toast.error(err, 'Failed to save alarm rule')
   }
 }
 
@@ -1013,13 +1080,12 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
     r.name,
     'Any active latched alarm for this rule will be cleared and background polling for this rule will stop.',
     async () => {
-      errMsg.value = null
       try {
         await apiRequest(`/api/v1/webview/sites/${siteId.value}/operator/alarm-rules/${r.id}`, { method: 'DELETE' })
-        okMsg.value = `Deleted alarm rule "${r.name}".`
+        toast.success(`Deleted alarm rule "${r.name}".`)
         await loadAll()
       } catch (err) {
-        errMsg.value = err instanceof Error ? err.message : 'Failed to delete alarm rule'
+        toast.error(err, 'Failed to delete alarm rule')
       }
     },
   )
@@ -1086,9 +1152,6 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
         <ShieldCheck class="h-3.5 w-3.5" /> Member Policies ({{ siteMembersOnly.length }})
       </button>
     </div>
-
-    <p v-if="errMsg" class="rounded-lg border border-rose-500/40 bg-rose-500/10 p-3 text-xs text-rose-200">{{ errMsg }}</p>
-    <p v-if="okMsg" class="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-200">{{ okMsg }}</p>
 
     <!-- TAB 1: DEVICES -->
     <div v-if="activeTab === 'devices'" class="space-y-4">
@@ -1344,172 +1407,171 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
       </div>
     </div>
 
-    <!-- TAB 3: DASHBOARDS & WIDGETS (Editable + Reorderable) -->
-    <div v-if="activeTab === 'dashboards'" class="grid gap-5 lg:grid-cols-3 lg:gap-6">
-      <!-- Dashboards List -->
-      <section class="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60">
-        <div class="space-y-3 p-4">
-          <div class="flex items-center justify-between gap-2">
-            <h3 class="text-sm font-semibold text-white">Dashboards</h3>
-            <button
-              type="button"
-              class="inline-flex h-8 items-center gap-1 rounded-lg bg-amber-500 px-2.5 text-xs font-semibold text-slate-950 transition hover:bg-amber-400"
-              @click="openCreateDashboard"
-            >
-              <Plus class="h-3.5 w-3.5" /> New
-            </button>
+    <!-- TAB 3: DASHBOARDS & WIDGETS (Full-Width WYSIWYG Tile Studio) -->
+    <div v-if="activeTab === 'dashboards'" class="space-y-4">
+      <!-- Dashboard Selector Bar (Full-width strip, drag-to-reorder pages) -->
+      <div class="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+        <div
+          class="no-scrollbar flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto"
+          :class="draggedDashId ? 'select-none' : ''"
+        >
+          <button
+            v-for="d in orderedDashboards"
+            :key="d.id"
+            type="button"
+            draggable="true"
+            title="Click to select - Drag to reorder pages"
+            class="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition"
+            :class="[
+              selectedDash?.id === d.id
+                ? 'border-amber-500/60 bg-amber-500/15 text-amber-200'
+                : 'border-slate-800 bg-slate-950/60 text-slate-300 hover:border-slate-700 hover:text-white',
+              draggedDashId === d.id ? 'opacity-40 cursor-grabbing' : 'cursor-grab',
+            ]"
+            @dragstart="onDashDragStart($event, d.id)"
+            @dragover.prevent="onDashDragOver(d.id)"
+            @drop.prevent="finishDashDrag"
+            @dragend="finishDashDrag"
+            @click="selectedDashId = d.id"
+          >
+            <GripVertical class="h-3.5 w-3.5 shrink-0 opacity-45" />
+            <Star v-if="d.isDefault" class="h-3 w-3 shrink-0 text-amber-400" title="Default dashboard" />
+            <LayoutGrid v-else class="h-3.5 w-3.5 shrink-0 opacity-70" />
+            <span>{{ d.name }}</span>
+            <span class="rounded bg-slate-900/80 px-1.5 py-0.5 font-mono text-[10px] text-slate-400">
+              {{ d.widgets.length }}
+            </span>
+          </button>
+
+          <p v-if="dashboards.length === 0" class="px-2 text-xs text-slate-500">
+            No dashboards created yet.
+          </p>
+        </div>
+
+        <button
+          type="button"
+          class="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg bg-amber-500 px-3 text-xs font-semibold text-slate-950 transition hover:bg-amber-400"
+          @click="openCreateDashboard"
+        >
+          <Plus class="h-3.5 w-3.5" /> New Dashboard
+        </button>
+      </div>
+
+      <!-- Empty Dashboards State -->
+      <div
+        v-if="!selectedDash"
+        class="flex flex-col items-center justify-center rounded-xl border border-dashed border-slate-800 bg-slate-900/40 px-6 py-16 text-center"
+      >
+        <LayoutGrid class="h-9 w-9 text-slate-700" />
+        <p class="mt-3 text-sm font-medium text-slate-300">Create your first dashboard</p>
+        <p class="mt-1 max-w-md text-xs text-slate-500">
+          Build live telemetry and control tile boards with drag-and-drop arrangement and modular tile sizes.
+        </p>
+        <button
+          type="button"
+          class="mt-4 inline-flex h-9 items-center gap-1.5 rounded-lg bg-amber-500 px-4 text-xs font-semibold text-slate-950 transition hover:bg-amber-400"
+          @click="openCreateDashboard"
+        >
+          <Plus class="h-4 w-4" /> New Dashboard
+        </button>
+      </div>
+
+      <!-- Selected Dashboard WYSIWYG Studio (100% Full Horizontal Width) -->
+      <div v-else class="space-y-4">
+        <!-- Studio Header & Live Layout Controls -->
+        <div class="flex flex-col gap-3 rounded-xl border border-slate-800 bg-slate-900/60 p-3.5 sm:p-4">
+          <div class="flex flex-wrap items-center justify-between gap-2.5">
+            <div class="flex min-w-0 flex-wrap items-center gap-2">
+              <h3 class="truncate text-base font-semibold tracking-tight text-white">
+                {{ selectedDash.name }}
+              </h3>
+              <span class="rounded bg-slate-800 px-2 py-0.5 font-mono text-[10px] text-slate-400">
+                {{ selectedDash.pollIntervalMs || 1000 }} ms
+              </span>
+              <span
+                v-if="selectedDash.isDefault"
+                class="rounded-full border border-amber-500/35 bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase text-amber-200"
+              >
+                Default
+              </span>
+            </div>
+
+            <div class="flex flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-2.5 text-xs font-medium text-slate-200 transition hover:bg-slate-800"
+                @click="openEditDashboard(selectedDash)"
+              >
+                <SlidersHorizontal class="h-3.5 w-3.5" /> Settings
+              </button>
+              <RouterLink
+                :to="`/sites/${siteId}/webview/${selectedDash.id}`"
+                class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-sky-500/40 bg-sky-500/15 px-2.5 text-xs font-medium text-sky-200 transition hover:bg-sky-500/25"
+              >
+                <ExternalLink class="h-3.5 w-3.5" /> Live View
+              </RouterLink>
+              <button
+                type="button"
+                title="Delete dashboard"
+                aria-label="Delete dashboard"
+                class="flex h-8 w-8 items-center justify-center rounded-lg border border-rose-500/30 bg-rose-500/10 text-rose-300 transition hover:bg-rose-500/20"
+                @click="confirmDeleteDashboard(selectedDash)"
+              >
+                <Trash2 class="h-3.5 w-3.5" />
+              </button>
+            </div>
           </div>
 
-          <div class="space-y-1.5">
-            <div
-              v-for="(d, idx) in dashboardsPag.paginatedItems.value"
-              :key="d.id"
-              class="flex items-center justify-between gap-2 rounded-lg border px-2.5 py-2 text-xs transition"
-              :class="selectedDash?.id === d.id ? 'border-amber-500/50 bg-amber-500/15' : 'border-slate-800 bg-slate-950/60'"
-            >
-              <button type="button" class="min-w-0 flex-1 truncate py-0.5 text-left font-medium text-white" @click="selectedDashId = d.id">
-                {{ d.name }}
-                <span class="ml-1 text-[10px] text-slate-400">({{ d.widgets.length }})</span>
-              </button>
-
-              <div class="flex shrink-0 items-center gap-0.5">
+          <!-- Scale Quick Bar + Add Tile CTA -->
+          <div class="flex flex-wrap items-center justify-between gap-3 border-t border-slate-800/80 pt-3 text-xs">
+            <div class="flex items-center gap-1.5">
+              <span class="text-[11px] font-medium text-slate-400">Scale:</span>
+              <div class="inline-flex rounded-lg border border-slate-700/80 bg-slate-950/80 p-0.5 text-[11px]">
                 <button
+                  v-for="opt in [
+                    { value: 'compact', label: 'Compact' },
+                    { value: 'comfortable', label: 'Balanced' },
+                    { value: 'spacious', label: 'Spacious' },
+                  ] as const"
+                  :key="opt.value"
                   type="button"
-                  :disabled="dashboardsPag.startIndex.value + idx === 0"
-                  title="Move up"
-                  aria-label="Move dashboard up"
-                  class="flex h-7 w-7 items-center justify-center rounded text-slate-400 hover:bg-slate-800 hover:text-white disabled:opacity-30"
-                  @click="moveDashboard(dashboardsPag.startIndex.value + idx, -1)"
+                  class="rounded-md px-2 py-1 font-medium transition"
+                  :class="
+                    selectedDashLayout.density === opt.value
+                      ? 'bg-amber-500 text-slate-950'
+                      : 'text-slate-300 hover:text-white'
+                  "
+                  @click="updateSelectedDashLayout({ density: opt.value })"
                 >
-                  <ArrowUp class="h-3.5 w-3.5" />
-                </button>
-                <button
-                  type="button"
-                  :disabled="dashboardsPag.startIndex.value + idx === dashboards.length - 1"
-                  title="Move down"
-                  aria-label="Move dashboard down"
-                  class="flex h-7 w-7 items-center justify-center rounded text-slate-400 hover:bg-slate-800 hover:text-white disabled:opacity-30"
-                  @click="moveDashboard(dashboardsPag.startIndex.value + idx, 1)"
-                >
-                  <ArrowDown class="h-3.5 w-3.5" />
-                </button>
-                <button
-                  type="button"
-                  title="Edit dashboard"
-                  aria-label="Edit dashboard"
-                  class="flex h-7 w-7 items-center justify-center rounded text-slate-400 hover:bg-slate-800 hover:text-white"
-                  @click="openEditDashboard(d)"
-                >
-                  <Edit3 class="h-3.5 w-3.5" />
-                </button>
-                <button
-                  type="button"
-                  title="Delete dashboard"
-                  aria-label="Delete dashboard"
-                  class="flex h-7 w-7 items-center justify-center rounded text-rose-400 hover:bg-rose-500/15"
-                  @click="confirmDeleteDashboard(d)"
-                >
-                  <Trash2 class="h-3.5 w-3.5" />
+                  {{ opt.label }}
                 </button>
               </div>
             </div>
-            <p v-if="dashboards.length === 0" class="py-6 text-center text-xs text-slate-500">No dashboards yet.</p>
-          </div>
-        </div>
-        <TablePagination
-          v-model:page="dashboardsPag.page.value"
-          v-model:page-size="dashboardsPag.pageSize.value"
-          :total-items="dashboardsPag.totalItems.value"
-          compact
-        />
-      </section>
 
-      <!-- Selected Dashboard Widgets -->
-      <section class="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60 lg:col-span-2">
-        <div class="space-y-3 p-4">
-          <div class="flex flex-wrap items-center justify-between gap-2">
-            <h3 class="min-w-0 truncate text-sm font-semibold text-white">
-              {{ selectedDash ? `Widgets on "${selectedDash.name}"` : 'Select a dashboard' }}
-            </h3>
             <button
-              v-if="selectedDash"
               type="button"
               class="inline-flex h-8 shrink-0 items-center gap-1 rounded-lg bg-amber-500 px-3 text-xs font-semibold text-slate-950 transition hover:bg-amber-400"
               @click="openCreateWidget"
             >
-              <Plus class="h-3.5 w-3.5" /> Add Widget
+              <Plus class="h-3.5 w-3.5" /> Add Tile
             </button>
           </div>
-
-          <div v-if="selectedDash" class="overflow-hidden rounded-lg border border-slate-800">
-            <div class="divide-y divide-slate-800/70">
-              <div
-                v-for="(w, idx) in widgetsPag.paginatedItems.value"
-                :key="w.id"
-                class="flex flex-col gap-2.5 px-3.5 py-3 text-xs sm:flex-row sm:items-center sm:justify-between"
-              >
-                <div class="min-w-0">
-                  <div class="flex flex-wrap items-center gap-1.5">
-                    <span class="font-medium text-white">{{ w.name }}</span>
-                    <span class="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] text-slate-300">{{ w.widgetType }}</span>
-                  </div>
-                  <p class="mt-0.5 truncate font-mono text-[11px] text-slate-500">
-                    {{ w.registerMappingId && mappingMap[w.registerMappingId] ? mappingMap[w.registerMappingId].name : 'Unbound register' }}
-                  </p>
-                </div>
-
-                <div class="flex shrink-0 items-center justify-end gap-1">
-                  <button
-                    type="button"
-                    :disabled="widgetsPag.startIndex.value + idx === 0"
-                    title="Move up"
-                    aria-label="Move widget up"
-                    class="flex h-7 w-7 items-center justify-center rounded text-slate-400 hover:bg-slate-800 hover:text-white disabled:opacity-30"
-                    @click="moveWidget(widgetsPag.startIndex.value + idx, -1)"
-                  >
-                    <ArrowUp class="h-3.5 w-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    :disabled="widgetsPag.startIndex.value + idx === selectedDash.widgets.length - 1"
-                    title="Move down"
-                    aria-label="Move widget down"
-                    class="flex h-7 w-7 items-center justify-center rounded text-slate-400 hover:bg-slate-800 hover:text-white disabled:opacity-30"
-                    @click="moveWidget(widgetsPag.startIndex.value + idx, 1)"
-                  >
-                    <ArrowDown class="h-3.5 w-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    title="Edit widget"
-                    class="inline-flex h-7 items-center gap-1 rounded border border-slate-700 bg-slate-800 px-2 text-[11px] text-slate-200 hover:bg-slate-700"
-                    @click="openEditWidget(w)"
-                  >
-                    <Edit3 class="h-3 w-3" /> Edit
-                  </button>
-                  <button
-                    type="button"
-                    title="Delete widget"
-                    aria-label="Delete widget"
-                    class="flex h-7 w-7 items-center justify-center rounded border border-rose-500/30 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20"
-                    @click="confirmDeleteWidget(w)"
-                  >
-                    <Trash2 class="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              </div>
-              <div v-if="selectedDash.widgets.length === 0" class="px-4 py-8 text-center text-xs text-slate-500">
-                No widgets added to this dashboard yet.
-              </div>
-            </div>
-            <TablePagination
-              v-model:page="widgetsPag.page.value"
-              v-model:page-size="widgetsPag.pageSize.value"
-              :total-items="widgetsPag.totalItems.value"
-            />
-          </div>
         </div>
-      </section>
+
+        <!-- Live End-Result Tile Canvas (Exact same grid & tiles as WebView) -->
+        <DashboardTileGrid
+          :widgets="selectedDash.widgets"
+          :layout="selectedDash.layout"
+          :mappings-by-id="mappingMap"
+          :can-write="true"
+          :editing="true"
+          @add="openCreateWidget"
+          @edit="openEditWidget"
+          @delete="confirmDeleteWidget"
+          @resize="resizeWidgetOnCanvas"
+          @reorder="reorderWidgetsOnCanvas"
+        />
+      </div>
     </div>
 
     <!-- TAB 4: HISTORY KEYS -->
@@ -1882,30 +1944,54 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
     <!-- MODAL: CREATE / EDIT DEVICE -->
     <Teleport to="body">
       <div v-if="deviceModalOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-xs" @click.self="deviceModalOpen = false">
-        <form class="max-h-[90dvh] w-full max-w-md overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl space-y-4 sm:p-6" @submit.prevent="saveDevice">
+        <form novalidate class="max-h-[90dvh] w-full max-w-md overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl space-y-4 sm:p-6" @submit.prevent="saveDevice">
           <div class="flex items-center justify-between">
             <h3 class="text-sm font-semibold text-white">{{ editingDeviceId ? 'Edit Device' : 'Add Device' }}</h3>
             <button type="button" aria-label="Close modal" class="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white" @click="deviceModalOpen = false"><X class="h-4 w-4" /></button>
           </div>
           <div>
             <label class="mb-1 block text-xs text-slate-400">Device Name</label>
-            <input v-model="devName" required placeholder="PLC-1" class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white" />
+            <input
+              v-model="devName"
+              placeholder="PLC-1"
+              class="w-full rounded-lg border bg-slate-950 px-3 py-2 text-xs text-white focus:outline-none"
+              :class="showDevErr('name') ? 'border-rose-500 focus:border-rose-400' : 'border-slate-700 focus:border-amber-500'"
+              @blur="devTouched.name = true"
+            />
+            <p v-if="showDevErr('name')" class="mt-1 text-[11px] text-rose-400">{{ showDevErr('name') }}</p>
           </div>
           <div class="grid gap-3 sm:grid-cols-3">
             <div class="sm:col-span-2">
               <label class="mb-1 block text-xs text-slate-400">IP Address</label>
-              <input v-model="devHost" required placeholder="172.21.0.2" class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs text-white" />
+              <input
+                v-model="devHost"
+                placeholder="172.21.0.2"
+                class="w-full rounded-lg border bg-slate-950 px-3 py-2 font-mono text-xs text-white focus:outline-none"
+                :class="showDevErr('host') ? 'border-rose-500 focus:border-rose-400' : 'border-slate-700 focus:border-amber-500'"
+                @blur="devTouched.host = true"
+              />
+              <p v-if="showDevErr('host')" class="mt-1 text-[11px] text-rose-400">{{ showDevErr('host') }}</p>
             </div>
             <div>
               <label class="mb-1 block text-xs text-slate-400">Port</label>
-              <NumericTextInput v-model="devPort" :min="1" :max="65535" required placeholder="502" />
+              <NumericTextInput
+                v-model="devPort"
+                :min="1"
+                :max="65535"
+                required
+                placeholder="502"
+                :external-error="showDevErr('port')"
+                @blur="devTouched.port = true"
+              />
             </div>
           </div>
           <div>
             <label class="mb-1 block text-xs text-slate-400">Protocol</label>
-            <select v-model="devProto" class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white">
-              <option value="MODBUS_TCP">Modbus TCP</option>
-            </select>
+            <CustomSelect
+              v-model="devProto"
+              :options="PROTOCOL_OPTIONS"
+              aria-label="Device protocol"
+            />
           </div>
           <label v-if="editingDeviceId" class="inline-flex items-center gap-2 text-xs text-slate-300">
             <input v-model="devActive" type="checkbox" /> Active
@@ -1921,7 +2007,7 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
     <!-- MODAL: CREATE / EDIT REGISTER (Dynamic Protocol Attributes) -->
     <Teleport to="body">
       <div v-if="regModalOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-xs" @click.self="regModalOpen = false">
-        <form class="max-h-[90dvh] w-full max-w-lg overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl space-y-4 sm:p-6" @submit.prevent="saveRegister">
+        <form novalidate class="max-h-[90dvh] w-full max-w-lg overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl space-y-4 sm:p-6" @submit.prevent="saveRegister">
           <div class="flex items-center justify-between">
             <h3 class="text-sm font-semibold text-white">{{ editingRegId ? 'Edit Register' : 'Add Register' }}</h3>
             <button type="button" aria-label="Close modal" class="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white" @click="regModalOpen = false"><X class="h-4 w-4" /></button>
@@ -1930,13 +2016,24 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
           <div class="grid gap-3 sm:grid-cols-2">
             <div>
               <label class="mb-1 block text-xs text-slate-400">Device</label>
-              <select v-model="regDeviceId" required class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white">
-                <option v-for="d in devices" :key="d.id" :value="d.id">{{ d.name }} ({{ d.protocol }})</option>
-              </select>
+              <CustomSelect
+                v-model="regDeviceId"
+                :options="deviceSelectOptions"
+                :invalid="Boolean(showRegErr('deviceId'))"
+                aria-label="Register device"
+              />
+              <p v-if="showRegErr('deviceId')" class="mt-1 text-[11px] text-rose-400">{{ showRegErr('deviceId') }}</p>
             </div>
             <div>
               <label class="mb-1 block text-xs text-slate-400">Register Name</label>
-              <input v-model="regName" required placeholder="Inlet Temp" class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white" />
+              <input
+                v-model="regName"
+                placeholder="Inlet Temp"
+                class="w-full rounded-lg border bg-slate-950 px-3 py-2 text-xs text-white focus:outline-none"
+                :class="showRegErr('name') ? 'border-rose-500 focus:border-rose-400' : 'border-slate-700 focus:border-amber-500'"
+                @blur="regTouched.name = true"
+              />
+              <p v-if="showRegErr('name')" class="mt-1 text-[11px] text-rose-400">{{ showRegErr('name') }}</p>
             </div>
           </div>
 
@@ -1946,59 +2043,98 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
             <div class="grid gap-3 sm:grid-cols-3">
               <div>
                 <label class="mb-1 block text-xs text-slate-400">Slave Address (Unit ID)</label>
-                <NumericTextInput v-model="regSlave" :min="0" :max="255" required placeholder="1" input-class="bg-slate-900" />
+                <NumericTextInput
+                  v-model="regSlave"
+                  :min="0"
+                  :max="255"
+                  required
+                  placeholder="1"
+                  input-class="bg-slate-900"
+                  :external-error="showRegErr('slave')"
+                  @blur="regTouched.slave = true"
+                />
               </div>
               <div>
                 <label class="mb-1 block text-xs text-slate-400">Function Code</label>
-                <select v-model="regFC" class="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-white">
-                  <option value="READ_HOLDING">FC03 Holding</option>
-                  <option value="READ_INPUT">FC04 Input</option>
-                  <option value="READ_COIL">FC01 Coil</option>
-                  <option value="READ_DISCRETE">FC02 Discrete</option>
-                </select>
+                <CustomSelect
+                  v-model="regFC"
+                  :options="FC_OPTIONS"
+                  aria-label="Modbus function code"
+                  trigger-class="bg-slate-900"
+                />
               </div>
               <div>
                 <label class="mb-1 block text-xs text-slate-400">Register Address</label>
-                <NumericTextInput v-model="regAddr" :min="0" :max="65535" required placeholder="0" input-class="bg-slate-900" />
+                <NumericTextInput
+                  v-model="regAddr"
+                  :min="0"
+                  :max="65535"
+                  required
+                  placeholder="0"
+                  input-class="bg-slate-900"
+                  :external-error="showRegErr('addr')"
+                  @blur="regTouched.addr = true"
+                />
               </div>
             </div>
 
             <div class="grid gap-3 sm:grid-cols-3">
               <div>
                 <label class="mb-1 block text-xs text-slate-400">Data Type</label>
-                <select v-model="regDataType" :disabled="regFC === 'READ_COIL' || regFC === 'READ_DISCRETE'" class="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-white disabled:opacity-50">
-                  <option value="BOOL">BOOL</option>
-                  <option value="UINT16">UINT16</option>
-                  <option value="INT16">INT16</option>
-                  <option value="UINT32">UINT32</option>
-                  <option value="INT32">INT32</option>
-                  <option value="FLOAT32">FLOAT32</option>
-                </select>
+                <CustomSelect
+                  v-model="regDataType"
+                  :options="DATA_TYPE_OPTIONS"
+                  :disabled="regFC === 'READ_COIL' || regFC === 'READ_DISCRETE'"
+                  aria-label="Modbus data type"
+                  trigger-class="bg-slate-900"
+                />
               </div>
               <div>
                 <label class="mb-1 block text-xs text-slate-400">Word Order</label>
-                <select v-model="regWordOrder" class="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-white">
-                  <option value="BIG">BIG</option>
-                  <option value="LITTLE">LITTLE</option>
-                </select>
+                <CustomSelect
+                  v-model="regWordOrder"
+                  :options="WORD_ORDER_OPTIONS"
+                  aria-label="Modbus word order"
+                  trigger-class="bg-slate-900"
+                />
               </div>
               <div>
                 <label class="mb-1 block text-xs text-slate-400">Access Permission</label>
-                <select v-model="regAccess" :disabled="regFC === 'READ_DISCRETE' || regFC === 'READ_INPUT'" class="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-white disabled:opacity-50">
-                  <option value="READ">Read only (R)</option>
-                  <option value="READ_WRITE">Read / Write (R/W)</option>
-                </select>
+                <CustomSelect
+                  v-model="regAccess"
+                  :options="ACCESS_OPTIONS"
+                  :disabled="regFC === 'READ_DISCRETE' || regFC === 'READ_INPUT'"
+                  aria-label="Modbus access permission"
+                  trigger-class="bg-slate-900"
+                />
               </div>
             </div>
 
             <div class="grid gap-3 border-t border-slate-800 pt-3 sm:grid-cols-2">
               <div>
                 <label class="mb-1 block text-xs text-slate-400">Unit (optional)</label>
-                <input v-model="regUnit" maxlength="32" placeholder="e.g. C, bar, %" class="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-white" />
+                <input
+                  v-model="regUnit"
+                  maxlength="32"
+                  placeholder="e.g. C, bar, %"
+                  class="w-full rounded-lg border bg-slate-900 px-3 py-2 text-xs text-white focus:outline-none"
+                  :class="showRegErr('unit') ? 'border-rose-500' : 'border-slate-700 focus:border-amber-500'"
+                  @blur="regTouched.unit = true"
+                />
+                <p v-if="showRegErr('unit')" class="mt-1 text-[11px] text-rose-400">{{ showRegErr('unit') }}</p>
               </div>
               <div>
                 <label class="mb-1 block text-xs text-slate-400">Precision (10^-x, optional)</label>
-                <NumericTextInput v-model="regPrecision" :min="-5" :max="5" allow-negative placeholder="0" input-class="bg-slate-900" />
+                <NumericTextInput
+                  v-model="regPrecision"
+                  :min="-5"
+                  :max="5"
+                  allow-negative
+                  placeholder="0"
+                  input-class="bg-slate-900"
+                  :external-error="showRegErr('precision')"
+                  @blur="regTouched.precision = true"
+                />
               </div>
             </div>
           </div>
@@ -2015,261 +2151,25 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
       </div>
     </Teleport>
 
-    <!-- MODAL: CREATE / EDIT DASHBOARD -->
-    <Teleport to="body">
-      <div v-if="dashModalOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-xs" @click.self="dashModalOpen = false">
-        <form class="max-h-[90dvh] w-full max-w-sm overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl space-y-4 sm:p-6" @submit.prevent="saveDashboard">
-          <div class="flex items-center justify-between">
-            <h3 class="text-sm font-semibold text-white">{{ editingDashId ? 'Edit Dashboard' : 'New Dashboard' }}</h3>
-            <button type="button" aria-label="Close modal" class="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white" @click="dashModalOpen = false"><X class="h-4 w-4" /></button>
-          </div>
-          <div>
-            <label class="mb-1 block text-xs text-slate-400">Dashboard Name</label>
-            <input v-model="dashName" required placeholder="Main Boiler" class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white" />
-          </div>
-          <div>
-            <label class="mb-1 block text-xs text-slate-400">Poll Interval (ms, 1000-60000)</label>
-            <NumericTextInput v-model="dashPollIntervalMs" :min="1000" :max="60000" required placeholder="1000" />
-            <p class="mt-1 text-[11px] text-slate-500">
-              Applies up to 100 active registers per device; above 100, the minimum rate increases automatically to protect the device.
-            </p>
-          </div>
-          <label class="inline-flex items-center gap-2 text-xs text-slate-300">
-            <input v-model="dashIsDefault" type="checkbox" /> Set as default dashboard
-          </label>
-          <div class="flex justify-end gap-2 pt-2">
-            <button type="button" class="rounded-lg border border-slate-700 px-3.5 py-2 text-xs text-slate-300" @click="dashModalOpen = false">Cancel</button>
-            <button type="submit" class="rounded-lg bg-amber-500 px-4 py-2 text-xs font-semibold text-slate-950 hover:bg-amber-400">Save</button>
-          </div>
-        </form>
-      </div>
-    </Teleport>
+    <!-- MODAL: CREATE / EDIT DASHBOARD (Shared WYSIWYG Options) -->
+    <DashboardOptionsModal
+      :open="dashModalOpen"
+      :dashboard="editingDash"
+      :default-if-new="dashboards.length === 0"
+      @close="dashModalOpen = false"
+      @save="saveDashboard"
+    />
 
-    <!-- MODAL: CREATE / EDIT WIDGET -->
-    <Teleport to="body">
-      <div v-if="widgetModalOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-xs" @click.self="widgetModalOpen = false">
-        <form class="max-h-[90dvh] w-full max-w-lg overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl space-y-4 sm:p-6" @submit.prevent="saveWidget">
-          <div class="flex items-center justify-between">
-            <h3 class="text-sm font-semibold text-white">{{ editingWidgetId ? 'Edit Widget' : 'Add Widget' }}</h3>
-            <button type="button" aria-label="Close modal" class="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white" @click="widgetModalOpen = false"><X class="h-4 w-4" /></button>
-          </div>
-
-          <div class="grid gap-3 sm:grid-cols-2">
-            <div>
-              <label class="mb-1 block text-xs text-slate-400">Card Title</label>
-              <input v-model="widName" required placeholder="Water Temperature" class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white" />
-            </div>
-            <div>
-              <label class="mb-1 block text-xs text-slate-400">Card Type</label>
-              <select v-model="widType" class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white">
-                <option value="display">Display</option>
-                <option value="lamp">Lamp</option>
-                <option value="switch">Switch</option>
-                <option value="button">Button</option>
-                <option value="number_input">Number Input</option>
-              </select>
-            </div>
-          </div>
-
-          <RegisterPicker
-            v-model="widMappingId"
-            :devices="devices"
-            :mappings="mappings"
-            register-label="Bound Register"
-            placeholder="Search by register name, address, or type..."
-          />
-
-          <!-- DISPLAY & NUMBER INPUT EXTRA PARAMS -->
-          <div v-if="widType === 'display' || widType === 'number_input'" class="space-y-3 rounded-xl border border-slate-800 bg-slate-950/60 p-4">
-            <p class="text-[11px] font-semibold uppercase tracking-wider text-sky-300">
-              {{ widType === 'display' ? 'Display Options' : 'Number Input Options' }}
-            </p>
-            <div class="grid gap-3 sm:grid-cols-2">
-              <div>
-                <label class="mb-1 block text-xs text-slate-400">Font Size</label>
-                <select v-model="widFontSize" class="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-white">
-                  <option value="sm">Small</option>
-                  <option value="md">Medium</option>
-                  <option value="lg">Large</option>
-                  <option value="xl">Extra Large</option>
-                </select>
-              </div>
-              <div>
-                <label class="mb-1 block text-xs text-slate-400">Decimal Places (10^-x)</label>
-                <NumericTextInput
-                  v-model="widPrecision"
-                  :min="-5"
-                  :max="5"
-                  allow-negative
-                  :placeholder="`Default: ${widBoundMapping?.protocolAttributes?.precision ?? 0}`"
-                  input-class="bg-slate-900"
-                />
-              </div>
-              <div>
-                <label class="mb-1 block text-xs text-slate-400">Prefix</label>
-                <input v-model="widPrefix" placeholder="e.g. ~" class="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-white" />
-              </div>
-              <div>
-                <label class="mb-1 block text-xs text-slate-400">Unit (Postfix)</label>
-                <input
-                  v-model="widUnit"
-                  :placeholder="widBoundMapping?.protocolAttributes?.unit ? `Default: ${widBoundMapping.protocolAttributes.unit}` : 'e.g. C, bar, %'"
-                  class="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-white"
-                />
-              </div>
-            </div>
-            <p class="text-[11px] text-slate-500">
-              Leave Unit or Decimal Places empty to inherit from the bound register (unit: {{ widBoundMapping?.protocolAttributes?.unit || 'none' }}, precision: {{ widBoundMapping?.protocolAttributes?.precision ?? 0 }}).
-            </p>
-
-            <div v-if="widType === 'number_input'" class="space-y-2 border-t border-slate-800 pt-3">
-              <div class="grid gap-3 sm:grid-cols-2">
-                <div>
-                  <label class="mb-1 block text-xs text-slate-400">Min Value (optional)</label>
-                  <NumericTextInput
-                    v-model="widMin"
-                    allow-decimal
-                    allow-negative
-                    :min="widBoundTypeBounds.typeMin"
-                    :max="widBoundTypeBounds.typeMax"
-                    :placeholder="String(widBoundTypeBounds.typeMin)"
-                    input-class="bg-slate-900"
-                  />
-                </div>
-                <div>
-                  <label class="mb-1 block text-xs text-slate-400">Max Value (optional)</label>
-                  <NumericTextInput
-                    v-model="widMax"
-                    allow-decimal
-                    allow-negative
-                    :min="widBoundTypeBounds.typeMin"
-                    :max="widBoundTypeBounds.typeMax"
-                    :placeholder="String(widBoundTypeBounds.typeMax)"
-                    input-class="bg-slate-900"
-                  />
-                </div>
-              </div>
-              <p class="text-[11px] text-slate-500">
-                Register type limit ({{ widBoundMapping?.protocolAttributes?.dataType || 'UINT16' }}):
-                {{ widBoundTypeBounds.typeMin }} to {{ widBoundTypeBounds.typeMax }}
-              </p>
-            </div>
-          </div>
-
-          <!-- LAMP EXTRA PARAMS (BOTH ON AND OFF STATES) -->
-          <div v-else-if="widType === 'lamp'" class="space-y-3 rounded-xl border border-slate-800 bg-slate-950/60 p-4">
-            <p class="text-[11px] font-semibold uppercase tracking-wider text-emerald-300">ON State (value != 0)</p>
-            <div class="grid gap-3 sm:grid-cols-3">
-              <div>
-                <label class="mb-1 block text-xs text-slate-400">Mode</label>
-                <select v-model="widLampOn.mode" class="w-full rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-2 text-xs text-white">
-                  <option value="on">On</option>
-                  <option value="blink">Blink</option>
-                  <option value="off">Off</option>
-                </select>
-              </div>
-              <div>
-                <label class="mb-1 block text-xs text-slate-400">Color</label>
-                <select v-model="widLampOn.color" class="w-full rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-2 text-xs text-white">
-                  <option value="emerald">Green</option>
-                  <option value="sky">Blue</option>
-                  <option value="amber">Amber</option>
-                  <option value="rose">Red</option>
-                  <option value="slate">Gray</option>
-                </select>
-              </div>
-              <div>
-                <label class="mb-1 block text-xs text-slate-400">Shown Text</label>
-                <input v-model="widLampOn.text" placeholder="RUNNING" class="w-full rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-2 text-xs text-white" />
-              </div>
-            </div>
-
-            <p class="border-t border-slate-800 pt-3 text-[11px] font-semibold uppercase tracking-wider text-slate-400">OFF State (value = 0)</p>
-            <div class="grid gap-3 sm:grid-cols-3">
-              <div>
-                <label class="mb-1 block text-xs text-slate-400">Mode</label>
-                <select v-model="widLampOff.mode" class="w-full rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-2 text-xs text-white">
-                  <option value="off">Off</option>
-                  <option value="on">On</option>
-                  <option value="blink">Blink</option>
-                </select>
-              </div>
-              <div>
-                <label class="mb-1 block text-xs text-slate-400">Color</label>
-                <select v-model="widLampOff.color" class="w-full rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-2 text-xs text-white">
-                  <option value="slate">Gray</option>
-                  <option value="emerald">Green</option>
-                  <option value="sky">Blue</option>
-                  <option value="amber">Amber</option>
-                  <option value="rose">Red</option>
-                </select>
-              </div>
-              <div>
-                <label class="mb-1 block text-xs text-slate-400">Shown Text</label>
-                <input v-model="widLampOff.text" placeholder="STOPPED" class="w-full rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-2 text-xs text-white" />
-              </div>
-            </div>
-          </div>
-
-          <!-- SWITCH EXTRA PARAMS -->
-          <div v-else-if="widType === 'switch'" class="space-y-3 rounded-xl border border-slate-800 bg-slate-950/60 p-4">
-            <p class="text-[11px] font-semibold uppercase tracking-wider text-emerald-300">Switch Options</p>
-            <div class="grid gap-3 sm:grid-cols-3">
-              <div>
-                <label class="mb-1 block text-xs text-slate-400">ON State Color</label>
-                <select v-model="widSwitchColor" class="w-full rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-2 text-xs text-white">
-                  <option value="emerald">Green</option>
-                  <option value="sky">Blue</option>
-                  <option value="amber">Amber</option>
-                  <option value="rose">Red</option>
-                </select>
-              </div>
-              <div>
-                <label class="mb-1 block text-xs text-slate-400">ON Label</label>
-                <input v-model="widSwitchOnLabel" placeholder="ON" class="w-full rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-2 text-xs text-white" />
-              </div>
-              <div>
-                <label class="mb-1 block text-xs text-slate-400">OFF Label</label>
-                <input v-model="widSwitchOffLabel" placeholder="OFF" class="w-full rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-2 text-xs text-white" />
-              </div>
-            </div>
-          </div>
-
-          <!-- BUTTON EXTRA PARAMS -->
-          <div v-else-if="widType === 'button'" class="space-y-3 rounded-xl border border-slate-800 bg-slate-950/60 p-4">
-            <p class="text-[11px] font-semibold uppercase tracking-wider text-sky-300">Button Options</p>
-            <div class="grid gap-3 sm:grid-cols-3">
-              <div>
-                <label class="mb-1 block text-xs text-slate-400">Color</label>
-                <select v-model="widBtnColor" class="w-full rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-2 text-xs text-white">
-                  <option value="sky">Blue</option>
-                  <option value="emerald">Green</option>
-                  <option value="amber">Amber</option>
-                  <option value="rose">Red</option>
-                  <option value="slate">Gray</option>
-                </select>
-              </div>
-              <div>
-                <label class="mb-1 block text-xs text-slate-400">Button Label</label>
-                <input v-model="widBtnLabel" placeholder="Start Pump" class="w-full rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-2 text-xs text-white" />
-              </div>
-              <div>
-                <label class="mb-1 block text-xs text-slate-400">Trigger Time (ms)</label>
-                <NumericTextInput v-model="widBtnTriggerMs" :min="100" :max="60000" required placeholder="1000" input-class="bg-slate-900" />
-              </div>
-            </div>
-            <p class="text-[11px] text-slate-500">
-              Sends 1 immediately, then automatically resets and sends 0 after the trigger time.
-            </p>
-          </div>
-
-          <div class="flex justify-end gap-2 pt-2">
-            <button type="button" class="rounded-lg border border-slate-700 px-3.5 py-2 text-xs text-slate-300" @click="widgetModalOpen = false">Cancel</button>
-            <button type="submit" class="rounded-lg bg-amber-500 px-4 py-2 text-xs font-semibold text-slate-950 hover:bg-amber-400">Save Widget</button>
-          </div>
-        </form>
-      </div>
-    </Teleport>
+    <!-- MODAL: CREATE / EDIT WIDGET TILE (Shared Live Preview Editor) -->
+    <WidgetEditModal
+      :open="widgetModalOpen"
+      :widget="editingWidget"
+      :devices="devices"
+      :mappings="mappings"
+      @close="widgetModalOpen = false"
+      @save="saveWidget"
+      @delete="confirmDeleteWidget"
+    />
 
     <!-- MODAL: ADD / EDIT HISTORY KEY -->
     <Teleport to="body">
@@ -2298,24 +2198,19 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
           <div class="grid gap-3 sm:grid-cols-2">
             <div>
               <label class="mb-1 block text-xs text-slate-400">Poll Interval</label>
-              <select v-model.number="histPollSec" class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white">
-                <option :value="10">10s</option>
-                <option :value="30">30s</option>
-                <option :value="60">1 min</option>
-                <option :value="300">5 min</option>
-                <option :value="900">15 min</option>
-                <option :value="3600">1 hour</option>
-              </select>
+              <CustomSelect
+                v-model="histPollSec"
+                :options="HIST_POLL_OPTIONS"
+                aria-label="History poll interval"
+              />
             </div>
             <div>
               <label class="mb-1 block text-xs text-slate-400">Retention</label>
-              <select v-model.number="histRetentionDays" class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white">
-                <option :value="1">1 day</option>
-                <option :value="7">7 days</option>
-                <option :value="30">30 days</option>
-                <option :value="90">90 days</option>
-                <option :value="365">1 year</option>
-              </select>
+              <CustomSelect
+                v-model="histRetentionDays"
+                :options="HIST_RETENTION_OPTIONS"
+                aria-label="History retention"
+              />
             </div>
           </div>
 
@@ -2345,6 +2240,7 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
         @click.self="alarmModalOpen = false"
       >
         <form
+          novalidate
           class="max-h-[90dvh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl space-y-4 sm:p-6"
           @submit.prevent="saveAlarmRule"
         >
@@ -2365,22 +2261,21 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
               <label class="mb-1 block text-xs text-slate-400">Rule Name</label>
               <input
                 v-model="alarmName"
-                required
                 maxlength="120"
                 placeholder="e.g. Boiler High Temperature"
-                class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white"
+                class="w-full rounded-lg border bg-slate-950 px-3 py-2 text-xs text-white focus:outline-none"
+                :class="showAlarmErr('name') ? 'border-rose-500 focus:border-rose-400' : 'border-slate-700 focus:border-amber-500'"
+                @blur="alarmTouched.name = true"
               />
+              <p v-if="showAlarmErr('name')" class="mt-1 text-[11px] text-rose-400">{{ showAlarmErr('name') }}</p>
             </div>
             <div>
               <label class="mb-1 block text-xs text-slate-400">Severity</label>
-              <select
+              <CustomSelect
                 v-model="alarmSeverity"
-                class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white"
-              >
-                <option value="CRITICAL">Critical</option>
-                <option value="WARNING">Warning</option>
-                <option value="INFO">Info</option>
-              </select>
+                :options="ALARM_SEVERITY_OPTIONS"
+                aria-label="Alarm severity"
+              />
             </div>
           </div>
 
@@ -2392,6 +2287,7 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
               register-label="Monitored Register"
               placeholder="Search register to monitor..."
             />
+            <p v-if="showAlarmErr('mappingId')" class="mt-1 text-[11px] text-rose-400">{{ showAlarmErr('mappingId') }}</p>
             <p v-if="alarmBoundMapping" class="mt-1.5 text-[11px] text-slate-400">
               Evaluated in scaled engineering units (unit:
               <span class="font-mono text-slate-200">{{ alarmBoundMapping.protocolAttributes?.unit || 'none' }}</span>,
@@ -2403,17 +2299,11 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
           <div class="grid gap-3 sm:grid-cols-3">
             <div>
               <label class="mb-1 block text-xs text-slate-400">Condition</label>
-              <select
+              <CustomSelect
                 v-model="alarmCondition"
-                class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white"
-              >
-                <option value="GT">Greater than (&gt;)</option>
-                <option value="GTE">Greater or equal (&gt;=)</option>
-                <option value="LT">Less than (&lt;)</option>
-                <option value="LTE">Less or equal (&lt;=)</option>
-                <option value="EQ">Equal to (==)</option>
-                <option value="NEQ">Not equal to (!=)</option>
-              </select>
+                :options="ALARM_CONDITION_OPTIONS"
+                aria-label="Alarm condition"
+              />
             </div>
             <div>
               <label class="mb-1 block text-xs text-slate-400">
@@ -2426,6 +2316,8 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
                 required
                 placeholder="80.0"
                 input-class="bg-slate-950"
+                :external-error="showAlarmErr('threshold')"
+                @blur="alarmTouched.threshold = true"
               />
             </div>
             <div v-if="alarmNeedsDeadband">
@@ -2438,6 +2330,8 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
                 :min="0"
                 placeholder="0"
                 input-class="bg-slate-950"
+                :external-error="showAlarmErr('deadband')"
+                @blur="alarmTouched.deadband = true"
               />
             </div>
           </div>
@@ -2451,6 +2345,8 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
                 :max="86400"
                 placeholder="0"
                 input-class="bg-slate-950"
+                :external-error="showAlarmErr('holdSec')"
+                @blur="alarmTouched.holdSec = true"
               />
             </div>
             <div>
@@ -2462,6 +2358,8 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
                 required
                 placeholder="10"
                 input-class="bg-slate-950"
+                :external-error="showAlarmErr('pollSec')"
+                @blur="alarmTouched.pollSec = true"
               />
             </div>
           </div>
@@ -2549,8 +2447,7 @@ function confirmDeleteAlarmRule(r: AlarmRule) {
             </button>
             <button
               type="submit"
-              :disabled="!alarmMappingId || !alarmName.trim()"
-              class="rounded-lg bg-amber-500 px-4 py-2 text-xs font-semibold text-slate-950 hover:bg-amber-400 disabled:opacity-40"
+              class="rounded-lg bg-amber-500 px-4 py-2 text-xs font-semibold text-slate-950 hover:bg-amber-400"
             >
               {{ editingAlarmId ? 'Save Changes' : 'Add Alarm Rule' }}
             </button>

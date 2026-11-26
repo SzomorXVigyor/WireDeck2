@@ -49,7 +49,16 @@ export interface HistoryEntry {
 export type WidgetType = 'display' | 'lamp' | 'switch' | 'button' | 'number_input'
 export type FontSizeOption = 'sm' | 'md' | 'lg' | 'xl'
 export type LampMode = 'off' | 'blink' | 'on'
-export type ColorOption = 'emerald' | 'sky' | 'rose' | 'amber' | 'slate'
+export type ColorPresetOption = 'tile_accent' | 'emerald' | 'sky' | 'rose' | 'amber' | 'slate' | 'indigo'
+export type ColorOption = ColorPresetOption | (string & {})
+export type TileSize = 'sm' | 'wide' | 'tall' | 'lg'
+export type TileAccentPreset = 'default' | 'sky' | 'emerald' | 'amber' | 'rose' | 'indigo'
+export type TileAccent = TileAccentPreset | (string & {})
+export type TileDensity = 'compact' | 'comfortable' | 'spacious'
+
+export interface DashboardLayoutConfig {
+  density?: TileDensity
+}
 
 export interface LampStateConfig {
   mode: LampMode

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import CustomSelect, { type SelectOption } from '../../components/CustomSelect.vue'
 import WireDeckLogo from '../../components/WireDeckLogo.vue'
 import { useThemeStore, type ThemeMode } from '../../stores/theme'
 
@@ -7,9 +8,13 @@ const theme = useThemeStore()
 const appVersion = __APP_VERSION__
 
 const systemLabel = computed(() => (theme.systemPrefersDark ? 'Dark' : 'Light'))
+const themeOptions = computed<SelectOption<ThemeMode>[]>(() => [
+  { value: 'system', label: `System (${systemLabel.value})` },
+  { value: 'light', label: 'Light' },
+  { value: 'dark', label: 'Dark' },
+])
 
-function onThemeChange(e: Event) {
-  const val = (e.target as HTMLSelectElement).value as ThemeMode
+function onThemeChange(val: ThemeMode) {
   theme.setMode(val)
 }
 </script>
@@ -31,16 +36,13 @@ function onThemeChange(e: Event) {
           </p>
         </div>
 
-        <select
-          :value="theme.mode"
+        <CustomSelect
+          :model-value="theme.mode"
+          :options="themeOptions"
           aria-label="Color theme"
-          class="h-9 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 text-xs font-medium text-white focus:border-sky-500 focus:outline-none sm:w-48"
+          class="w-full sm:w-48"
           @change="onThemeChange"
-        >
-          <option value="system">System ({{ systemLabel }})</option>
-          <option value="light">Light</option>
-          <option value="dark">Dark</option>
-        </select>
+        />
       </div>
     </section>
 

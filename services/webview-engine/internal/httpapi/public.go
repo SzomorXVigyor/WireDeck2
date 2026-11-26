@@ -981,9 +981,10 @@ func NewPublicRouter(svc *engine.Service, hub *engine.TelemetryHub, verifier *au
 	type CreateDashboardInput struct {
 		SiteID uuid.UUID `path:"siteId" format:"uuid"`
 		Body   struct {
-			Name           string `json:"name" minLength:"1" maxLength:"100"`
-			IsDefault      bool   `json:"isDefault,omitempty"`
-			PollIntervalMs int    `json:"pollIntervalMs,omitempty" minimum:"1000" maximum:"60000"`
+			Name           string         `json:"name" minLength:"1" maxLength:"100"`
+			IsDefault      bool           `json:"isDefault,omitempty"`
+			PollIntervalMs int            `json:"pollIntervalMs,omitempty" minimum:"1000" maximum:"60000"`
+			Layout         map[string]any `json:"layout,omitempty"`
 		}
 	}
 	type DashboardOutput struct {
@@ -998,7 +999,7 @@ func NewPublicRouter(svc *engine.Service, hub *engine.TelemetryHub, verifier *au
 		DefaultStatus: http.StatusCreated,
 		Security:      []map[string][]string{{"BearerAuth": {}}},
 	}, func(ctx context.Context, in *CreateDashboardInput) (*DashboardOutput, error) {
-		d, err := svc.CreateDashboard(ctx, in.SiteID, in.Body.Name, in.Body.IsDefault, in.Body.PollIntervalMs)
+		d, err := svc.CreateDashboard(ctx, in.SiteID, in.Body.Name, in.Body.IsDefault, in.Body.PollIntervalMs, in.Body.Layout)
 		if err != nil {
 			return nil, mapError(err)
 		}
@@ -1009,10 +1010,11 @@ func NewPublicRouter(svc *engine.Service, hub *engine.TelemetryHub, verifier *au
 		SiteID      uuid.UUID `path:"siteId" format:"uuid"`
 		DashboardID uuid.UUID `path:"dashboardId" format:"uuid"`
 		Body        struct {
-			Name           *string `json:"name,omitempty" minLength:"1" maxLength:"100"`
-			IsDefault      *bool   `json:"isDefault,omitempty"`
-			SortOrder      *int    `json:"sortOrder,omitempty"`
-			PollIntervalMs *int    `json:"pollIntervalMs,omitempty" minimum:"1000" maximum:"60000"`
+			Name           *string        `json:"name,omitempty" minLength:"1" maxLength:"100"`
+			IsDefault      *bool          `json:"isDefault,omitempty"`
+			SortOrder      *int           `json:"sortOrder,omitempty"`
+			PollIntervalMs *int           `json:"pollIntervalMs,omitempty" minimum:"1000" maximum:"60000"`
+			Layout         map[string]any `json:"layout,omitempty"`
 		}
 	}
 	huma.Register(opGroup, huma.Operation{
@@ -1023,7 +1025,7 @@ func NewPublicRouter(svc *engine.Service, hub *engine.TelemetryHub, verifier *au
 		Tags:        []string{"Site Operator - WebView"},
 		Security:    []map[string][]string{{"BearerAuth": {}}},
 	}, func(ctx context.Context, in *UpdateDashboardInput) (*DashboardOutput, error) {
-		d, err := svc.UpdateDashboard(ctx, in.SiteID, in.DashboardID, in.Body.Name, in.Body.IsDefault, in.Body.SortOrder, in.Body.PollIntervalMs)
+		d, err := svc.UpdateDashboard(ctx, in.SiteID, in.DashboardID, in.Body.Name, in.Body.IsDefault, in.Body.SortOrder, in.Body.PollIntervalMs, in.Body.Layout)
 		if err != nil {
 			return nil, mapError(err)
 		}

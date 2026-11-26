@@ -1,8 +1,11 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { Minus, Plus, Power, Settings, Trash2, Users, X } from 'lucide-vue-next'
 import { ApiError, apiRequest } from '../../services/api'
+import { useToastStore } from '../../stores/toast'
+import { firstError, validateCidrList, validateRequiredText, validateSlug } from '../../utils/validation'
 import type { Site, SiteMember, SiteRole, User } from '../../types/iam'
+import CustomSelect, { type SelectOption } from '../../components/CustomSelect.vue'
 import StatusBadge from '../../components/StatusBadge.vue'
 import WireguardConfEditor from '../../components/WireguardConfEditor.vue'
 import DeleteConfirmModal from '../../components/DeleteConfirmModal.vue'
@@ -34,12 +37,21 @@ const PLATFORM_SERVICES: PlatformServiceDef[] = [
   },
 ]
 
+const toast = useToastStore()
 const sites = ref<Site[]>([])
 const sitesPag = usePagination(sites)
 const users = ref<User[]>([])
 const loading = ref(false)
-const errBanner = ref<string | null>(null)
 const siteToDelete = ref<Site | null>(null)
+
+const userSelectOptions = computed<SelectOption<string>[]>(() =>
+  users.value.map((u) => ({ value: u.id, label: u.email })),
+)
+
+const SITE_ROLE_OPTIONS: SelectOption<SiteRole>[] = [
+  { value: 'SITE_MEMBER', label: 'SITE_MEMBER' },
+  { value: 'SITE_OPERATOR', label: 'SITE_OPERATOR' },
+]
 
 // Create Site modal state
 const showCreate = ref(false)
@@ -53,9 +65,32 @@ const newServices = ref<Record<ServiceKey, boolean>>({
   vncEnabled: true,
 })
 const newActivate = ref(true)
-const createErr = ref<string | null>(null)
 const createWarnings = ref<string[]>([])
 const creating = ref(false)
+const createSubmitted = ref(false)
+const createTouched = ref<Record<string, boolean>>({})
+
+const createErrors = computed(() => ({
+  name: validateRequiredText(newName.value, 'Site name', { min: 2, max: 100 }),
+  slug: newSlug.value.trim() ? validateSlug(newSlug.value, 'Slug') : null,
+  conf: newConf.value.trim() ? null : 'WireGuard configuration is required.',
+  subnets:
+    needsNarrowing.value && !newOverrideSubnets.value.trim()
+      ? 'Enter the site LAN subnets to narrow 0.0.0.0/0.'
+      : validateCidrList(newOverrideSubnets.value, 'LAN Subnets'),
+}))
+
+function showCreateErr(field: 'name' | 'slug' | 'conf' | 'subnets'): string | null {
+  return createSubmitted.value || createTouched.value[field] ? createErrors.value[field] : null
+}
+
+function openCreateModal() {
+  createSubmitted.value = false
+  createTouched.value = {}
+  createWarnings.value = []
+  needsNarrowing.value = false
+  showCreate.value = true
+}
 
 // Edit Site Services & WireGuard Config modal (Platform Admin ONLY)
 const editSite = ref<Site | null>(null)
@@ -68,9 +103,15 @@ const editConf = ref('')
 const editOverrideSubnets = ref('')
 const editNeedsNarrowing = ref(false)
 const editWarnings = ref<string[]>([])
-const editErr = ref<string | null>(null)
-const editOk = ref<string | null>(null)
 const savingEdit = ref(false)
+const editNameSubmitted = ref(false)
+const editNameTouched = ref(false)
+
+const editNameErr = computed(() =>
+  editNameSubmitted.value || editNameTouched.value
+    ? validateRequiredText(editName.value, 'Site name', { min: 2, max: 100 })
+    : null,
+)
 
 // Membership modal state
 const memberSite = ref<Site | null>(null)
@@ -89,7 +130,7 @@ async function loadSites() {
     sites.value = sRes.sites || []
     users.value = uRes.users || []
   } catch (err) {
-    errBanner.value = err instanceof Error ? err.message : 'Failed to load sites'
+    toast.error(err, 'Failed to load sites')
   } finally {
     loading.value = false
   }
@@ -128,7 +169,12 @@ async function toggleEditService(key: ServiceKey) {
 }
 
 async function createSite() {
-  createErr.value = null
+  createSubmitted.value = true
+  const vErr = firstError(createErrors.value)
+  if (vErr) {
+    toast.error(vErr, 'Validation Error')
+    return
+  }
   createWarnings.value = []
   creating.value = true
   try {
@@ -139,8 +185,8 @@ async function createSite() {
     const res = await apiRequest<{ site: Site; warnings?: string[] }>('/api/v1/iam/admin/sites', {
       method: 'POST',
       body: JSON.stringify({
-        name: newName.value,
-        slug: newSlug.value || undefined,
+        name: newName.value.trim(),
+        slug: newSlug.value.trim() || undefined,
         wireguardConf: newConf.value,
         ...(overrides.length ? { overrideAllowedIPs: overrides } : {}),
         vncEnabled: newServices.value.vncEnabled,
@@ -155,13 +201,17 @@ async function createSite() {
     newConf.value = ''
     newOverrideSubnets.value = ''
     needsNarrowing.value = false
+    toast.success(`Created site "${res.site.name}".`)
     await loadSites()
   } catch (err) {
     if (err instanceof ApiError && err.isCatchAllAllowedIPs()) {
       needsNarrowing.value = true
-      createErr.value = 'Enter the site LAN subnets above to narrow 0.0.0.0/0 and click Create Site again.'
+      toast.warning(
+        'Config uses 0.0.0.0/0. Enter the site LAN subnets to narrow AllowedIPs and submit again.',
+        'Subnet Narrowing Required',
+      )
     } else {
-      createErr.value = err instanceof Error ? err.message : 'Failed to create site'
+      toast.error(err, 'Failed to create site')
     }
   } finally {
     creating.value = false
@@ -179,29 +229,33 @@ function openEditSite(site: Site) {
   editOverrideSubnets.value = ''
   editNeedsNarrowing.value = false
   editWarnings.value = []
-  editErr.value = null
-  editOk.value = null
+  editNameSubmitted.value = false
+  editNameTouched.value = false
 }
 
 async function saveSiteFeatures() {
   if (!editSite.value) return
-  editErr.value = null
-  editOk.value = null
+  editNameSubmitted.value = true
+  const nameErr = validateRequiredText(editName.value, 'Site name', { min: 2, max: 100 })
+  if (nameErr) {
+    toast.error(nameErr, 'Validation Error')
+    return
+  }
   savingEdit.value = true
   try {
     const updated = await apiRequest<Site>(`/api/v1/iam/admin/sites/${editSite.value.id}`, {
       method: 'PATCH',
       body: JSON.stringify({
-        name: editName.value,
+        name: editName.value.trim(),
         vncEnabled: editServices.value.vncEnabled,
         webviewEnabled: editServices.value.webviewEnabled,
       }),
     })
     editSite.value = updated
-    editOk.value = 'Site services and settings updated.'
+    toast.success('Site services and settings updated.')
     await loadSites()
   } catch (err) {
-    editErr.value = err instanceof Error ? err.message : 'Failed to update site'
+    toast.error(err, 'Failed to update site')
   } finally {
     savingEdit.value = false
   }
@@ -209,8 +263,14 @@ async function saveSiteFeatures() {
 
 async function rotateSiteConf() {
   if (!editSite.value || !editConf.value.trim()) return
-  editErr.value = null
-  editOk.value = null
+  const cidrErr =
+    editNeedsNarrowing.value && !editOverrideSubnets.value.trim()
+      ? 'Enter the site LAN subnets to narrow 0.0.0.0/0.'
+      : validateCidrList(editOverrideSubnets.value, 'LAN Subnets')
+  if (cidrErr) {
+    toast.error(cidrErr, 'Validation Error')
+    return
+  }
   editWarnings.value = []
   savingEdit.value = true
   try {
@@ -232,14 +292,17 @@ async function rotateSiteConf() {
     editOverrideSubnets.value = ''
     editNeedsNarrowing.value = false
     editWarnings.value = res.warnings || []
-    editOk.value = 'WireGuard config rotated & encrypted.'
+    toast.success('WireGuard config rotated & encrypted.')
     await loadSites()
   } catch (err) {
     if (err instanceof ApiError && err.isCatchAllAllowedIPs()) {
       editNeedsNarrowing.value = true
-      editErr.value = 'Enter the site LAN subnets above and submit again.'
+      toast.warning(
+        'Config uses 0.0.0.0/0. Enter the site LAN subnets and submit again.',
+        'Subnet Narrowing Required',
+      )
     } else {
-      editErr.value = err instanceof Error ? err.message : 'Config rotation failed'
+      toast.error(err, 'Config rotation failed')
     }
   } finally {
     savingEdit.value = false
@@ -247,13 +310,13 @@ async function rotateSiteConf() {
 }
 
 async function toggleActive(site: Site) {
-  errBanner.value = null
   try {
     const action = site.isActive ? 'deactivate' : 'activate'
     await apiRequest(`/api/v1/iam/admin/sites/${site.id}/${action}`, { method: 'POST' })
+    toast.success(`${site.isActive ? 'Deactivated' : 'Activated'} site "${site.name}".`)
     await loadSites()
   } catch (err) {
-    errBanner.value = err instanceof Error ? err.message : 'Toggle failed'
+    toast.error(err, 'Failed to change site state')
   }
 }
 
@@ -265,37 +328,55 @@ async function confirmDeleteSite() {
   const site = siteToDelete.value
   siteToDelete.value = null
   if (!site) return
-  errBanner.value = null
   try {
     await apiRequest(`/api/v1/iam/admin/sites/${site.id}`, { method: 'DELETE' })
+    toast.success(`Deleted site "${site.name}".`)
     await loadSites()
   } catch (err) {
-    errBanner.value = err instanceof Error ? err.message : 'Delete failed'
+    toast.error(err, 'Failed to delete site')
   }
 }
 
 async function openMembers(site: Site) {
   memberSite.value = site
   siteMembersPag.resetPage()
-  const res = await apiRequest<{ members: SiteMember[] }>(`/api/v1/iam/admin/sites/${site.id}/members`)
-  siteMembers.value = res.members || []
+  try {
+    const res = await apiRequest<{ members: SiteMember[] }>(`/api/v1/iam/admin/sites/${site.id}/members`)
+    siteMembers.value = res.members || []
+  } catch (err) {
+    toast.error(err, 'Failed to load site members')
+  }
 }
 
 async function addOrUpdateMember() {
-  if (!memberSite.value || !assignUserId.value) return
-  await apiRequest(`/api/v1/iam/admin/sites/${memberSite.value.id}/members/${assignUserId.value}`, {
-    method: 'PUT',
-    body: JSON.stringify({ role: assignRole.value }),
-  })
-  await openMembers(memberSite.value)
+  if (!memberSite.value) return
+  if (!assignUserId.value) {
+    toast.error('Please select a user to assign.', 'Validation Error')
+    return
+  }
+  try {
+    await apiRequest(`/api/v1/iam/admin/sites/${memberSite.value.id}/members/${assignUserId.value}`, {
+      method: 'PUT',
+      body: JSON.stringify({ role: assignRole.value }),
+    })
+    toast.success('Updated site member role.')
+    await openMembers(memberSite.value)
+  } catch (err) {
+    toast.error(err, 'Failed to assign member')
+  }
 }
 
 async function removeMember(userId: string) {
   if (!memberSite.value) return
-  await apiRequest(`/api/v1/iam/admin/sites/${memberSite.value.id}/members/${userId}`, {
-    method: 'DELETE',
-  })
-  await openMembers(memberSite.value)
+  try {
+    await apiRequest(`/api/v1/iam/admin/sites/${memberSite.value.id}/members/${userId}`, {
+      method: 'DELETE',
+    })
+    toast.success('Removed site member.')
+    await openMembers(memberSite.value)
+  } catch (err) {
+    toast.error(err, 'Failed to remove member')
+  }
 }
 </script>
 
@@ -311,14 +392,12 @@ async function removeMember(userId: string) {
       <button
         type="button"
         class="inline-flex h-9 shrink-0 items-center justify-center gap-1.5 self-start rounded-lg bg-indigo-500 px-3.5 text-xs font-semibold text-white transition hover:bg-indigo-400 sm:self-auto"
-        @click="showCreate = true"
+        @click="openCreateModal"
       >
         <Plus class="h-4 w-4" />
         Onboard Site
       </button>
     </div>
-
-    <p v-if="errBanner" class="rounded-lg border border-rose-500/40 bg-rose-500/10 p-3 text-xs text-rose-200">{{ errBanner }}</p>
 
     <div class="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60">
       <!-- Mobile Cards -->
@@ -487,15 +566,29 @@ async function removeMember(userId: string) {
               <X class="h-4 w-4" />
             </button>
           </div>
-          <form class="mt-4 space-y-4" @submit.prevent="createSite">
+          <form novalidate class="mt-4 space-y-4" @submit.prevent="createSite">
             <div class="grid gap-3 sm:grid-cols-2">
               <div>
                 <label class="mb-1 block text-xs text-slate-400">Site Name</label>
-                <input v-model="newName" required class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white focus:border-indigo-500 focus:outline-none" />
+                <input
+                  v-model="newName"
+                  placeholder="Plant Alpha"
+                  class="w-full rounded-lg border bg-slate-950 px-3 py-2 text-sm text-white focus:outline-none"
+                  :class="showCreateErr('name') ? 'border-rose-500 focus:border-rose-400' : 'border-slate-700 focus:border-indigo-500'"
+                  @blur="createTouched.name = true"
+                />
+                <p v-if="showCreateErr('name')" class="mt-1 text-[11px] text-rose-400">{{ showCreateErr('name') }}</p>
               </div>
               <div>
                 <label class="mb-1 block text-xs text-slate-400">Slug (optional)</label>
-                <input v-model="newSlug" placeholder="auto-generated" class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs text-white focus:border-indigo-500 focus:outline-none" />
+                <input
+                  v-model="newSlug"
+                  placeholder="auto-generated"
+                  class="w-full rounded-lg border bg-slate-950 px-3 py-2 font-mono text-xs text-white focus:outline-none"
+                  :class="showCreateErr('slug') ? 'border-rose-500 focus:border-rose-400' : 'border-slate-700 focus:border-indigo-500'"
+                  @blur="createTouched.slug = true"
+                />
+                <p v-if="showCreateErr('slug')" class="mt-1 text-[11px] text-rose-400">{{ showCreateErr('slug') }}</p>
               </div>
             </div>
 
@@ -505,6 +598,8 @@ async function removeMember(userId: string) {
               :needs-narrowing="needsNarrowing"
               :warnings="createWarnings"
             />
+            <p v-if="showCreateErr('conf')" class="text-[11px] text-rose-400">{{ showCreateErr('conf') }}</p>
+            <p v-if="showCreateErr('subnets')" class="text-[11px] text-rose-400">{{ showCreateErr('subnets') }}</p>
 
             <!-- Dynamic Service List -->
             <div class="space-y-2">
@@ -542,8 +637,6 @@ async function removeMember(userId: string) {
               Activate runner immediately
             </label>
 
-            <p v-if="createErr" class="rounded-lg border border-rose-500/40 bg-rose-500/10 p-2.5 text-xs text-rose-200">{{ createErr }}</p>
-
             <div class="flex items-center justify-end gap-2 pt-2">
               <button type="button" class="inline-flex h-9 items-center justify-center rounded-lg border border-slate-700 px-3.5 text-xs font-medium leading-none text-slate-300 hover:bg-slate-800" @click="showCreate = false">Cancel</button>
               <button type="submit" :disabled="creating" class="inline-flex h-9 items-center justify-center rounded-lg bg-indigo-500 px-4 text-xs font-semibold leading-none text-white hover:bg-indigo-400 disabled:opacity-50">
@@ -575,10 +668,16 @@ async function removeMember(userId: string) {
             </button>
           </div>
 
-          <form class="flex flex-col gap-2 border-b border-slate-800 pb-4 sm:flex-row sm:items-end" @submit.prevent="saveSiteFeatures">
+          <form novalidate class="flex flex-col gap-2 border-b border-slate-800 pb-4 sm:flex-row sm:items-end" @submit.prevent="saveSiteFeatures">
             <div class="w-full sm:flex-1">
               <label class="mb-1 block text-xs text-slate-400">Site Name</label>
-              <input v-model="editName" required class="h-10 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 text-sm text-white focus:border-indigo-500 focus:outline-none" />
+              <input
+                v-model="editName"
+                class="h-10 w-full rounded-lg border bg-slate-950 px-3 text-sm text-white focus:outline-none"
+                :class="editNameErr ? 'border-rose-500 focus:border-rose-400' : 'border-slate-700 focus:border-indigo-500'"
+                @blur="editNameTouched = true"
+              />
+              <p v-if="editNameErr" class="mt-1 text-[11px] text-rose-400">{{ editNameErr }}</p>
             </div>
             <button type="submit" :disabled="savingEdit" class="inline-flex h-10 items-center justify-center rounded-lg bg-indigo-500 px-4 text-xs font-semibold leading-none text-white transition hover:bg-indigo-400">
               Rename
@@ -637,9 +736,6 @@ async function removeMember(userId: string) {
               Validate & Rotate WireGuard Config
             </button>
           </form>
-
-          <p v-if="editErr" class="rounded-lg border border-rose-500/40 bg-rose-500/10 p-2.5 text-xs text-rose-200">{{ editErr }}</p>
-          <p v-if="editOk" class="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-2.5 text-xs text-emerald-200">{{ editOk }}</p>
         </div>
       </div>
     </Teleport>
@@ -665,15 +761,22 @@ async function removeMember(userId: string) {
           </div>
 
           <form class="flex flex-col gap-2 sm:flex-row sm:items-center" @submit.prevent="addOrUpdateMember">
-            <select v-model="assignUserId" required class="h-10 w-full min-w-0 rounded-lg border border-slate-700 bg-slate-950 px-2.5 text-xs text-white focus:border-indigo-500 focus:outline-none sm:flex-1">
-              <option value="" disabled>Select user...</option>
-              <option v-for="u in users" :key="u.id" :value="u.id">{{ u.email }}</option>
-            </select>
+            <CustomSelect
+              v-model="assignUserId"
+              :options="userSelectOptions"
+              placeholder="Select user..."
+              aria-label="Select user"
+              class="w-full min-w-0 sm:flex-1"
+              trigger-class="h-10"
+            />
             <div class="flex items-center gap-2">
-              <select v-model="assignRole" class="h-10 flex-1 rounded-lg border border-slate-700 bg-slate-950 px-2.5 text-xs text-white focus:border-indigo-500 focus:outline-none sm:flex-initial">
-                <option value="SITE_MEMBER">SITE_MEMBER</option>
-                <option value="SITE_OPERATOR">SITE_OPERATOR</option>
-              </select>
+              <CustomSelect
+                v-model="assignRole"
+                :options="SITE_ROLE_OPTIONS"
+                aria-label="Site role"
+                class="flex-1 sm:w-40 sm:flex-initial"
+                trigger-class="h-10"
+              />
               <button type="submit" class="inline-flex h-10 shrink-0 items-center justify-center rounded-lg bg-indigo-500 px-3.5 text-xs font-semibold leading-none text-white hover:bg-indigo-400">Assign</button>
             </div>
           </form>

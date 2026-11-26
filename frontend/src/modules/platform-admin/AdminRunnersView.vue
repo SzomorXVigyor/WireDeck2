@@ -2,24 +2,24 @@
 import { onMounted, ref } from 'vue'
 import { RefreshCw, RotateCw } from 'lucide-vue-next'
 import { apiRequest } from '../../services/api'
+import { useToastStore } from '../../stores/toast'
 import type { RunnerRecord } from '../../types/iam'
 import StatusBadge from '../../components/StatusBadge.vue'
 import TablePagination from '../../components/TablePagination.vue'
 import { usePagination } from '../../composables/usePagination'
 
+const toast = useToastStore()
 const runners = ref<RunnerRecord[]>([])
 const runnersPag = usePagination(runners)
 const loading = ref(false)
-const error = ref<string | null>(null)
 
 async function loadRunners() {
   loading.value = true
-  error.value = null
   try {
     const res = await apiRequest<{ runners: RunnerRecord[] }>('/api/v1/iam/admin/runners')
     runners.value = res.runners || []
   } catch (err) {
-    error.value = err instanceof Error ? err.message : 'Failed to fetch runners'
+    toast.error(err, 'Failed to fetch runners')
   } finally {
     loading.value = false
   }
@@ -28,8 +28,13 @@ async function loadRunners() {
 onMounted(loadRunners)
 
 async function restartRunner(siteId: string) {
-  await apiRequest(`/api/v1/iam/admin/runners/${siteId}/restart`, { method: 'POST' })
-  await loadRunners()
+  try {
+    await apiRequest(`/api/v1/iam/admin/runners/${siteId}/restart`, { method: 'POST' })
+    toast.success('Runner restart triggered.')
+    await loadRunners()
+  } catch (err) {
+    toast.error(err, 'Failed to restart runner')
+  }
 }
 </script>
 
@@ -49,8 +54,6 @@ async function restartRunner(siteId: string) {
         Refresh
       </button>
     </div>
-
-    <p v-if="error" class="rounded-lg border border-rose-500/40 bg-rose-500/10 p-3 text-xs text-rose-200">{{ error }}</p>
 
     <div class="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60">
       <!-- Mobile Cards -->

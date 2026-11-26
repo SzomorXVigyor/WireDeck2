@@ -1,30 +1,45 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { Mail, Plus, Trash2, X } from 'lucide-vue-next'
 import { apiRequest } from '../../services/api'
+import { useToastStore } from '../../stores/toast'
+import { validateEmail } from '../../utils/validation'
 import type { User } from '../../types/iam'
 import StatusBadge from '../../components/StatusBadge.vue'
 import DeleteConfirmModal from '../../components/DeleteConfirmModal.vue'
 import TablePagination from '../../components/TablePagination.vue'
 import { usePagination } from '../../composables/usePagination'
 
+const toast = useToastStore()
 const users = ref<User[]>([])
 const usersPag = usePagination(users)
-const errBanner = ref<string | null>(null)
-const notice = ref<string | null>(null)
 const userToDelete = ref<User | null>(null)
 
 const showInvite = ref(false)
 const inviteEmail = ref('')
 const inviteAdmin = ref(false)
+const inviteSubmitted = ref(false)
+const inviteTouched = ref(false)
 const inviting = ref(false)
+
+const inviteEmailErr = computed(() =>
+  inviteSubmitted.value || inviteTouched.value ? validateEmail(inviteEmail.value, 'User email') : null,
+)
+
+function openInviteModal() {
+  inviteEmail.value = ''
+  inviteAdmin.value = false
+  inviteSubmitted.value = false
+  inviteTouched.value = false
+  showInvite.value = true
+}
 
 async function loadUsers() {
   try {
     const res = await apiRequest<{ users: User[] }>('/api/v1/iam/admin/users')
     users.value = res.users || []
   } catch (err) {
-    errBanner.value = err instanceof Error ? err.message : 'Failed to load users'
+    toast.error(err, 'Failed to load users')
   }
 }
 
@@ -44,46 +59,67 @@ onUnmounted(() => {
 })
 
 async function createInvite() {
-  errBanner.value = null
-  notice.value = null
+  inviteSubmitted.value = true
+  const emailErr = validateEmail(inviteEmail.value, 'User email')
+  if (emailErr) {
+    toast.error(emailErr, 'Validation Error')
+    return
+  }
   inviting.value = true
   try {
     const res = await apiRequest<{ user: User; inviteSent: boolean }>('/api/v1/iam/admin/users', {
       method: 'POST',
       body: JSON.stringify({
-        email: inviteEmail.value,
+        email: inviteEmail.value.trim(),
         isPlatformAdmin: inviteAdmin.value,
       }),
     })
     showInvite.value = false
     inviteEmail.value = ''
     inviteAdmin.value = false
-    notice.value = res.inviteSent
-      ? `Invite email dispatched to ${res.user.email}.`
-      : `User ${res.user.email} created, but MailGopher failed to queue email - use Resend Invite once SMTP is ready.`
+    if (res.inviteSent) {
+      toast.success(`Invite email dispatched to ${res.user.email}.`)
+    } else {
+      toast.warning(
+        `User ${res.user.email} created, but MailGopher failed to queue email. Use Resend Invite once SMTP is ready.`,
+        'Invite Email Pending',
+      )
+    }
     await loadUsers()
   } catch (err) {
-    errBanner.value = err instanceof Error ? err.message : 'Invite failed'
+    toast.error(err, 'Failed to invite user')
   } finally {
     inviting.value = false
   }
 }
 
 async function resendInvite(u: User) {
-  notice.value = null
-  const res = await apiRequest<{ inviteSent: boolean }>(`/api/v1/iam/admin/users/${u.id}/resend-invite`, {
-    method: 'POST',
-  })
-  notice.value = res.inviteSent ? `Re-sent invite email to ${u.email}.` : `Failed to send invite to ${u.email}.`
+  try {
+    const res = await apiRequest<{ inviteSent: boolean }>(`/api/v1/iam/admin/users/${u.id}/resend-invite`, {
+      method: 'POST',
+    })
+    if (res.inviteSent) {
+      toast.success(`Re-sent invite email to ${u.email}.`)
+    } else {
+      toast.warning(`Failed to queue invite email to ${u.email}.`)
+    }
+  } catch (err) {
+    toast.error(err, 'Failed to resend invite')
+  }
 }
 
 async function toggleDisabled(u: User) {
   const nextStatus = u.status === 'DISABLED' ? 'ACTIVE' : 'DISABLED'
-  await apiRequest(`/api/v1/iam/admin/users/${u.id}`, {
-    method: 'PATCH',
-    body: JSON.stringify({ status: nextStatus }),
-  })
-  await loadUsers()
+  try {
+    await apiRequest(`/api/v1/iam/admin/users/${u.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: nextStatus }),
+    })
+    toast.success(`${nextStatus === 'ACTIVE' ? 'Enabled' : 'Disabled'} ${u.email}.`)
+    await loadUsers()
+  } catch (err) {
+    toast.error(err, 'Failed to update user status')
+  }
 }
 
 function deleteUser(u: User) {
@@ -94,8 +130,13 @@ async function confirmDeleteUser() {
   const u = userToDelete.value
   userToDelete.value = null
   if (!u) return
-  await apiRequest(`/api/v1/iam/admin/users/${u.id}`, { method: 'DELETE' })
-  await loadUsers()
+  try {
+    await apiRequest(`/api/v1/iam/admin/users/${u.id}`, { method: 'DELETE' })
+    toast.success(`Deleted user ${u.email}.`)
+    await loadUsers()
+  } catch (err) {
+    toast.error(err, 'Failed to delete user')
+  }
 }
 </script>
 
@@ -109,15 +150,12 @@ async function confirmDeleteUser() {
       <button
         type="button"
         class="inline-flex h-9 shrink-0 items-center justify-center gap-1.5 self-start rounded-lg bg-indigo-500 px-3.5 text-xs font-semibold text-white transition hover:bg-indigo-400 sm:self-auto"
-        @click="showInvite = true"
+        @click="openInviteModal"
       >
         <Plus class="h-4 w-4" />
         Invite User
       </button>
     </div>
-
-    <p v-if="errBanner" class="rounded-lg border border-rose-500/40 bg-rose-500/10 p-3 text-xs text-rose-200">{{ errBanner }}</p>
-    <p v-if="notice" class="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-200">{{ notice }}</p>
 
     <div class="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60">
       <!-- Mobile Cards -->
@@ -237,10 +275,18 @@ async function confirmDeleteUser() {
               <X class="h-4 w-4" />
             </button>
           </div>
-          <form class="mt-4 space-y-4" @submit.prevent="createInvite">
+          <form novalidate class="mt-4 space-y-4" @submit.prevent="createInvite">
             <div>
               <label class="mb-1 block text-xs text-slate-400">User Email</label>
-              <input v-model="inviteEmail" type="email" required class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white focus:border-indigo-500 focus:outline-none" />
+              <input
+                v-model="inviteEmail"
+                type="email"
+                placeholder="operator@example.com"
+                class="w-full rounded-lg border bg-slate-950 px-3 py-2 text-sm text-white focus:outline-none"
+                :class="inviteEmailErr ? 'border-rose-500 focus:border-rose-400' : 'border-slate-700 focus:border-indigo-500'"
+                @blur="inviteTouched = true"
+              />
+              <p v-if="inviteEmailErr" class="mt-1 text-[11px] text-rose-400">{{ inviteEmailErr }}</p>
             </div>
             <label class="inline-flex items-center gap-2 text-xs text-slate-200">
               <input v-model="inviteAdmin" type="checkbox" />

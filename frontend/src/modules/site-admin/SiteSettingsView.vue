@@ -4,7 +4,9 @@ import { useRoute } from 'vue-router'
 import { MailPlus, Trash2 } from 'lucide-vue-next'
 import { apiRequest } from '../../services/api'
 import { useAuthStore } from '../../stores/auth'
+import { useToastStore } from '../../stores/toast'
 import type { SiteMember } from '../../types/iam'
+import { validateEmail } from '../../utils/validation'
 import StatusBadge from '../../components/StatusBadge.vue'
 import DeleteConfirmModal from '../../components/DeleteConfirmModal.vue'
 import TablePagination from '../../components/TablePagination.vue'
@@ -12,25 +14,26 @@ import { usePagination } from '../../composables/usePagination'
 
 const route = useRoute()
 const auth = useAuthStore()
+const toast = useToastStore()
 const siteId = computed(() => String(route.params.siteId || ''))
 
 const members = ref<SiteMember[]>([])
 const memberPag = usePagination(members)
 const inviteEmail = ref('')
+const emailTouched = ref(false)
 const submitting = ref(false)
-const errMsg = ref<string | null>(null)
-const okMsg = ref<string | null>(null)
 const memberToRemove = ref<SiteMember | null>(null)
 
+const emailError = computed(() => (emailTouched.value ? validateEmail(inviteEmail.value, 'Member email') : null))
+
 async function loadMembers() {
-  errMsg.value = null
   try {
     const res = await apiRequest<{ members: SiteMember[] }>(
       `/api/v1/iam/sites/${siteId.value}/operator/members`,
     )
     members.value = res.members || []
   } catch (err) {
-    errMsg.value = err instanceof Error ? err.message : 'Failed to load site members'
+    toast.error(err, 'Failed to load site members')
   }
 }
 
@@ -38,28 +41,35 @@ onMounted(loadMembers)
 watch(siteId, loadMembers)
 
 async function inviteMember() {
-  errMsg.value = null
-  okMsg.value = null
+  emailTouched.value = true
+  const vErr = validateEmail(inviteEmail.value, 'Member email')
+  if (vErr) {
+    toast.error(vErr, 'Validation Error')
+    return
+  }
   submitting.value = true
   try {
     const res = await apiRequest<{ member: SiteMember; createdNew: boolean; inviteSent: boolean }>(
       `/api/v1/iam/sites/${siteId.value}/operator/members/invite`,
       {
         method: 'POST',
-        body: JSON.stringify({ email: inviteEmail.value }),
+        body: JSON.stringify({ email: inviteEmail.value.trim() }),
       },
     )
     if (res.createdNew) {
-      okMsg.value = res.inviteSent
-        ? `Invited ${res.member.email} as SITE_MEMBER and dispatched activation email.`
-        : `Created ${res.member.email} as SITE_MEMBER, but MailGopher failed to queue email.`
+      if (res.inviteSent) {
+        toast.success(`Invited ${res.member.email} as SITE_MEMBER and dispatched activation email.`)
+      } else {
+        toast.warning(`Created ${res.member.email} as SITE_MEMBER, but MailGopher failed to queue email.`)
+      }
     } else {
-      okMsg.value = `Added existing user ${res.member.email} to this site (${res.member.role}).`
+      toast.success(`Added existing user ${res.member.email} to this site (${res.member.role}).`)
     }
     inviteEmail.value = ''
+    emailTouched.value = false
     await loadMembers()
   } catch (err) {
-    errMsg.value = err instanceof Error ? err.message : 'Failed to add member'
+    toast.error(err, 'Failed to add member')
   } finally {
     submitting.value = false
   }
@@ -73,15 +83,14 @@ async function confirmRemoveMember() {
   const m = memberToRemove.value
   memberToRemove.value = null
   if (!m) return
-  errMsg.value = null
-  okMsg.value = null
   try {
     await apiRequest(`/api/v1/iam/sites/${siteId.value}/operator/members/${m.userId}`, {
       method: 'DELETE',
     })
+    toast.success(`Removed ${m.email} from this site.`)
     await loadMembers()
   } catch (err) {
-    errMsg.value = err instanceof Error ? err.message : 'Failed to remove member'
+    toast.error(err, 'Failed to remove member')
   }
 }
 </script>
@@ -101,14 +110,18 @@ async function confirmRemoveMember() {
       <p class="mt-1 text-xs text-slate-400">
         New email addresses automatically receive an account activation link via email.
       </p>
-      <form class="mt-4 flex flex-col gap-2.5 sm:flex-row sm:items-center" @submit.prevent="inviteMember">
-        <input
-          v-model="inviteEmail"
-          type="email"
-          required
-          placeholder="member@company.com"
-          class="h-10 w-full min-w-0 rounded-lg border border-slate-700 bg-slate-950 px-3 text-sm text-white focus:border-amber-400 focus:outline-none sm:flex-1"
-        />
+      <form novalidate class="mt-4 flex flex-col gap-2.5 sm:flex-row sm:items-start" @submit.prevent="inviteMember">
+        <div class="w-full min-w-0 sm:flex-1">
+          <input
+            v-model="inviteEmail"
+            type="email"
+            placeholder="member@company.com"
+            class="h-10 w-full min-w-0 rounded-lg border bg-slate-950 px-3 text-sm text-white focus:outline-none"
+            :class="emailError ? 'border-rose-500 focus:border-rose-400' : 'border-slate-700 focus:border-amber-400'"
+            @blur="emailTouched = true"
+          />
+          <p v-if="emailError" class="mt-1 text-[11px] text-rose-400">{{ emailError }}</p>
+        </div>
         <button
           type="submit"
           :disabled="submitting"
@@ -118,8 +131,6 @@ async function confirmRemoveMember() {
           {{ submitting ? 'Adding...' : 'Add / Invite Member' }}
         </button>
       </form>
-      <p v-if="errMsg" class="mt-3 rounded-lg border border-rose-500/40 bg-rose-500/10 p-2.5 text-xs text-rose-200">{{ errMsg }}</p>
-      <p v-if="okMsg" class="mt-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-2.5 text-xs text-emerald-200">{{ okMsg }}</p>
     </section>
 
     <!-- Current Site Members -->
