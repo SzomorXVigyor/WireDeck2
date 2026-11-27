@@ -5,15 +5,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/errdefs"
@@ -23,11 +20,11 @@ const (
 	labelManaged     = "wiredeck2.managed"
 	labelSiteID      = "wiredeck2.site_id"
 	labelFingerprint = "wiredeck2.conf_fingerprint"
+	labelConfigMode  = "wiredeck2.config_mode"
 )
 
 type DockerConfig struct {
 	NetworkName string
-	ConfDir     string
 }
 
 type DockerBackend struct {
@@ -85,33 +82,7 @@ func (d *DockerBackend) EnsureImage(ctx context.Context, imageRef string) error 
 	return nil
 }
 
-func (d *DockerBackend) confFilePath(siteID string) string {
-	return filepath.Join(d.cfg.ConfDir, siteID, "wg0.conf")
-}
-
-func (d *DockerBackend) writeConf(siteID string, conf []byte) (string, error) {
-	dir := filepath.Join(d.cfg.ConfDir, siteID)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", fmt.Errorf("mkdir runner conf dir: %w", err)
-	}
-	p := filepath.Join(dir, "wg0.conf")
-	tmp := p + ".tmp"
-	if err := os.WriteFile(tmp, conf, 0o600); err != nil {
-		return "", fmt.Errorf("write runner conf tmp: %w", err)
-	}
-	if err := os.Rename(tmp, p); err != nil {
-		_ = os.Remove(tmp)
-		return "", fmt.Errorf("rename runner conf: %w", err)
-	}
-	return p, nil
-}
-
 func (d *DockerBackend) Ensure(ctx context.Context, spec RunnerSpec) (RunnerState, error) {
-	confPath, err := d.writeConf(spec.SiteID, spec.Conf)
-	if err != nil {
-		return RunnerState{}, err
-	}
-
 	name := ContainerName(spec.SiteID)
 	existing, err := d.Get(ctx, spec.SiteID)
 	if err != nil {
@@ -120,7 +91,8 @@ func (d *DockerBackend) Ensure(ctx context.Context, spec RunnerSpec) (RunnerStat
 
 	needsRecreate := existing.ObservedState == "missing" ||
 		existing.Image != spec.Image ||
-		existing.ConfFingerprint != spec.ConfFingerprint
+		existing.ConfFingerprint != spec.ConfFingerprint ||
+		existing.ConfigMode != ConfigModeGRPC
 
 	if !needsRecreate {
 		if existing.ObservedState != "running" {
@@ -146,6 +118,7 @@ func (d *DockerBackend) Ensure(ctx context.Context, spec RunnerSpec) (RunnerStat
 	env := []string{
 		"WIRERELAY_GRPC_PORT=9000",
 		"WIRERELAY_HTTP_PORT=8080",
+		"WIRERELAY_WAIT_FOR_CONFIG=true",
 	}
 	if spec.DisableIPv6 {
 		env = append(env, "DISABLE_IPV6=true")
@@ -164,6 +137,7 @@ func (d *DockerBackend) Ensure(ctx context.Context, spec RunnerSpec) (RunnerStat
 				labelManaged:     "true",
 				labelSiteID:      spec.SiteID,
 				labelFingerprint: spec.ConfFingerprint,
+				labelConfigMode:  ConfigModeGRPC,
 			},
 		},
 		&container.HostConfig{
@@ -180,13 +154,10 @@ func (d *DockerBackend) Ensure(ctx context.Context, spec RunnerSpec) (RunnerStat
 				Memory:    128 * 1024 * 1024, // 128 MiB cap
 				PidsLimit: &pidsLimit,
 			},
-			Mounts: []mount.Mount{
-				{
-					Type:     mount.TypeBind,
-					Source:   confPath,
-					Target:   "/etc/wireguard/wg0.conf",
-					ReadOnly: true,
-				},
+			// Container-private RAM tmpfs for WireRelay's ephemeral wg-quick temp file
+			// (immediately shredded by WireRelay after wg-quick up; never touches host disk).
+			Tmpfs: map[string]string{
+				"/run/wireguard": "rw,noexec,nosuid,size=1m,mode=0700",
 			},
 		},
 		&network.NetworkingConfig{
@@ -226,15 +197,11 @@ func (d *DockerBackend) Remove(ctx context.Context, siteID string) error {
 	if err != nil && !errdefs.IsNotFound(err) {
 		return err
 	}
-	_ = os.RemoveAll(filepath.Join(d.cfg.ConfDir, siteID))
 	return nil
 }
 
 func (d *DockerBackend) Get(ctx context.Context, siteID string) (RunnerState, error) {
 	name := ContainerName(siteID)
-	_, statErr := os.Stat(d.confFilePath(siteID))
-	confExists := statErr == nil
-
 	insp, err := d.cli.ContainerInspect(ctx, name)
 	if err != nil {
 		if errdefs.IsNotFound(err) {
@@ -242,7 +209,6 @@ func (d *DockerBackend) Get(ctx context.Context, siteID string) (RunnerState, er
 				SiteID:        siteID,
 				Name:          name,
 				ObservedState: "missing",
-				ConfExists:    confExists,
 			}, nil
 		}
 		return RunnerState{}, err
@@ -257,8 +223,8 @@ func (d *DockerBackend) Get(ctx context.Context, siteID string) (RunnerState, er
 		RuntimeID:       insp.ID,
 		Image:           insp.Config.Image,
 		ConfFingerprint: insp.Config.Labels[labelFingerprint],
+		ConfigMode:      insp.Config.Labels[labelConfigMode],
 		ObservedState:   obs,
-		ConfExists:      confExists,
 	}, nil
 }
 
@@ -271,15 +237,14 @@ func (d *DockerBackend) List(ctx context.Context) ([]RunnerState, error) {
 	out := make([]RunnerState, 0, len(items))
 	for _, c := range items {
 		siteID := c.Labels[labelSiteID]
-		_, statErr := os.Stat(d.confFilePath(siteID))
 		out = append(out, RunnerState{
 			SiteID:          siteID,
 			Name:            ContainerName(siteID),
 			RuntimeID:       c.ID,
 			Image:           c.Image,
 			ConfFingerprint: c.Labels[labelFingerprint],
+			ConfigMode:      c.Labels[labelConfigMode],
 			ObservedState:   c.State,
-			ConfExists:      statErr == nil,
 		})
 	}
 	return out, nil

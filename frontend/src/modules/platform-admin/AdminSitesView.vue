@@ -1,14 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { Minus, Plus, Power, Settings, Trash2, Users, X } from 'lucide-vue-next'
+import { ChevronRight, Minus, Plus, X } from 'lucide-vue-next'
 import { ApiError, apiRequest } from '../../services/api'
 import { useToastStore } from '../../stores/toast'
 import { firstError, validateCidrList, validateRequiredText, validateSlug } from '../../utils/validation'
-import type { Site, SiteMember, SiteRole, User } from '../../types/iam'
-import CustomSelect, { type SelectOption } from '../../components/CustomSelect.vue'
+import type { Site } from '../../types/iam'
 import StatusBadge from '../../components/StatusBadge.vue'
 import WireguardConfEditor from '../../components/WireguardConfEditor.vue'
-import DeleteConfirmModal from '../../components/DeleteConfirmModal.vue'
 import TablePagination from '../../components/TablePagination.vue'
 import { usePagination } from '../../composables/usePagination'
 
@@ -40,18 +38,7 @@ const PLATFORM_SERVICES: PlatformServiceDef[] = [
 const toast = useToastStore()
 const sites = ref<Site[]>([])
 const sitesPag = usePagination(sites)
-const users = ref<User[]>([])
 const loading = ref(false)
-const siteToDelete = ref<Site | null>(null)
-
-const userSelectOptions = computed<SelectOption<string>[]>(() =>
-  users.value.map((u) => ({ value: u.id, label: u.email })),
-)
-
-const SITE_ROLE_OPTIONS: SelectOption<SiteRole>[] = [
-  { value: 'SITE_MEMBER', label: 'SITE_MEMBER' },
-  { value: 'SITE_OPERATOR', label: 'SITE_OPERATOR' },
-]
 
 // Create Site modal state
 const showCreate = ref(false)
@@ -92,43 +79,11 @@ function openCreateModal() {
   showCreate.value = true
 }
 
-// Edit Site Services & WireGuard Config modal (Platform Admin ONLY)
-const editSite = ref<Site | null>(null)
-const editName = ref('')
-const editServices = ref<Record<ServiceKey, boolean>>({
-  webviewEnabled: false,
-  vncEnabled: false,
-})
-const editConf = ref('')
-const editOverrideSubnets = ref('')
-const editNeedsNarrowing = ref(false)
-const editWarnings = ref<string[]>([])
-const savingEdit = ref(false)
-const editNameSubmitted = ref(false)
-const editNameTouched = ref(false)
-
-const editNameErr = computed(() =>
-  editNameSubmitted.value || editNameTouched.value
-    ? validateRequiredText(editName.value, 'Site name', { min: 2, max: 100 })
-    : null,
-)
-
-// Membership modal state
-const memberSite = ref<Site | null>(null)
-const siteMembers = ref<SiteMember[]>([])
-const siteMembersPag = usePagination(siteMembers)
-const assignUserId = ref('')
-const assignRole = ref<SiteRole>('SITE_MEMBER')
-
 async function loadSites() {
   loading.value = true
   try {
-    const [sRes, uRes] = await Promise.all([
-      apiRequest<{ sites: Site[] }>('/api/v1/iam/admin/sites'),
-      apiRequest<{ users: User[] }>('/api/v1/iam/admin/users'),
-    ])
+    const sRes = await apiRequest<{ sites: Site[] }>('/api/v1/iam/admin/sites')
     sites.value = sRes.sites || []
-    users.value = uRes.users || []
   } catch (err) {
     toast.error(err, 'Failed to load sites')
   } finally {
@@ -137,10 +92,9 @@ async function loadSites() {
 }
 
 function onKeydown(e: KeyboardEvent) {
-  if (e.key !== 'Escape') return
-  if (memberSite.value) memberSite.value = null
-  else if (editSite.value) editSite.value = null
-  else if (showCreate.value) showCreate.value = false
+  if (e.key === 'Escape' && showCreate.value) {
+    showCreate.value = false
+  }
 }
 
 onMounted(() => {
@@ -156,16 +110,6 @@ function toggleNewService(key: ServiceKey) {
     ...newServices.value,
     [key]: !newServices.value[key],
   }
-}
-
-async function toggleEditService(key: ServiceKey) {
-  if (!editSite.value) return
-  const nextVal = !editServices.value[key]
-  editServices.value = {
-    ...editServices.value,
-    [key]: nextVal,
-  }
-  await saveSiteFeatures()
 }
 
 async function createSite() {
@@ -217,176 +161,15 @@ async function createSite() {
     creating.value = false
   }
 }
-
-function openEditSite(site: Site) {
-  editSite.value = site
-  editName.value = site.name
-  editServices.value = {
-    webviewEnabled: site.webviewEnabled,
-    vncEnabled: site.vncEnabled,
-  }
-  editConf.value = ''
-  editOverrideSubnets.value = ''
-  editNeedsNarrowing.value = false
-  editWarnings.value = []
-  editNameSubmitted.value = false
-  editNameTouched.value = false
-}
-
-async function saveSiteFeatures() {
-  if (!editSite.value) return
-  editNameSubmitted.value = true
-  const nameErr = validateRequiredText(editName.value, 'Site name', { min: 2, max: 100 })
-  if (nameErr) {
-    toast.error(nameErr, 'Validation Error')
-    return
-  }
-  savingEdit.value = true
-  try {
-    const updated = await apiRequest<Site>(`/api/v1/iam/admin/sites/${editSite.value.id}`, {
-      method: 'PATCH',
-      body: JSON.stringify({
-        name: editName.value.trim(),
-        vncEnabled: editServices.value.vncEnabled,
-        webviewEnabled: editServices.value.webviewEnabled,
-      }),
-    })
-    editSite.value = updated
-    toast.success('Site services and settings updated.')
-    await loadSites()
-  } catch (err) {
-    toast.error(err, 'Failed to update site')
-  } finally {
-    savingEdit.value = false
-  }
-}
-
-async function rotateSiteConf() {
-  if (!editSite.value || !editConf.value.trim()) return
-  const cidrErr =
-    editNeedsNarrowing.value && !editOverrideSubnets.value.trim()
-      ? 'Enter the site LAN subnets to narrow 0.0.0.0/0.'
-      : validateCidrList(editOverrideSubnets.value, 'LAN Subnets')
-  if (cidrErr) {
-    toast.error(cidrErr, 'Validation Error')
-    return
-  }
-  editWarnings.value = []
-  savingEdit.value = true
-  try {
-    const overrides = editOverrideSubnets.value
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean)
-    const res = await apiRequest<{ site: Site; warnings?: string[] }>(
-      `/api/v1/iam/admin/sites/${editSite.value.id}/conf`,
-      {
-        method: 'POST',
-        body: JSON.stringify({
-          wireguardConf: editConf.value,
-          ...(overrides.length ? { overrideAllowedIPs: overrides } : {}),
-        }),
-      },
-    )
-    editConf.value = ''
-    editOverrideSubnets.value = ''
-    editNeedsNarrowing.value = false
-    editWarnings.value = res.warnings || []
-    toast.success('WireGuard config rotated & encrypted.')
-    await loadSites()
-  } catch (err) {
-    if (err instanceof ApiError && err.isCatchAllAllowedIPs()) {
-      editNeedsNarrowing.value = true
-      toast.warning(
-        'Config uses 0.0.0.0/0. Enter the site LAN subnets and submit again.',
-        'Subnet Narrowing Required',
-      )
-    } else {
-      toast.error(err, 'Config rotation failed')
-    }
-  } finally {
-    savingEdit.value = false
-  }
-}
-
-async function toggleActive(site: Site) {
-  try {
-    const action = site.isActive ? 'deactivate' : 'activate'
-    await apiRequest(`/api/v1/iam/admin/sites/${site.id}/${action}`, { method: 'POST' })
-    toast.success(`${site.isActive ? 'Deactivated' : 'Activated'} site "${site.name}".`)
-    await loadSites()
-  } catch (err) {
-    toast.error(err, 'Failed to change site state')
-  }
-}
-
-function deleteSite(site: Site) {
-  siteToDelete.value = site
-}
-
-async function confirmDeleteSite() {
-  const site = siteToDelete.value
-  siteToDelete.value = null
-  if (!site) return
-  try {
-    await apiRequest(`/api/v1/iam/admin/sites/${site.id}`, { method: 'DELETE' })
-    toast.success(`Deleted site "${site.name}".`)
-    await loadSites()
-  } catch (err) {
-    toast.error(err, 'Failed to delete site')
-  }
-}
-
-async function openMembers(site: Site) {
-  memberSite.value = site
-  siteMembersPag.resetPage()
-  try {
-    const res = await apiRequest<{ members: SiteMember[] }>(`/api/v1/iam/admin/sites/${site.id}/members`)
-    siteMembers.value = res.members || []
-  } catch (err) {
-    toast.error(err, 'Failed to load site members')
-  }
-}
-
-async function addOrUpdateMember() {
-  if (!memberSite.value) return
-  if (!assignUserId.value) {
-    toast.error('Please select a user to assign.', 'Validation Error')
-    return
-  }
-  try {
-    await apiRequest(`/api/v1/iam/admin/sites/${memberSite.value.id}/members/${assignUserId.value}`, {
-      method: 'PUT',
-      body: JSON.stringify({ role: assignRole.value }),
-    })
-    toast.success('Updated site member role.')
-    await openMembers(memberSite.value)
-  } catch (err) {
-    toast.error(err, 'Failed to assign member')
-  }
-}
-
-async function removeMember(userId: string) {
-  if (!memberSite.value) return
-  try {
-    await apiRequest(`/api/v1/iam/admin/sites/${memberSite.value.id}/members/${userId}`, {
-      method: 'DELETE',
-    })
-    toast.success('Removed site member.')
-    await openMembers(memberSite.value)
-  } catch (err) {
-    toast.error(err, 'Failed to remove member')
-  }
-}
 </script>
 
 <template>
   <div class="w-full space-y-5 sm:space-y-6">
     <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
       <div>
-        <h1 class="text-lg font-semibold tracking-tight text-white sm:text-xl">Sites, Services & WireGuard</h1>
+        <h1 class="text-lg font-semibold tracking-tight text-white sm:text-xl">Sites & Onboarding</h1>
         <p class="mt-0.5 text-xs text-slate-400">
-          Platform Admin exclusive: onboard sites, add or remove site services, manage WireGuard configs, and assign Site Operators.
+          Onboard sites or open any site to manage metrics, services, WireGuard configs, members, and lifecycle settings.
         </p>
       </div>
       <button
@@ -405,7 +188,12 @@ async function removeMember(userId: string) {
         <div v-for="s in sitesPag.paginatedItems.value" :key="s.id" class="space-y-3 p-4 text-xs">
           <div class="flex items-start justify-between gap-2">
             <div class="min-w-0">
-              <p class="truncate text-sm font-semibold text-white">{{ s.name }}</p>
+              <RouterLink
+                :to="`/admin/sites/${s.id}`"
+                class="block truncate text-sm font-semibold text-white transition hover:text-indigo-300"
+              >
+                {{ s.name }}
+              </RouterLink>
               <p class="truncate font-mono text-[11px] text-slate-500">{{ s.slug }}</p>
             </div>
             <StatusBadge :status="s.status" size="sm" />
@@ -417,45 +205,22 @@ async function removeMember(userId: string) {
             <p class="text-[10px] text-slate-500">{{ s.isActive ? 'ACTIVE' : 'STOPPED' }} | {{ s.handshakeState }}</p>
           </div>
 
-          <div class="flex flex-wrap items-center gap-1.5 text-[11px]">
-            <template v-for="svc in PLATFORM_SERVICES" :key="svc.key">
-              <span v-if="s[svc.key]" class="rounded px-2 py-0.5 font-medium" :class="svc.badgeClass">
-                {{ svc.name }}
-              </span>
-            </template>
-            <span v-if="!PLATFORM_SERVICES.some((svc) => s[svc.key])" class="text-slate-500">No attached services</span>
-          </div>
-
-          <div class="flex flex-wrap items-center gap-2 pt-1">
-            <button
-              type="button"
-              class="inline-flex h-8 flex-1 items-center justify-center gap-1 rounded-lg border border-indigo-500/40 bg-indigo-500/15 px-2.5 text-[11px] font-medium text-indigo-200 hover:bg-indigo-500/25"
-              @click="openEditSite(s)"
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div class="flex flex-wrap items-center gap-1.5 text-[11px]">
+              <template v-for="svc in PLATFORM_SERVICES" :key="svc.key">
+                <span v-if="s[svc.key]" class="rounded px-2 py-0.5 font-medium" :class="svc.badgeClass">
+                  {{ svc.name }}
+                </span>
+              </template>
+              <span v-if="!PLATFORM_SERVICES.some((svc) => s[svc.key])" class="text-slate-500">No attached services</span>
+            </div>
+            <RouterLink
+              :to="`/admin/sites/${s.id}`"
+              class="inline-flex h-8 items-center justify-center gap-1 rounded-lg border border-indigo-500/40 bg-indigo-500/15 px-3 text-[11px] font-medium text-indigo-200 transition hover:bg-indigo-500/25"
             >
-              <Settings class="h-3.5 w-3.5" /> Services / WG
-            </button>
-            <button
-              type="button"
-              class="inline-flex h-8 flex-1 items-center justify-center gap-1 rounded-lg border border-slate-700 bg-slate-800 px-2.5 text-[11px] font-medium text-slate-200 hover:bg-slate-700"
-              @click="openMembers(s)"
-            >
-              <Users class="h-3.5 w-3.5" /> Members
-            </button>
-            <button
-              type="button"
-              class="inline-flex h-8 items-center justify-center gap-1 rounded-lg border border-slate-700 bg-slate-800 px-2.5 text-[11px] font-medium text-slate-200 hover:bg-slate-700"
-              @click="toggleActive(s)"
-            >
-              <Power class="h-3.5 w-3.5" /> {{ s.isActive ? 'Deactivate' : 'Activate' }}
-            </button>
-            <button
-              type="button"
-              aria-label="Delete site"
-              class="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-rose-500/30 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20"
-              @click="deleteSite(s)"
-            >
-              <Trash2 class="h-3.5 w-3.5" />
-            </button>
+              Manage
+              <ChevronRight class="h-3.5 w-3.5" />
+            </RouterLink>
           </div>
         </div>
         <div v-if="!loading && sites.length === 0" class="px-4 py-8 text-center text-xs text-slate-500">
@@ -478,7 +243,12 @@ async function removeMember(userId: string) {
           <tbody class="divide-y divide-slate-800/70">
             <tr v-for="s in sitesPag.paginatedItems.value" :key="s.id" class="hover:bg-slate-800/30">
               <td class="px-4 py-3">
-                <p class="font-medium text-white">{{ s.name }}</p>
+                <RouterLink
+                  :to="`/admin/sites/${s.id}`"
+                  class="font-medium text-white transition hover:text-indigo-300"
+                >
+                  {{ s.name }}
+                </RouterLink>
                 <p class="font-mono text-[11px] text-slate-500">{{ s.slug }}</p>
               </td>
               <td class="px-4 py-3 font-mono text-[11px] text-slate-300">
@@ -500,38 +270,13 @@ async function removeMember(userId: string) {
                 </div>
               </td>
               <td class="px-4 py-3 text-right">
-                <div class="inline-flex flex-wrap items-center justify-end gap-1.5">
-                  <button
-                    type="button"
-                    class="inline-flex items-center gap-1 rounded border border-indigo-500/40 bg-indigo-500/15 px-2 py-1 text-[11px] text-indigo-200 transition hover:bg-indigo-500/25"
-                    @click="openEditSite(s)"
-                  >
-                    <Settings class="h-3 w-3" /> Services / WG
-                  </button>
-                  <button
-                    type="button"
-                    class="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-slate-200 transition hover:bg-slate-700"
-                    @click="openMembers(s)"
-                  >
-                    <Users class="h-3 w-3" /> Members
-                  </button>
-                  <button
-                    type="button"
-                    class="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-slate-200 transition hover:bg-slate-700"
-                    @click="toggleActive(s)"
-                  >
-                    <Power class="h-3 w-3" /> {{ s.isActive ? 'Deactivate' : 'Activate' }}
-                  </button>
-                  <button
-                    type="button"
-                    class="inline-flex items-center rounded border border-rose-500/30 bg-rose-500/10 p-1 text-rose-300 transition hover:bg-rose-500/20"
-                    title="Delete site"
-                    aria-label="Delete site"
-                    @click="deleteSite(s)"
-                  >
-                    <Trash2 class="h-3.5 w-3.5" />
-                  </button>
-                </div>
+                <RouterLink
+                  :to="`/admin/sites/${s.id}`"
+                  class="inline-flex items-center gap-1 rounded-lg border border-indigo-500/40 bg-indigo-500/15 px-3 py-1.5 text-[11px] font-medium text-indigo-200 transition hover:bg-indigo-500/25"
+                >
+                  Manage
+                  <ChevronRight class="h-3.5 w-3.5" />
+                </RouterLink>
               </td>
             </tr>
             <tr v-if="!loading && sites.length === 0">
@@ -638,8 +383,18 @@ async function removeMember(userId: string) {
             </label>
 
             <div class="flex items-center justify-end gap-2 pt-2">
-              <button type="button" class="inline-flex h-9 items-center justify-center rounded-lg border border-slate-700 px-3.5 text-xs font-medium leading-none text-slate-300 hover:bg-slate-800" @click="showCreate = false">Cancel</button>
-              <button type="submit" :disabled="creating" class="inline-flex h-9 items-center justify-center rounded-lg bg-indigo-500 px-4 text-xs font-semibold leading-none text-white hover:bg-indigo-400 disabled:opacity-50">
+              <button
+                type="button"
+                class="inline-flex h-9 items-center justify-center rounded-lg border border-slate-700 px-3.5 text-xs font-medium leading-none text-slate-300 hover:bg-slate-800"
+                @click="showCreate = false"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                :disabled="creating"
+                class="inline-flex h-9 items-center justify-center rounded-lg bg-indigo-500 px-4 text-xs font-semibold leading-none text-white hover:bg-indigo-400 disabled:opacity-50"
+              >
                 {{ creating ? 'Validating...' : 'Create Site' }}
               </button>
             </div>
@@ -647,169 +402,5 @@ async function removeMember(userId: string) {
         </div>
       </div>
     </Teleport>
-
-    <!-- Configure Site Services & WireGuard Config Modal (Platform Admin ONLY) -->
-    <Teleport to="body">
-      <div
-        v-if="editSite"
-        class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-xs"
-        @click.self="editSite = null"
-      >
-        <div class="max-h-[90dvh] w-full max-w-xl overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl space-y-5 sm:p-6">
-          <div class="flex items-center justify-between gap-2">
-            <h2 class="truncate text-base font-semibold text-white">Configure Site - {{ editSite.name }}</h2>
-            <button
-              type="button"
-              aria-label="Close modal"
-              class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white"
-              @click="editSite = null"
-            >
-              <X class="h-4 w-4" />
-            </button>
-          </div>
-
-          <form novalidate class="flex flex-col gap-2 border-b border-slate-800 pb-4 sm:flex-row sm:items-end" @submit.prevent="saveSiteFeatures">
-            <div class="w-full sm:flex-1">
-              <label class="mb-1 block text-xs text-slate-400">Site Name</label>
-              <input
-                v-model="editName"
-                class="h-10 w-full rounded-lg border bg-slate-950 px-3 text-sm text-white focus:outline-none"
-                :class="editNameErr ? 'border-rose-500 focus:border-rose-400' : 'border-slate-700 focus:border-indigo-500'"
-                @blur="editNameTouched = true"
-              />
-              <p v-if="editNameErr" class="mt-1 text-[11px] text-rose-400">{{ editNameErr }}</p>
-            </div>
-            <button type="submit" :disabled="savingEdit" class="inline-flex h-10 items-center justify-center rounded-lg bg-indigo-500 px-4 text-xs font-semibold leading-none text-white transition hover:bg-indigo-400">
-              Rename
-            </button>
-          </form>
-
-          <!-- Dynamic Site Services Add/Remove List -->
-          <div class="space-y-2 border-b border-slate-800 pb-5">
-            <p class="text-xs font-medium uppercase tracking-wider text-slate-400">Attached Services</p>
-            <div class="divide-y divide-slate-800 rounded-xl border border-slate-800 bg-slate-950/70">
-              <div
-                v-for="svc in PLATFORM_SERVICES"
-                :key="svc.key"
-                class="flex items-center justify-between gap-3 px-3.5 py-2.5"
-              >
-                <div class="min-w-0">
-                  <div class="flex flex-wrap items-center gap-2">
-                    <p class="text-xs font-medium text-white">{{ svc.name }}</p>
-                    <span
-                      class="rounded-full px-2 py-0.5 text-[10px] font-medium uppercase"
-                      :class="editServices[svc.key] ? 'bg-emerald-500/15 text-emerald-300' : 'bg-slate-800 text-slate-400'"
-                    >
-                      {{ editServices[svc.key] ? 'Enabled' : 'Disabled' }}
-                    </span>
-                  </div>
-                  <p class="mt-0.5 text-[11px] text-slate-400">{{ svc.description }}</p>
-                </div>
-                <button
-                  type="button"
-                  :disabled="savingEdit"
-                  class="inline-flex shrink-0 items-center gap-1 rounded-md border px-2.5 py-1.5 text-[11px] font-medium transition disabled:opacity-50"
-                  :class="
-                    editServices[svc.key]
-                      ? 'border-rose-500/40 bg-rose-500/10 text-rose-200 hover:bg-rose-500/20'
-                      : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/20'
-                  "
-                  @click="toggleEditService(svc.key)"
-                >
-                  <Minus v-if="editServices[svc.key]" class="h-3 w-3" />
-                  <Plus v-else class="h-3 w-3" />
-                  {{ editServices[svc.key] ? 'Remove' : 'Add' }}
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <form class="space-y-3" @submit.prevent="rotateSiteConf">
-            <h3 class="text-sm font-semibold text-white">Rotate WireGuard Client Config</h3>
-            <WireguardConfEditor
-              v-model="editConf"
-              v-model:override-subnets="editOverrideSubnets"
-              :needs-narrowing="editNeedsNarrowing"
-              :warnings="editWarnings"
-            />
-            <button type="submit" :disabled="savingEdit || !editConf.trim()" class="w-full rounded-lg bg-sky-500 px-3.5 py-2 text-xs font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-50 sm:w-auto">
-              Validate & Rotate WireGuard Config
-            </button>
-          </form>
-        </div>
-      </div>
-    </Teleport>
-
-    <!-- Site Membership Modal -->
-    <Teleport to="body">
-      <div
-        v-if="memberSite"
-        class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-xs"
-        @click.self="memberSite = null"
-      >
-        <div class="max-h-[90dvh] w-full max-w-lg overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl space-y-4 sm:p-6">
-          <div class="flex items-center justify-between gap-2">
-            <h2 class="truncate text-base font-semibold text-white">Members - {{ memberSite.name }}</h2>
-            <button
-              type="button"
-              aria-label="Close modal"
-              class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white"
-              @click="memberSite = null"
-            >
-              <X class="h-4 w-4" />
-            </button>
-          </div>
-
-          <form class="flex flex-col gap-2 sm:flex-row sm:items-center" @submit.prevent="addOrUpdateMember">
-            <CustomSelect
-              v-model="assignUserId"
-              :options="userSelectOptions"
-              placeholder="Select user..."
-              aria-label="Select user"
-              class="w-full min-w-0 sm:flex-1"
-              trigger-class="h-10"
-            />
-            <div class="flex items-center gap-2">
-              <CustomSelect
-                v-model="assignRole"
-                :options="SITE_ROLE_OPTIONS"
-                aria-label="Site role"
-                class="flex-1 sm:w-40 sm:flex-initial"
-                trigger-class="h-10"
-              />
-              <button type="submit" class="inline-flex h-10 shrink-0 items-center justify-center rounded-lg bg-indigo-500 px-3.5 text-xs font-semibold leading-none text-white hover:bg-indigo-400">Assign</button>
-            </div>
-          </form>
-
-          <div class="overflow-hidden rounded-lg border border-slate-800">
-            <div class="divide-y divide-slate-800 px-3 text-xs">
-              <div v-for="m in siteMembersPag.paginatedItems.value" :key="m.userId" class="flex items-center justify-between gap-2 py-2.5">
-                <div class="min-w-0">
-                  <p class="truncate font-mono text-slate-200">{{ m.email }}</p>
-                  <p class="text-[11px] text-slate-400">{{ m.role }}</p>
-                </div>
-                <button type="button" class="shrink-0 text-rose-400 hover:underline" @click="removeMember(m.userId)">Remove</button>
-              </div>
-              <p v-if="siteMembers.length === 0" class="py-4 text-center text-slate-500">No members assigned.</p>
-            </div>
-            <TablePagination
-              v-model:page="siteMembersPag.page.value"
-              v-model:page-size="siteMembersPag.pageSize.value"
-              :total-items="siteMembersPag.totalItems.value"
-              compact
-            />
-          </div>
-        </div>
-      </div>
-    </Teleport>
-
-    <DeleteConfirmModal
-      :open="Boolean(siteToDelete)"
-      title="Delete Site"
-      :item-name="siteToDelete?.name || ''"
-      description="This site, its runner container, and all downstream VNC and WebView data will be permanently deleted."
-      @close="siteToDelete = null"
-      @confirm="confirmDeleteSite"
-    />
   </div>
 </template>

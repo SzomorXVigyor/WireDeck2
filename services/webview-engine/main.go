@@ -19,6 +19,7 @@ import (
 	"wiredeck/pkg/internalclient"
 	"wiredeck/pkg/mailgopher"
 	"wiredeck/pkg/telemetry"
+	"wiredeck/pkg/valkey"
 	"wiredeck/services/webview-engine/internal/alarm"
 	"wiredeck/services/webview-engine/internal/engine"
 	"wiredeck/services/webview-engine/internal/history"
@@ -54,6 +55,17 @@ func main() {
 	if err := dbBundle.RunMigrations(ctx, migrations.FS, "."); err != nil {
 		slog.Error("database_migrations_failed", "error", err)
 		os.Exit(1)
+	}
+
+	var vkClient *valkey.Client
+	if vkAddr := strings.TrimSpace(os.Getenv("VALKEY_ADDR")); vkAddr != "" {
+		vkClient, err = valkey.Connect(ctx, vkAddr, os.Getenv("VALKEY_PASSWORD"))
+		if err != nil {
+			slog.Error("valkey_connect_failed", "addr", vkAddr, "error", err)
+			os.Exit(1)
+		}
+		defer vkClient.Close()
+		slog.Info("valkey_connected", "addr", vkAddr)
 	}
 
 	internalToken := mustEnv("INTERNAL_API_TOKEN")
@@ -92,6 +104,8 @@ func main() {
 		}
 	})
 
+	cache.SetValkey(vkClient)
+
 	providers := provider.NewRegistry(
 		provider.NewModbusTCPProvider(cache.GetRunnerAuth, devDirectDial, idleTeardown),
 	)
@@ -102,6 +116,7 @@ func main() {
 			scheduler.NotifySubscribed(siteID, mappingIDs)
 		}
 	})
+	hub.SetValkey(vkClient)
 
 	var owner ownership.Provider = ownership.SingleReplicaOwnership{}
 	scheduler = engine.NewScheduler(dbBundle.Bun, providers, cache, hub, owner, graceDur, devDirectDial)
@@ -116,7 +131,7 @@ func main() {
 		slog.Warn("alarm_mailgopher_disabled_missing_MAILGOPHER_URL")
 	}
 	alarmEng = alarm.NewEngine(
-		alarm.NewBunRepository(dbBundle.Bun),
+		alarm.NewBunRepository(dbBundle.Bun, vkClient),
 		mailer,
 		cache.SiteName,
 		func(siteID uuid.UUID, evt models.AlarmEvent) {
@@ -176,6 +191,11 @@ func main() {
 		if err := dbBundle.Pool.Ping(rctx); err != nil {
 			return err
 		}
+		if vkClient != nil {
+			if err := vkClient.Ping(rctx); err != nil {
+				return err
+			}
+		}
 		if tsdbStore != nil {
 			return tsdbStore.Ping(rctx)
 		}
@@ -184,6 +204,7 @@ func main() {
 
 	go func() {
 		cache.SyncRuntimeStates(ctx)
+		scheduler.PublishRuntime(ctx, vkClient)
 		ticker := time.NewTicker(15 * time.Second)
 		defer ticker.Stop()
 		for {
@@ -192,6 +213,7 @@ func main() {
 				return
 			case <-ticker.C:
 				cache.SyncRuntimeStates(ctx)
+				scheduler.PublishRuntime(ctx, vkClient)
 			}
 		}
 	}()

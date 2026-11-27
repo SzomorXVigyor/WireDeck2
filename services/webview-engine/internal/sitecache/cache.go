@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"wiredeck/pkg/internalclient"
+	"wiredeck/pkg/valkey"
 )
 
 type authzEntry struct {
@@ -26,6 +27,7 @@ type userSitesEntry struct {
 type Cache struct {
 	coreIAM      *internalclient.HTTPClient
 	orchestrator *internalclient.HTTPClient
+	vk           *valkey.Client
 
 	mu        sync.RWMutex
 	states    map[uuid.UUID]internalclient.SiteRuntimeState
@@ -42,19 +44,57 @@ func New(coreIAM, orchestrator *internalclient.HTTPClient, onChange func(uuid.UU
 		states:       make(map[uuid.UUID]internalclient.SiteRuntimeState),
 		authz:        make(map[string]authzEntry),
 		userSites:    make(map[uuid.UUID]userSitesEntry),
-		authzTTL:     30 * time.Second,
+		authzTTL:     valkey.TTLAuthzCache,
 		onChange:     onChange,
 	}
 }
 
+// SetValkey enables shared Valkey caching with immediate invalidation from core-iam.
+func (c *Cache) SetValkey(vk *valkey.Client) {
+	c.vk = vk
+}
+
 func (c *Cache) SyncRuntimeStates(ctx context.Context) {
-	if c.coreIAM == nil || c.coreIAM.BaseURL == "" {
-		return
-	}
 	var list []internalclient.SiteRuntimeState
-	if _, err := c.coreIAM.DoJSON(ctx, http.MethodGet, "/internal/sites/runtime-state", nil, &list); err != nil {
-		slog.Warn("runtime_state_sync_failed", "error", err)
-		return
+	var got bool
+
+	if c.vk != nil {
+		if cached, ok, err := valkey.GetJSON[[]internalclient.SiteRuntimeState](ctx, c.vk, valkey.KeySitesRuntime()); err == nil && ok {
+			list = cached
+			got = true
+		}
+	}
+
+	if !got {
+		if c.coreIAM == nil || c.coreIAM.BaseURL == "" {
+			return
+		}
+		if _, err := c.coreIAM.DoJSON(ctx, http.MethodGet, "/internal/sites/runtime-state", nil, &list); err != nil {
+			slog.Warn("runtime_state_sync_failed", "error", err)
+			return
+		}
+		if c.vk != nil {
+			_ = c.vk.SetJSON(ctx, valkey.KeySitesRuntime(), list, valkey.TTLSitesRuntime)
+		}
+	}
+
+	// Overlay freshest live runner statuses directly from Valkey so tunnel state changes propagate immediately.
+	if c.vk != nil && len(list) > 0 {
+		keys := make([]string, len(list))
+		for i, st := range list {
+			keys[i] = valkey.KeyRunnerRuntime(st.SiteID)
+		}
+		if rtMap, err := valkey.MGetJSON[valkey.RunnerRuntime](ctx, c.vk, keys); err == nil {
+			for i := range list {
+				if !list[i].IsActive {
+					list[i].Status = "OFFLINE"
+					continue
+				}
+				if rt, ok := rtMap[keys[i]]; ok && rt.Status != "" {
+					list[i].Status = rt.Status
+				}
+			}
+		}
 	}
 
 	next := make(map[uuid.UUID]internalclient.SiteRuntimeState, len(list))
@@ -95,13 +135,19 @@ func (c *Cache) SiteName(siteID uuid.UUID) string {
 }
 
 func (c *Cache) GetUserSites(ctx context.Context, userID uuid.UUID) (*internalclient.UserSitesResponse, error) {
-	c.mu.RLock()
-	if e, ok := c.userSites[userID]; ok && time.Since(e.fetchedAt) < 15*time.Second {
-		resp := e.resp
+	if c.vk != nil {
+		if resp, ok, err := valkey.GetJSON[internalclient.UserSitesResponse](ctx, c.vk, valkey.KeyUserSites(userID)); err == nil && ok {
+			return &resp, nil
+		}
+	} else {
+		c.mu.RLock()
+		if e, ok := c.userSites[userID]; ok && time.Since(e.fetchedAt) < valkey.TTLUserSitesCache {
+			resp := e.resp
+			c.mu.RUnlock()
+			return &resp, nil
+		}
 		c.mu.RUnlock()
-		return &resp, nil
 	}
-	c.mu.RUnlock()
 
 	var resp internalclient.UserSitesResponse
 	path := fmt.Sprintf("/internal/users/%s/sites", userID.String())
@@ -109,21 +155,31 @@ func (c *Cache) GetUserSites(ctx context.Context, userID uuid.UUID) (*internalcl
 		return nil, err
 	}
 
-	c.mu.Lock()
-	c.userSites[userID] = userSitesEntry{resp: resp, fetchedAt: time.Now()}
-	c.mu.Unlock()
+	if c.vk != nil {
+		_ = c.vk.SetJSON(ctx, valkey.KeyUserSites(userID), resp, valkey.TTLUserSitesCache)
+	} else {
+		c.mu.Lock()
+		c.userSites[userID] = userSitesEntry{resp: resp, fetchedAt: time.Now()}
+		c.mu.Unlock()
+	}
 	return &resp, nil
 }
 
 func (c *Cache) CheckAuthz(ctx context.Context, siteID, userID uuid.UUID) (*internalclient.SiteAuthzResponse, error) {
-	key := siteID.String() + ":" + userID.String()
-	c.mu.RLock()
-	if e, ok := c.authz[key]; ok && time.Since(e.fetchedAt) < c.authzTTL {
-		resp := e.resp
+	if c.vk != nil {
+		if resp, ok, err := valkey.GetJSON[internalclient.SiteAuthzResponse](ctx, c.vk, valkey.KeyAuthz(siteID, userID)); err == nil && ok {
+			return &resp, nil
+		}
+	} else {
+		key := siteID.String() + ":" + userID.String()
+		c.mu.RLock()
+		if e, ok := c.authz[key]; ok && time.Since(e.fetchedAt) < c.authzTTL {
+			resp := e.resp
+			c.mu.RUnlock()
+			return &resp, nil
+		}
 		c.mu.RUnlock()
-		return &resp, nil
 	}
-	c.mu.RUnlock()
 
 	var resp internalclient.SiteAuthzResponse
 	path := fmt.Sprintf("/internal/sites/%s/authz?user_id=%s", siteID.String(), userID.String())
@@ -131,9 +187,14 @@ func (c *Cache) CheckAuthz(ctx context.Context, siteID, userID uuid.UUID) (*inte
 		return nil, err
 	}
 
-	c.mu.Lock()
-	c.authz[key] = authzEntry{resp: resp, fetchedAt: time.Now()}
-	c.mu.Unlock()
+	if c.vk != nil {
+		_ = c.vk.SetJSON(ctx, valkey.KeyAuthz(siteID, userID), resp, c.authzTTL)
+	} else {
+		key := siteID.String() + ":" + userID.String()
+		c.mu.Lock()
+		c.authz[key] = authzEntry{resp: resp, fetchedAt: time.Now()}
+		c.mu.Unlock()
+	}
 	return &resp, nil
 }
 

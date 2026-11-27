@@ -5,12 +5,17 @@ import (
 	"fmt"
 )
 
+const (
+	// ConfigModeGRPC marks runner containers configured in-memory via WireRelay's gRPC Configure RPC
+	// (no host bind-mounted WireGuard config file).
+	ConfigModeGRPC = "grpc"
+)
+
 // RunnerSpec is completely backend-agnostic (docs/k8s-host.md section 3.1):
 // no container IDs, no host paths, no IPs.
 type RunnerSpec struct {
 	SiteID          string
 	Image           string
-	Conf            []byte
 	ConfFingerprint string
 	AuthToken       string
 	DisableIPv6     bool
@@ -23,8 +28,8 @@ type RunnerState struct {
 	RuntimeID       string
 	Image           string
 	ConfFingerprint string
+	ConfigMode      string
 	ObservedState   string // running | exited | missing | ...
-	ConfExists      bool
 }
 
 // RunnerBackend is the K8s-portability seam implemented by DockerBackend in v1

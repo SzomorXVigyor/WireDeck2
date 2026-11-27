@@ -15,6 +15,7 @@ import (
 	"wiredeck/pkg/auth"
 	"wiredeck/pkg/internalclient"
 	"wiredeck/pkg/telemetry"
+	"wiredeck/pkg/valkey"
 	"wiredeck/pkg/version"
 	"wiredeck/pkg/wireguard"
 	"wiredeck/services/core-iam/internal/models"
@@ -893,6 +894,65 @@ func NewPublicRouter(svc *service.IAMService, verifier *auth.Verifier, opts Publ
 		}
 		out := &ListRunnersOutput{}
 		out.Body.Runners = runners
+		return out, nil
+	})
+
+	type RunnerDetailOutput struct {
+		Body struct {
+			Runner internalclient.RunnerRecord `json:"runner"`
+			Site   *SiteDTO                    `json:"site,omitempty"`
+		}
+	}
+	huma.Register(platformGroup, huma.Operation{
+		OperationID: "adminGetRunner",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/iam/admin/runners/{siteId}",
+		Summary:     "Inspect a single site's WireRelay tunnel runner and live traffic stats (Platform Admin)",
+		Tags:        []string{"Platform Admin"},
+		Security:    []map[string][]string{{"BearerAuth": {}}},
+	}, func(ctx context.Context, in *SiteIDInput) (*RunnerDetailOutput, error) {
+		rec, err := svc.GetRunner(ctx, in.SiteID)
+		if err != nil {
+			return nil, mapError(err)
+		}
+		out := &RunnerDetailOutput{}
+		out.Body.Runner = *rec
+		if site, sErr := svc.GetSiteByID(ctx, in.SiteID); sErr == nil && site != nil {
+			dto := toSiteDTO(*site, models.RoleSiteOperator, true)
+			out.Body.Site = &dto
+		}
+		return out, nil
+	})
+
+	type SiteRuntimeMetricsOutput struct {
+		Body struct {
+			Site              SiteDTO                        `json:"site"`
+			Webview           *valkey.WebviewRuntime         `json:"webview,omitempty"`
+			Cache             service.SiteCacheMetrics       `json:"cache"`
+			VncActiveSessions []service.ActiveVncSessionView `json:"vncActiveSessions"`
+			PendingAlarms     []valkey.AlarmPendingRecord    `json:"pendingAlarms"`
+			CollectedAt       time.Time                      `json:"collectedAt"`
+		}
+	}
+	huma.Register(platformGroup, huma.Operation{
+		OperationID: "adminGetSiteMetrics",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/iam/admin/sites/{siteId}/metrics",
+		Summary:     "Inspect application-level Valkey runtime metrics for a site (sessions, cache, WebView devices, VNC sessions, alarms) (Platform Admin)",
+		Tags:        []string{"Platform Admin"},
+		Security:    []map[string][]string{{"BearerAuth": {}}},
+	}, func(ctx context.Context, in *SiteIDInput) (*SiteRuntimeMetricsOutput, error) {
+		m, err := svc.GetSiteRuntimeMetrics(ctx, in.SiteID)
+		if err != nil {
+			return nil, mapError(err)
+		}
+		out := &SiteRuntimeMetricsOutput{}
+		out.Body.Site = toSiteDTO(m.Site, models.RoleSiteOperator, false)
+		out.Body.Webview = m.Webview
+		out.Body.Cache = m.Cache
+		out.Body.VncActiveSessions = m.VncActiveSessions
+		out.Body.PendingAlarms = m.PendingAlarms
+		out.Body.CollectedAt = m.CollectedAt
 		return out, nil
 	})
 

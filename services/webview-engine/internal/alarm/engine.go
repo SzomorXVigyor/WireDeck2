@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/uptrace/bun"
 
+	"wiredeck/pkg/valkey"
 	"wiredeck/services/webview-engine/internal/models"
 )
 
@@ -40,13 +41,14 @@ type Repository interface {
 	UpdateEventNotification(ctx context.Context, eventID uuid.UUID, notifiedAt *time.Time, failed bool, errMsg string) error
 }
 
-// BunRepository implements Repository on *bun.DB.
+// BunRepository implements Repository on *bun.DB (durable rules & events) and *valkey.Client (transient pending hold timers).
 type BunRepository struct {
 	db *bun.DB
+	vk *valkey.Client
 }
 
-func NewBunRepository(db *bun.DB) *BunRepository {
-	return &BunRepository{db: db}
+func NewBunRepository(db *bun.DB, vk *valkey.Client) *BunRepository {
+	return &BunRepository{db: db, vk: vk}
 }
 
 func (r *BunRepository) LoadActiveRules(ctx context.Context) ([]models.AlarmRule, error) {
@@ -62,27 +64,62 @@ func (r *BunRepository) LoadActiveEvents(ctx context.Context) ([]models.AlarmEve
 }
 
 func (r *BunRepository) LoadPendingStates(ctx context.Context) ([]models.AlarmPendingState, error) {
-	var list []models.AlarmPendingState
-	err := r.db.NewSelect().Model(&list).Scan(ctx)
-	return list, err
+	if r.vk == nil {
+		return nil, nil
+	}
+	records, err := valkey.HGetAllJSON[valkey.AlarmPendingRecord](ctx, r.vk, valkey.KeyAlarmPending())
+	if err != nil {
+		return nil, err
+	}
+	out := make([]models.AlarmPendingState, 0, len(records))
+	for _, rec := range records {
+		out = append(out, models.AlarmPendingState{
+			RuleID:    rec.RuleID,
+			SiteID:    rec.SiteID,
+			SinceAt:   rec.SinceAt,
+			LastValue: rec.LastValue,
+		})
+	}
+	return out, nil
 }
 
 func (r *BunRepository) UpsertPendingState(ctx context.Context, ps models.AlarmPendingState) error {
-	_, err := r.db.NewInsert().Model(&ps).
-		On("CONFLICT (rule_id) DO UPDATE").
-		Set("last_value = EXCLUDED.last_value").
-		Exec(ctx)
-	return err
+	if r.vk == nil {
+		return nil
+	}
+	return r.vk.HSetJSON(ctx, valkey.KeyAlarmPending(), ps.RuleID.String(), valkey.AlarmPendingRecord{
+		RuleID:    ps.RuleID,
+		SiteID:    ps.SiteID,
+		SinceAt:   ps.SinceAt,
+		LastValue: ps.LastValue,
+	}, valkey.TTLAlarmPending)
 }
 
 func (r *BunRepository) DeletePendingState(ctx context.Context, ruleID uuid.UUID) error {
-	_, err := r.db.NewDelete().Model((*models.AlarmPendingState)(nil)).Where("rule_id = ?", ruleID).Exec(ctx)
-	return err
+	if r.vk == nil {
+		return nil
+	}
+	return r.vk.HDel(ctx, valkey.KeyAlarmPending(), ruleID.String())
 }
 
 func (r *BunRepository) DeleteSitePendingStates(ctx context.Context, siteID uuid.UUID) error {
-	_, err := r.db.NewDelete().Model((*models.AlarmPendingState)(nil)).Where("site_id = ?", siteID).Exec(ctx)
-	return err
+	if r.vk == nil {
+		return nil
+	}
+	records, err := valkey.HGetAllJSON[valkey.AlarmPendingRecord](ctx, r.vk, valkey.KeyAlarmPending())
+	if err != nil {
+		return err
+	}
+	var fields []string
+	for field, rec := range records {
+		if rec.SiteID == siteID {
+			fields = append(fields, field)
+		}
+	}
+	if len(fields) == 0 {
+		return nil
+	}
+	return r.vk.HDel(ctx, valkey.KeyAlarmPending(), fields...)
 }
 
 func (r *BunRepository) InsertEvent(ctx context.Context, evt *models.AlarmEvent) error {

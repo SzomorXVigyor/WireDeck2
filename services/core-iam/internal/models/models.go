@@ -74,10 +74,9 @@ type Site struct {
 	VncEnabled             bool           `bun:"vnc_enabled,notnull"`
 	WebviewEnabled         bool           `bun:"webview_enabled,notnull"`
 	IsActive               bool           `bun:"is_active,notnull"`
-	Status                 string         `bun:"status,notnull"`
-	HandshakeState         string         `bun:"handshake_state,notnull"`
-	LastHandshakeAt        *time.Time     `bun:"last_handshake_at"`
-	StatusUpdatedAt        *time.Time     `bun:"status_updated_at"`
+	Status                 string         `bun:"-"`
+	HandshakeState         string         `bun:"-"`
+	LastHandshakeAt        *time.Time     `bun:"-"`
 	CreatedAt              time.Time      `bun:"created_at,notnull,default:now()"`
 	UpdatedAt              time.Time      `bun:"updated_at,notnull,default:now()"`
 }

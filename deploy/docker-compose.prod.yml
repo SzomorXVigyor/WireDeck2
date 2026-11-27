@@ -91,6 +91,34 @@ services:
         condition: service_healthy
     restart: "no"
 
+  # Pure in-memory runtime state, shared caches, and single-use WS tickets
+  valkey:
+    image: valkey/valkey:8.1-alpine
+    container_name: wiredeck-valkey
+    networks: [wiredeck-control]
+    logging: *default-logging
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    command:
+      - "valkey-server"
+      - "--save"
+      - ""
+      - "--appendonly"
+      - "no"
+      - "--maxmemory"
+      - "128mb"
+      - "--maxmemory-policy"
+      - "volatile-ttl"
+      - "--requirepass"
+      - "${VALKEY_PASSWORD}"
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli -a ${VALKEY_PASSWORD} --no-auth-warning ping | grep -q PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
   # ---------------------------------------------------------------------------
   # Ingress & Frontend
   # ---------------------------------------------------------------------------
@@ -161,6 +189,8 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       ENABLE_OPENAPI_DOCS: ${ENABLE_OPENAPI_DOCS:-false}
       DATABASE_URL: postgresql://svc_core_iam:${IAM_DB_PASSWORD}@postgres-oltp:5432/wiredeck_oltp?sslmode=disable
+      VALKEY_ADDR: valkey:6379
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD}
       PUBLIC_BASE_URL: https://${ROOT_DOMAIN}
       JWT_PRIVATE_KEY_B64: ${JWT_PRIVATE_KEY_B64}
       JWT_KEY_ID: ${JWT_KEY_ID:-v1}
@@ -198,6 +228,8 @@ services:
     depends_on:
       oltp-migrator:
         condition: service_completed_successfully
+      valkey:
+        condition: service_healthy
       mailgopher:
         condition: service_started
     restart: unless-stopped
@@ -220,6 +252,8 @@ services:
       BIND_SUBNET: ${CONTROL_NET_CIDR:-172.30.248.0/24}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       DATABASE_URL: postgresql://svc_runner_orchestrator:${ORCHESTRATOR_DB_PASSWORD}@postgres-oltp:5432/wiredeck_oltp?sslmode=disable
+      VALKEY_ADDR: valkey:6379
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD}
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
       CORE_IAM_INTERNAL_URL: http://core-iam:8081
       WEBVIEW_INTERNAL_URL: http://webview-engine-ctrl:8081
@@ -227,13 +261,11 @@ services:
       DOCKER_HOST: unix:///var/run/docker.sock
       RUNNER_IMAGE: ${WIRERELAY_IMAGE_URL}
       RUNNER_NETWORK: wiredeck-runners
-      RUNNER_CONF_DIR: /var/lib/wiredeck2/runners
       RUNNER_TOKEN_ENCRYPTION_KEY: ${RUNNER_TOKEN_ENCRYPTION_KEY}
       RECONCILE_INTERVAL: 60s
       HEALTH_INTERVAL: 30s
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - /var/lib/wiredeck2/runners:/var/lib/wiredeck2/runners
     healthcheck:
       test: ["CMD", "/runner-orchestrator", "-healthcheck"]
       interval: 15s
@@ -242,6 +274,8 @@ services:
     depends_on:
       oltp-migrator:
         condition: service_completed_successfully
+      valkey:
+        condition: service_healthy
       core-iam:
         condition: service_healthy
     restart: unless-stopped
@@ -266,6 +300,8 @@ services:
       ENABLE_OPENAPI_DOCS: ${ENABLE_OPENAPI_DOCS:-false}
       DATABASE_URL: postgresql://svc_webview_engine:${WEBVIEW_DB_PASSWORD}@postgres-oltp:5432/wiredeck_oltp?sslmode=disable
       TSDB_DATABASE_URL: postgresql://svc_webview_history:${TSDB_HISTORY_PASSWORD}@postgres-tsdb:5432/wiredeck_history?sslmode=disable
+      VALKEY_ADDR: valkey:6379
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD}
       CORE_IAM_INTERNAL_URL: http://core-iam:8081
       ORCHESTRATOR_URL: http://runner-orchestrator-ctrl:8081
       JWKS_URL: http://core-iam:8080/api/v1/iam/.well-known/jwks.json
@@ -294,6 +330,8 @@ services:
         condition: service_completed_successfully
       tsdb-migrator:
         condition: service_completed_successfully
+      valkey:
+        condition: service_healthy
       core-iam:
         condition: service_healthy
     deploy:
@@ -318,6 +356,8 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       ENABLE_OPENAPI_DOCS: ${ENABLE_OPENAPI_DOCS:-false}
       DATABASE_URL: postgresql://svc_webvnc_proxy:${WEBVNC_DB_PASSWORD}@postgres-oltp:5432/wiredeck_oltp?sslmode=disable
+      VALKEY_ADDR: valkey:6379
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD}
       CORE_IAM_INTERNAL_URL: http://core-iam:8081
       ORCHESTRATOR_URL: http://runner-orchestrator-ctrl:8081
       JWKS_URL: http://core-iam:8080/api/v1/iam/.well-known/jwks.json
@@ -342,6 +382,8 @@ services:
     depends_on:
       oltp-migrator:
         condition: service_completed_successfully
+      valkey:
+        condition: service_healthy
       core-iam:
         condition: service_healthy
     restart: unless-stopped

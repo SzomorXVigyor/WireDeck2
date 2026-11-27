@@ -1,0 +1,13 @@
+-- +goose Up
+ALTER TABLE sites
+  DROP COLUMN IF EXISTS status,
+  DROP COLUMN IF EXISTS handshake_state,
+  DROP COLUMN IF EXISTS last_handshake_at,
+  DROP COLUMN IF EXISTS status_updated_at;
+
+-- +goose Down
+ALTER TABLE sites
+  ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'UNKNOWN' CHECK (status IN ('ONLINE', 'DEGRADED', 'OFFLINE', 'UNKNOWN')),
+  ADD COLUMN IF NOT EXISTS handshake_state TEXT NOT NULL DEFAULT 'UNSPECIFIED',
+  ADD COLUMN IF NOT EXISTS last_handshake_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS status_updated_at TIMESTAMPTZ;

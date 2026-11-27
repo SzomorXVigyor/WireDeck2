@@ -19,6 +19,7 @@ import (
 	wcrypto "wiredeck/pkg/crypto"
 	"wiredeck/pkg/internalclient"
 	"wiredeck/pkg/mailgopher"
+	"wiredeck/pkg/valkey"
 	"wiredeck/pkg/wireguard"
 	"wiredeck/services/core-iam/internal/models"
 	"wiredeck/services/core-iam/internal/password"
@@ -48,6 +49,7 @@ type Config struct {
 
 type IAMService struct {
 	db           *bun.DB
+	vk           *valkey.Client
 	cfg          Config
 	signer       *auth.Signer
 	wgCipher     *wcrypto.Cipher
@@ -89,6 +91,83 @@ func NewIAMService(
 }
 
 func (s *IAMService) Signer() *auth.Signer { return s.signer }
+
+// SetValkey attaches the shared Valkey runtime/cache client to IAMService.
+func (s *IAMService) SetValkey(vk *valkey.Client) { s.vk = vk }
+
+func (s *IAMService) hydrateSitesRuntime(ctx context.Context, sites []*models.Site) {
+	if len(sites) == 0 {
+		return
+	}
+	var rtByKey map[string]valkey.RunnerRuntime
+	if s.vk != nil {
+		keys := make([]string, len(sites))
+		for i, site := range sites {
+			keys[i] = valkey.KeyRunnerRuntime(site.ID)
+		}
+		if res, err := valkey.MGetJSON[valkey.RunnerRuntime](ctx, s.vk, keys); err == nil {
+			rtByKey = res
+		} else {
+			slog.Warn("valkey_mget_site_runtime_failed", "error", err)
+		}
+	}
+	for _, site := range sites {
+		if !site.IsActive {
+			site.Status = "OFFLINE"
+			site.HandshakeState = "UNSPECIFIED"
+			site.LastHandshakeAt = nil
+			continue
+		}
+		if rt, ok := rtByKey[valkey.KeyRunnerRuntime(site.ID)]; ok {
+			if rt.Status != "" {
+				site.Status = rt.Status
+			} else {
+				site.Status = "UNKNOWN"
+			}
+			if rt.HandshakeState != "" {
+				site.HandshakeState = rt.HandshakeState
+			} else {
+				site.HandshakeState = "UNSPECIFIED"
+			}
+			site.LastHandshakeAt = rt.LastHandshakeAt
+		} else {
+			site.Status = "UNKNOWN"
+			site.HandshakeState = "UNSPECIFIED"
+			site.LastHandshakeAt = nil
+		}
+	}
+}
+
+func (s *IAMService) hydrateSiteRuntime(ctx context.Context, site *models.Site) {
+	if site == nil {
+		return
+	}
+	s.hydrateSitesRuntime(ctx, []*models.Site{site})
+}
+
+func (s *IAMService) invalidateSiteCache(ctx context.Context, siteID uuid.UUID) {
+	if s.vk == nil {
+		return
+	}
+	_ = s.vk.Del(ctx, valkey.KeySitesRuntime())
+	_ = s.vk.DelByPrefix(ctx, valkey.PrefixAuthzSite(siteID))
+	_ = s.vk.DelByPrefix(ctx, valkey.PrefixUserSitesAll())
+}
+
+func (s *IAMService) invalidateMembershipCache(ctx context.Context, siteID, userID uuid.UUID) {
+	if s.vk == nil {
+		return
+	}
+	_ = s.vk.Del(ctx, valkey.KeyAuthz(siteID, userID), valkey.KeyUserSites(userID))
+}
+
+func (s *IAMService) invalidateUserCache(ctx context.Context, userID uuid.UUID) {
+	if s.vk == nil {
+		return
+	}
+	_ = s.vk.Del(ctx, valkey.KeyUserSites(userID))
+	_ = s.vk.DelByPrefix(ctx, valkey.PrefixAuthzAll())
+}
 
 // BootstrapAdmin creates the initial platform admin idempotently if zero platform admins exist.
 func (s *IAMService) BootstrapAdmin(ctx context.Context) error {
@@ -561,6 +640,7 @@ func (s *IAMService) UpdateUser(ctx context.Context, userID uuid.UUID, status *s
 			Where("user_id = ? AND revoked_at IS NULL", u.ID).
 			Exec(ctx)
 	}
+	s.invalidateUserCache(ctx, u.ID)
 	return u, nil
 }
 
@@ -572,6 +652,7 @@ func (s *IAMService) DeleteUser(ctx context.Context, userID uuid.UUID) error {
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
 	}
+	s.invalidateUserCache(ctx, userID)
 	return nil
 }
 
@@ -588,6 +669,11 @@ func (s *IAMService) ListAccessibleSites(ctx context.Context, userID uuid.UUID, 
 		if err := s.db.NewSelect().Model(&sites).Order("name ASC").Scan(ctx); err != nil {
 			return nil, err
 		}
+		ptrs := make([]*models.Site, len(sites))
+		for i := range sites {
+			ptrs[i] = &sites[i]
+		}
+		s.hydrateSitesRuntime(ctx, ptrs)
 		out := make([]AccessibleSite, len(sites))
 		for i, site := range sites {
 			out[i] = AccessibleSite{Site: site, Role: models.RoleSiteOperator}
@@ -604,6 +690,13 @@ func (s *IAMService) ListAccessibleSites(ctx context.Context, userID uuid.UUID, 
 	if err != nil {
 		return nil, err
 	}
+	ptrs := make([]*models.Site, 0, len(memberships))
+	for _, m := range memberships {
+		if m.Site != nil {
+			ptrs = append(ptrs, m.Site)
+		}
+	}
+	s.hydrateSitesRuntime(ctx, ptrs)
 	out := make([]AccessibleSite, 0, len(memberships))
 	for _, m := range memberships {
 		if m.Site != nil {
@@ -622,12 +715,14 @@ func (s *IAMService) GetSiteForUser(ctx context.Context, siteID, userID uuid.UUI
 		return nil, err
 	}
 	if isPlatformAdmin {
+		s.hydrateSiteRuntime(ctx, site)
 		return &AccessibleSite{Site: *site, Role: models.RoleSiteOperator}, nil
 	}
 	m := new(models.SiteMembership)
 	if err := s.db.NewSelect().Model(m).Where("site_id = ? AND user_id = ?", siteID, userID).Scan(ctx); err != nil {
 		return nil, ErrForbidden
 	}
+	s.hydrateSiteRuntime(ctx, site)
 	return &AccessibleSite{Site: *site, Role: m.Role}, nil
 }
 
@@ -700,6 +795,8 @@ func (s *IAMService) CreateSite(ctx context.Context, in CreateSiteInput) (*model
 			slog.Warn("runner_sync_on_create_failed", "site_id", site.ID, "error", err)
 		}
 	}
+	s.invalidateSiteCache(ctx, site.ID)
+	s.hydrateSiteRuntime(ctx, site)
 	return site, parsed.Warnings, nil
 }
 
@@ -726,6 +823,8 @@ func (s *IAMService) UpdateSiteSettings(ctx context.Context, siteID uuid.UUID, n
 		WherePK().Exec(ctx); err != nil {
 		return nil, err
 	}
+	s.invalidateSiteCache(ctx, site.ID)
+	s.hydrateSiteRuntime(ctx, site)
 	return site, nil
 }
 
@@ -762,6 +861,8 @@ func (s *IAMService) UpdateSiteConf(ctx context.Context, siteID uuid.UUID, rawCo
 			slog.Warn("runner_sync_on_conf_rotate_failed", "site_id", site.ID, "error", err)
 		}
 	}
+	s.invalidateSiteCache(ctx, site.ID)
+	s.hydrateSiteRuntime(ctx, site)
 	return site, parsed.Warnings, nil
 }
 
@@ -779,15 +880,14 @@ func (s *IAMService) SetSiteActive(ctx context.Context, siteID uuid.UUID, active
 	}
 	site.IsActive = active
 	site.UpdatedAt = time.Now().UTC()
-	if !active {
-		site.Status = "OFFLINE"
-	}
-	if _, err := s.db.NewUpdate().Model(site).Column("is_active", "status", "updated_at").WherePK().Exec(ctx); err != nil {
+	if _, err := s.db.NewUpdate().Model(site).Column("is_active", "updated_at").WherePK().Exec(ctx); err != nil {
 		return nil, err
 	}
 	if err := s.syncRunner(ctx, site, string(plainConf)); err != nil {
 		return nil, fmt.Errorf("sync runner state: %w", err)
 	}
+	s.invalidateSiteCache(ctx, site.ID)
+	s.hydrateSiteRuntime(ctx, site)
 	return site, nil
 }
 
@@ -798,6 +898,15 @@ func (s *IAMService) DeleteSite(ctx context.Context, siteID uuid.UUID) error {
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
+	}
+	s.invalidateSiteCache(ctx, siteID)
+	if s.vk != nil {
+		_ = s.vk.Del(ctx,
+			valkey.KeyRunnerRuntime(siteID),
+			valkey.KeyWebviewLatest(siteID),
+			valkey.KeyWebviewRuntime(siteID),
+			valkey.KeyVncActiveSessions(siteID),
+		)
 	}
 	// Cascade runner removal & downstream site data cleanup (best-effort)
 	if s.orchestrator != nil && s.orchestrator.BaseURL != "" {
@@ -833,6 +942,9 @@ func (s *IAMService) UpsertSiteMember(ctx context.Context, siteID, userID uuid.U
 		Set("role = EXCLUDED.role").
 		Returning("*").
 		Exec(ctx)
+	if err == nil {
+		s.invalidateMembershipCache(ctx, siteID, userID)
+	}
 	return sm, err
 }
 
@@ -846,6 +958,7 @@ func (s *IAMService) RemoveSiteMember(ctx context.Context, siteID, userID uuid.U
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
 	}
+	s.invalidateMembershipCache(ctx, siteID, userID)
 	return nil
 }
 
@@ -872,6 +985,7 @@ func (s *IAMService) OperatorInviteSiteMember(ctx context.Context, siteID uuid.U
 		if _, err := s.db.NewInsert().Model(sm).Exec(ctx); err != nil {
 			return nil, nil, false, false, err
 		}
+		s.invalidateMembershipCache(ctx, siteID, existing.ID)
 		return existing, sm, false, false, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
@@ -885,6 +999,7 @@ func (s *IAMService) OperatorInviteSiteMember(ctx context.Context, siteID uuid.U
 	if err != nil {
 		return nil, nil, false, false, err
 	}
+	s.invalidateMembershipCache(ctx, siteID, u.ID)
 	sm := &models.SiteMembership{SiteID: siteID, UserID: u.ID, Role: models.RoleSiteMember}
 	return u, sm, true, sent, nil
 }
@@ -903,6 +1018,9 @@ func (s *IAMService) OperatorRemoveSiteMember(ctx context.Context, siteID, targe
 		return ErrForbidden
 	}
 	_, err := s.db.NewDelete().Model(sm).WherePK().Exec(ctx)
+	if err == nil {
+		s.invalidateMembershipCache(ctx, siteID, targetUserID)
+	}
 	return err
 }
 
@@ -933,37 +1051,158 @@ func (s *IAMService) ListRunners(ctx context.Context) ([]internalclient.RunnerRe
 	return out, err
 }
 
+func (s *IAMService) GetRunner(ctx context.Context, siteID uuid.UUID) (*internalclient.RunnerRecord, error) {
+	if s.orchestrator == nil || s.orchestrator.BaseURL == "" {
+		return nil, ErrNotFound
+	}
+	var out internalclient.RunnerRecord
+	code, err := s.orchestrator.DoJSON(ctx, http.MethodGet, "/runners/"+siteID.String(), nil, &out)
+	if err != nil {
+		if code == http.StatusNotFound {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (s *IAMService) GetSiteByID(ctx context.Context, siteID uuid.UUID) (*models.Site, error) {
+	site := new(models.Site)
+	if err := s.db.NewSelect().Model(site).Where("id = ?", siteID).Scan(ctx); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	s.hydrateSiteRuntime(ctx, site)
+	return site, nil
+}
+
+type ActiveVncSessionView struct {
+	valkey.VncActiveSession
+	UserEmail string `json:"userEmail,omitempty"`
+}
+
+type SiteCacheMetrics struct {
+	WebviewSampleCount    int   `json:"webviewSampleCount"`
+	GoodSamples           int   `json:"goodSamples"`
+	StaleSamples          int   `json:"staleSamples"`
+	BadSamples            int   `json:"badSamples"`
+	SampleCacheTTLSeconds int64 `json:"sampleCacheTtlSeconds"`
+	AuthzCacheEntries     int   `json:"authzCacheEntries"`
+}
+
+type SiteRuntimeMetrics struct {
+	Site              models.Site                 `json:"-"`
+	Webview           *valkey.WebviewRuntime      `json:"webview,omitempty"`
+	Cache             SiteCacheMetrics            `json:"cache"`
+	VncActiveSessions []ActiveVncSessionView      `json:"vncActiveSessions"`
+	PendingAlarms     []valkey.AlarmPendingRecord `json:"pendingAlarms"`
+	CollectedAt       time.Time                   `json:"collectedAt"`
+}
+
+// GetSiteRuntimeMetrics aggregates application-level Valkey runtime telemetry for a single site (Platform Admin).
+func (s *IAMService) GetSiteRuntimeMetrics(ctx context.Context, siteID uuid.UUID) (*SiteRuntimeMetrics, error) {
+	site, err := s.GetSiteByID(ctx, siteID)
+	if err != nil {
+		return nil, err
+	}
+
+	out := &SiteRuntimeMetrics{
+		Site: *site,
+		Cache: SiteCacheMetrics{
+			SampleCacheTTLSeconds: -2,
+		},
+		VncActiveSessions: []ActiveVncSessionView{},
+		PendingAlarms:     []valkey.AlarmPendingRecord{},
+		CollectedAt:       time.Now().UTC(),
+	}
+
+	if s.vk == nil {
+		return out, nil
+	}
+
+	userIDSet := make(map[uuid.UUID]struct{})
+
+	if wv, ok, err := valkey.GetJSON[valkey.WebviewRuntime](ctx, s.vk, valkey.KeyWebviewRuntime(siteID)); err == nil && ok {
+		for _, sess := range wv.Sessions {
+			userIDSet[sess.UserID] = struct{}{}
+		}
+		out.Webview = &wv
+	}
+
+	if sampleMap, err := valkey.HGetAllJSON[valkey.CachedSample](ctx, s.vk, valkey.KeyWebviewLatest(siteID)); err == nil && len(sampleMap) > 0 {
+		out.Cache.WebviewSampleCount = len(sampleMap)
+		for _, sm := range sampleMap {
+			switch sm.Quality {
+			case "GOOD":
+				out.Cache.GoodSamples++
+			case "STALE":
+				out.Cache.StaleSamples++
+			default:
+				out.Cache.BadSamples++
+			}
+		}
+	}
+	if ttl, err := s.vk.TTLSeconds(ctx, valkey.KeyWebviewLatest(siteID)); err == nil {
+		out.Cache.SampleCacheTTLSeconds = ttl
+	}
+	if authzCount, err := s.vk.CountByPrefix(ctx, valkey.PrefixAuthzSite(siteID)); err == nil {
+		out.Cache.AuthzCacheEntries = authzCount
+	}
+
+	var vncRaw []valkey.VncActiveSession
+	if sessMap, err := valkey.HGetAllJSON[valkey.VncActiveSession](ctx, s.vk, valkey.KeyVncActiveSessions(siteID)); err == nil && len(sessMap) > 0 {
+		for _, sess := range sessMap {
+			userIDSet[sess.UserID] = struct{}{}
+			vncRaw = append(vncRaw, sess)
+		}
+	}
+
+	// Resolve user emails once across both WebView WS sessions and active VNC sessions.
+	userEmails := make(map[uuid.UUID]string, len(userIDSet))
+	if len(userIDSet) > 0 {
+		ids := make([]uuid.UUID, 0, len(userIDSet))
+		for uid := range userIDSet {
+			ids = append(ids, uid)
+		}
+		var users []models.User
+		if err := s.db.NewSelect().Model(&users).Column("id", "email").Where("id IN (?)", bun.In(ids)).Scan(ctx); err == nil {
+			for _, u := range users {
+				userEmails[u.ID] = u.Email
+			}
+		}
+	}
+
+	if out.Webview != nil {
+		for i := range out.Webview.Sessions {
+			out.Webview.Sessions[i].UserEmail = userEmails[out.Webview.Sessions[i].UserID]
+		}
+	}
+	for _, sess := range vncRaw {
+		out.VncActiveSessions = append(out.VncActiveSessions, ActiveVncSessionView{
+			VncActiveSession: sess,
+			UserEmail:        userEmails[sess.UserID],
+		})
+	}
+
+	if pendMap, err := valkey.HGetAllJSON[valkey.AlarmPendingRecord](ctx, s.vk, valkey.KeyAlarmPending()); err == nil {
+		for _, rec := range pendMap {
+			if rec.SiteID == siteID {
+				out.PendingAlarms = append(out.PendingAlarms, rec)
+			}
+		}
+	}
+
+	return out, nil
+}
+
 func (s *IAMService) RestartRunner(ctx context.Context, siteID uuid.UUID) error {
 	if s.orchestrator == nil || s.orchestrator.BaseURL == "" {
 		return errors.New("orchestrator URL not configured")
 	}
 	_, err := s.orchestrator.DoJSON(ctx, http.MethodPost, "/runners/"+siteID.String()+"/restart", nil, nil)
 	return err
-}
-
-// ProjectRunnerStatuses fetches runner health from runner-orchestrator and projects it onto sites.
-func (s *IAMService) ProjectRunnerStatuses(ctx context.Context) {
-	if s.orchestrator == nil || s.orchestrator.BaseURL == "" {
-		return
-	}
-	runners, err := s.ListRunners(ctx)
-	if err != nil {
-		slog.Warn("status_projection_fetch_failed", "error", err)
-		return
-	}
-	now := time.Now().UTC()
-	for _, r := range runners {
-		_, err := s.db.NewUpdate().Model((*models.Site)(nil)).
-			Set("status = ?", r.Status).
-			Set("handshake_state = ?", r.HandshakeState).
-			Set("last_handshake_at = ?", r.LastHandshakeAt).
-			Set("status_updated_at = ?", now).
-			Where("id = ?", r.SiteID).
-			Exec(ctx)
-		if err != nil {
-			slog.Warn("status_projection_update_failed", "site_id", r.SiteID, "error", err)
-		}
-	}
 }
 
 func (s *IAMService) InternalAuthz(ctx context.Context, siteID, userID uuid.UUID) (*internalclient.SiteAuthzResponse, error) {
@@ -978,6 +1217,7 @@ func (s *IAMService) InternalAuthz(ctx context.Context, siteID, userID uuid.UUID
 		}
 		return nil, err
 	}
+	s.hydrateSiteRuntime(ctx, site)
 
 	role := ""
 	allowed := false
@@ -1009,6 +1249,12 @@ func (s *IAMService) InternalRuntimeStates(ctx context.Context) ([]internalclien
 	if err := s.db.NewSelect().Model(&sites).Scan(ctx); err != nil {
 		return nil, err
 	}
+	ptrs := make([]*models.Site, len(sites))
+	for i := range sites {
+		ptrs[i] = &sites[i]
+	}
+	s.hydrateSitesRuntime(ctx, ptrs)
+
 	out := make([]internalclient.SiteRuntimeState, len(sites))
 	for i, site := range sites {
 		out[i] = internalclient.SiteRuntimeState{

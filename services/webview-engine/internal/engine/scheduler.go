@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/uptrace/bun"
 
+	"wiredeck/pkg/valkey"
 	"wiredeck/services/webview-engine/internal/models"
 	"wiredeck/services/webview-engine/internal/ownership"
 	"wiredeck/services/webview-engine/internal/provider"
@@ -112,6 +113,72 @@ func (s *Scheduler) AddSampleHook(h SampleHook) {
 	s.mu.Lock()
 	s.hooks = append(s.hooks, h)
 	s.mu.Unlock()
+}
+
+// PublishRuntime writes ephemeral per-site WebView runtime stats (WS clients, subscriptions, device poller health) to Valkey.
+func (s *Scheduler) PublishRuntime(ctx context.Context, vk *valkey.Client) {
+	if vk == nil {
+		return
+	}
+	clientStats := s.hub.SiteClientStats()
+	now := time.Now().UTC()
+
+	s.mu.Lock()
+	// Compute latest poll timestamp per device from lastPolled[mappingID]
+	lastPollByDevice := make(map[uuid.UUID]time.Time)
+	for mid, m := range s.mappings {
+		if ts, ok := s.lastPolled[mid]; ok {
+			if prev, exists := lastPollByDevice[m.DeviceID]; !exists || ts.After(prev) {
+				lastPollByDevice[m.DeviceID] = ts
+			}
+		}
+	}
+
+	bySite := make(map[uuid.UUID]*valkey.WebviewRuntime)
+	ensureSite := func(sid uuid.UUID) *valkey.WebviewRuntime {
+		rt := bySite[sid]
+		if rt == nil {
+			cs := clientStats[sid]
+			rt = &valkey.WebviewRuntime{
+				SiteID:             sid,
+				ActiveWSClients:    cs.Clients,
+				SubscribedMappings: cs.SubscribedMappings,
+				Sessions:           cs.Sessions,
+				UpdatedAt:          now,
+			}
+			bySite[sid] = rt
+		}
+		return rt
+	}
+
+	for _, dev := range s.devices {
+		rt := ensureSite(dev.SiteID)
+		bo := s.deviceBackoff[dev.ID]
+		ds := valkey.DeviceRuntimeState{
+			DeviceID: dev.ID,
+			Name:     dev.Name,
+			Healthy:  bo.failures == 0,
+			Failures: bo.failures,
+			InFlight: s.deviceInFlight[dev.ID],
+		}
+		if !bo.nextRetry.IsZero() && bo.failures > 0 {
+			nr := bo.nextRetry.UTC()
+			ds.NextRetryAt = &nr
+		}
+		if lp, ok := lastPollByDevice[dev.ID]; ok {
+			lpUTC := lp.UTC()
+			ds.LastPolledAt = &lpUTC
+		}
+		rt.Devices = append(rt.Devices, ds)
+	}
+	for sid := range clientStats {
+		ensureSite(sid)
+	}
+	s.mu.Unlock()
+
+	for sid, rt := range bySite {
+		_ = vk.SetJSON(ctx, valkey.KeyWebviewRuntime(sid), rt, valkey.TTLWebviewRuntime)
+	}
 }
 
 func (s *Scheduler) NotifySubscribed(_ uuid.UUID, mappingIDs []uuid.UUID) {

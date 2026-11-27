@@ -13,9 +13,12 @@ import (
 	"github.com/google/uuid"
 	"github.com/uptrace/bun"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	wcrypto "wiredeck/pkg/crypto"
 	"wiredeck/pkg/internalclient"
+	"wiredeck/pkg/valkey"
 	"wiredeck/pkg/wirerelay"
 	pb "wiredeck/pkg/wirerelay/v1"
 	"wiredeck/services/runner-orchestrator/internal/backend"
@@ -35,6 +38,7 @@ type connEntry struct {
 
 type Service struct {
 	db          *bun.DB
+	vk          *valkey.Client
 	backend     backend.RunnerBackend
 	cfg         Config
 	tokenCipher *wcrypto.Cipher
@@ -44,10 +48,17 @@ type Service struct {
 
 	connMu sync.Mutex
 	conns  map[uuid.UUID]*connEntry
+
+	cfgLockMu sync.Mutex
+	cfgLocks  map[uuid.UUID]*sync.Mutex
+
+	rtMu    sync.RWMutex
+	runtime map[uuid.UUID]valkey.RunnerRuntime
 }
 
 func NewService(
 	db *bun.DB,
+	vk *valkey.Client,
 	be backend.RunnerBackend,
 	cfg Config,
 	tokenCipher *wcrypto.Cipher,
@@ -57,6 +68,7 @@ func NewService(
 ) *Service {
 	return &Service{
 		db:          db,
+		vk:          vk,
 		backend:     be,
 		cfg:         cfg,
 		tokenCipher: tokenCipher,
@@ -64,7 +76,21 @@ func NewService(
 		webview:     webview,
 		webvnc:      webvnc,
 		conns:       make(map[uuid.UUID]*connEntry),
+		cfgLocks:    make(map[uuid.UUID]*sync.Mutex),
+		runtime:     make(map[uuid.UUID]valkey.RunnerRuntime),
 	}
+}
+
+func (s *Service) lockSiteConfig(siteID uuid.UUID) func() {
+	s.cfgLockMu.Lock()
+	mu, ok := s.cfgLocks[siteID]
+	if !ok {
+		mu = &sync.Mutex{}
+		s.cfgLocks[siteID] = mu
+	}
+	s.cfgLockMu.Unlock()
+	mu.Lock()
+	return mu.Unlock
 }
 
 func (s *Service) Close() {
@@ -73,6 +99,75 @@ func (s *Service) Close() {
 	for id, c := range s.conns {
 		_ = c.conn.Close()
 		delete(s.conns, id)
+	}
+}
+
+func (s *Service) saveRuntime(ctx context.Context, rt valkey.RunnerRuntime) {
+	s.rtMu.Lock()
+	s.runtime[rt.SiteID] = rt
+	s.rtMu.Unlock()
+
+	if s.vk != nil {
+		if err := s.vk.SetJSON(ctx, valkey.KeyRunnerRuntime(rt.SiteID), rt, valkey.TTLRunnerRuntime); err != nil {
+			slog.Warn("valkey_save_runner_runtime_failed", "site_id", rt.SiteID, "error", err)
+		}
+	}
+}
+
+func (s *Service) getRuntime(ctx context.Context, siteID uuid.UUID) (valkey.RunnerRuntime, bool) {
+	if s.vk != nil {
+		if rt, ok, err := valkey.GetJSON[valkey.RunnerRuntime](ctx, s.vk, valkey.KeyRunnerRuntime(siteID)); err == nil && ok {
+			return rt, true
+		}
+	}
+	s.rtMu.RLock()
+	rt, ok := s.runtime[siteID]
+	s.rtMu.RUnlock()
+	return rt, ok
+}
+
+func (s *Service) getRuntimesBatch(ctx context.Context, siteIDs []uuid.UUID) map[uuid.UUID]valkey.RunnerRuntime {
+	out := make(map[uuid.UUID]valkey.RunnerRuntime, len(siteIDs))
+	if len(siteIDs) == 0 {
+		return out
+	}
+
+	if s.vk != nil {
+		keys := make([]string, len(siteIDs))
+		for i, id := range siteIDs {
+			keys[i] = valkey.KeyRunnerRuntime(id)
+		}
+		if byKey, err := valkey.MGetJSON[valkey.RunnerRuntime](ctx, s.vk, keys); err == nil {
+			for i, id := range siteIDs {
+				if rt, ok := byKey[keys[i]]; ok {
+					out[id] = rt
+				}
+			}
+		} else {
+			slog.Warn("valkey_mget_runner_runtime_failed", "error", err)
+		}
+	}
+
+	// Fill any misses from local in-memory copy
+	s.rtMu.RLock()
+	for _, id := range siteIDs {
+		if _, ok := out[id]; !ok {
+			if rt, ok := s.runtime[id]; ok {
+				out[id] = rt
+			}
+		}
+	}
+	s.rtMu.RUnlock()
+	return out
+}
+
+func (s *Service) deleteRuntime(ctx context.Context, siteID uuid.UUID) {
+	s.rtMu.Lock()
+	delete(s.runtime, siteID)
+	s.rtMu.Unlock()
+
+	if s.vk != nil {
+		_ = s.vk.Del(ctx, valkey.KeyRunnerRuntime(siteID), valkey.KeySitesRuntime())
 	}
 }
 
@@ -88,6 +183,8 @@ func (s *Service) EnsureRunner(ctx context.Context, siteID uuid.UUID, req intern
 	if err != nil && !isNew {
 		return nil, err
 	}
+
+	prevRT, hasPrevRT := s.getRuntime(ctx, siteID)
 
 	var plainToken string
 	var encToken []byte
@@ -123,44 +220,47 @@ func (s *Service) EnsureRunner(ctx context.Context, siteID uuid.UUID, req intern
 	}
 
 	var observed backend.RunnerState
-	var lastErr *string
+	var lastErr string
+	configured := false
 	now := time.Now().UTC()
 
 	if desired == "STOPPED" {
 		if err := s.backend.Stop(ctx, siteID.String()); err != nil {
-			msg := err.Error()
-			lastErr = &msg
+			lastErr = err.Error()
 		}
 		observed, _ = s.backend.Get(ctx, siteID.String())
 	} else {
+		var prevID string
+		if !isNew && existing.ContainerID != nil {
+			prevID = *existing.ContainerID
+		}
 		observed, err = s.backend.Ensure(ctx, backend.RunnerSpec{
 			SiteID:          siteID.String(),
 			Image:           s.cfg.RunnerImage,
-			Conf:            []byte(req.Conf),
 			ConfFingerprint: req.ConfFingerprint,
 			AuthToken:       plainToken,
 			DisableIPv6:     true,
 		})
 		if err != nil {
-			msg := err.Error()
-			lastErr = &msg
+			lastErr = err.Error()
+		} else {
+			if observed.RuntimeID != prevID || !hasPrevRT || prevRT.ObservedState != "running" {
+				s.dropGRPCConn(siteID)
+			}
+			if cfgErr := s.ensureConfigured(ctx, siteID, req.Conf, plainToken, true); cfgErr != nil {
+				lastErr = cfgErr.Error()
+			} else {
+				configured = true
+			}
 		}
 	}
 
 	name := backend.ContainerName(siteID.String())
 	fp := req.ConfFingerprint
-	obsState := observed.ObservedState
 	var cid *string
 	if observed.RuntimeID != "" {
 		idCopy := observed.RuntimeID
 		cid = &idCopy
-	}
-
-	status := "UNKNOWN"
-	if desired == "STOPPED" {
-		status = "OFFLINE"
-	} else if !isNew {
-		status = existing.Status
 	}
 
 	rec := &models.Runner{
@@ -171,22 +271,12 @@ func (s *Service) EnsureRunner(ctx context.Context, siteID uuid.UUID, req intern
 		ConfFingerprint:    &fp,
 		AuthTokenEncrypted: encToken,
 		DesiredState:       desired,
-		ObservedState:      &obsState,
-		Status:             status,
-		HandshakeState:     "UNSPECIFIED",
-		LastError:          lastErr,
-		LastReconciledAt:   &now,
 		UpdatedAt:          now,
 	}
 	if !isNew {
 		rec.ID = existing.ID
-		rec.HandshakeState = existing.HandshakeState
-		rec.HandshakeAgeSeconds = existing.HandshakeAgeSeconds
-		rec.LastHandshakeAt = existing.LastHandshakeAt
-		rec.LastCheckedAt = existing.LastCheckedAt
 		_, err = s.db.NewUpdate().Model(rec).
-			Column("container_id", "image", "conf_fingerprint", "auth_token_encrypted",
-				"desired_state", "observed_state", "status", "last_error", "last_reconciled_at", "updated_at").
+			Column("container_id", "image", "conf_fingerprint", "auth_token_encrypted", "desired_state", "updated_at").
 			WherePK().Exec(ctx)
 	} else {
 		rec.ID = uuid.New()
@@ -196,9 +286,39 @@ func (s *Service) EnsureRunner(ctx context.Context, siteID uuid.UUID, req intern
 		return nil, err
 	}
 
-	dto := toDTO(*rec)
-	if lastErr != nil {
-		return &dto, fmt.Errorf("runner ensure failed: %s", *lastErr)
+	rt := valkey.RunnerRuntime{
+		SiteID:           siteID,
+		ContainerID:      observed.RuntimeID,
+		ObservedState:    observed.ObservedState,
+		Configured:       configured,
+		Status:           "UNKNOWN",
+		HandshakeState:   "UNSPECIFIED",
+		LastError:        lastErr,
+		LastReconciledAt: &now,
+	}
+	if desired == "STOPPED" {
+		rt.Status = "OFFLINE"
+		rt.Configured = false
+	} else if hasPrevRT {
+		if prevRT.Status != "" {
+			rt.Status = prevRT.Status
+		}
+		if prevRT.HandshakeState != "" {
+			rt.HandshakeState = prevRT.HandshakeState
+		}
+		rt.HandshakeAgeSeconds = prevRT.HandshakeAgeSeconds
+		rt.LastHandshakeAt = prevRT.LastHandshakeAt
+		rt.LastCheckedAt = prevRT.LastCheckedAt
+		rt.Stats = prevRT.Stats
+	}
+	s.saveRuntime(ctx, rt)
+	if s.vk != nil {
+		_ = s.vk.Del(ctx, valkey.KeySitesRuntime())
+	}
+
+	dto := toDTO(*rec, &rt)
+	if lastErr != "" {
+		return &dto, fmt.Errorf("runner ensure failed: %s", lastErr)
 	}
 	return &dto, nil
 }
@@ -209,6 +329,7 @@ func (s *Service) DeleteRunner(ctx context.Context, siteID uuid.UUID) error {
 	if err := s.backend.Remove(ctx, siteID.String()); err != nil {
 		slog.Warn("backend_remove_runner_failed", "site_id", siteID, "error", err)
 	}
+	s.deleteRuntime(ctx, siteID)
 	_, err := s.db.NewDelete().Model((*models.Runner)(nil)).Where("site_id = ?", siteID).Exec(ctx)
 	return err
 }
@@ -239,7 +360,11 @@ func (s *Service) GetRunner(ctx context.Context, siteID uuid.UUID) (*internalcli
 		}
 		return nil, err
 	}
-	dto := toDTO(*r)
+	var rtPtr *valkey.RunnerRuntime
+	if rt, ok := s.getRuntime(ctx, siteID); ok {
+		rtPtr = &rt
+	}
+	dto := toDTO(*r, rtPtr)
 	return &dto, nil
 }
 
@@ -248,9 +373,20 @@ func (s *Service) ListRunners(ctx context.Context) ([]internalclient.RunnerRecor
 	if err := s.db.NewSelect().Model(&rows).Order("created_at ASC").Scan(ctx); err != nil {
 		return nil, err
 	}
+	siteIDs := make([]uuid.UUID, len(rows))
+	for i, r := range rows {
+		siteIDs[i] = r.SiteID
+	}
+	rtMap := s.getRuntimesBatch(ctx, siteIDs)
+
 	out := make([]internalclient.RunnerRecord, len(rows))
 	for i, r := range rows {
-		out[i] = toDTO(r)
+		var rtPtr *valkey.RunnerRuntime
+		if rt, ok := rtMap[r.SiteID]; ok {
+			rtCopy := rt
+			rtPtr = &rtCopy
+		}
+		out[i] = toDTO(r, rtPtr)
 	}
 	return out, nil
 }
@@ -279,7 +415,7 @@ func (s *Service) GetRunnerAuth(ctx context.Context, siteID uuid.UUID) (*interna
 }
 
 // ReconcileOnce diffs desired site runner state from core-iam against observed Docker state,
-// pulling missing tmpfs configs from core-iam on host reboot (D22) and healing drift.
+// pushing WireGuard configs over authenticated gRPC after container restarts/reboots and healing drift.
 func (s *Service) ReconcileOnce(ctx context.Context) {
 	if s.coreIAM == nil || s.coreIAM.BaseURL == "" {
 		return
@@ -306,20 +442,40 @@ func (s *Service) ReconcileOnce(ctx context.Context) {
 				s.dropGRPCConn(spec.SiteID)
 				_ = s.backend.Stop(ctx, spec.SiteID.String())
 			}
+			now := time.Now().UTC()
+			s.saveRuntime(ctx, valkey.RunnerRuntime{
+				SiteID:           spec.SiteID,
+				ContainerID:      obs.RuntimeID,
+				ObservedState:    obs.ObservedState,
+				Configured:       false,
+				Status:           "OFFLINE",
+				HandshakeState:   "UNSPECIFIED",
+				LastReconciledAt: &now,
+			})
 			continue
 		}
 
-		// Desired RUNNING: heal if missing, stopped, tmpfs conf wiped on reboot, fingerprint/image drifted
+		// Desired RUNNING: heal if missing, stopped, legacy bind-mount mode, fingerprint/image drifted, or unconfigured
 		needsHeal := obs.ObservedState != "running" ||
-			!obs.ConfExists ||
 			obs.ConfFingerprint != spec.ConfFingerprint ||
-			obs.Image != s.cfg.RunnerImage
+			obs.Image != s.cfg.RunnerImage ||
+			obs.ConfigMode != backend.ConfigModeGRPC
+
+		configured := true
+		if !needsHeal {
+			var known bool
+			configured, known = s.isRunnerConfigured(ctx, spec.SiteID)
+			if !known || !configured {
+				needsHeal = true
+			}
+		}
 
 		if needsHeal {
 			slog.Info("reconcile_healing_runner",
 				"site_id", spec.SiteID,
 				"observed", obs.ObservedState,
-				"conf_exists", obs.ConfExists,
+				"config_mode", obs.ConfigMode,
+				"configured", configured,
 			)
 			var confResp internalclient.RunnerConfResponse
 			if _, err := s.coreIAM.DoJSON(ctx, http.MethodGet, "/internal/sites/"+spec.SiteID.String()+"/runner-conf", nil, &confResp); err != nil {
@@ -353,8 +509,8 @@ func (s *Service) ReconcileOnce(ctx context.Context) {
 	}
 }
 
-// CheckHealthOnce polls GetHealth concurrently over persistent gRPC channels across all RUNNING runners
-// and persists RunnerHealthEvent rows ONLY on status transitions.
+// CheckHealthOnce polls GetHealth and GetStats concurrently over persistent gRPC channels across all RUNNING runners,
+// publishes live runtime snapshots to Valkey, and persists RunnerHealthEvent rows ONLY on status transitions.
 func (s *Service) CheckHealthOnce(ctx context.Context) {
 	var runners []models.Runner
 	if err := s.db.NewSelect().Model(&runners).Where("desired_state = ?", "RUNNING").Scan(ctx); err != nil {
@@ -377,6 +533,12 @@ func (s *Service) CheckHealthOnce(ctx context.Context) {
 }
 
 func (s *Service) checkOneRunner(ctx context.Context, r models.Runner) {
+	prevRT, hasPrev := s.getRuntime(ctx, r.SiteID)
+	prevStatus := "UNKNOWN"
+	if hasPrev && prevRT.Status != "" {
+		prevStatus = prevRT.Status
+	}
+
 	tok := ""
 	if len(r.AuthTokenEncrypted) > 0 {
 		if dec, err := s.tokenCipher.Decrypt(r.AuthTokenEncrypted); err == nil {
@@ -388,21 +550,41 @@ func (s *Service) checkOneRunner(ctx context.Context, r models.Runner) {
 	now := time.Now().UTC()
 	newStatus := "OFFLINE"
 	newHandshakeState := "INTERFACE_ERROR"
+	configured := false
+	observedState := prevRT.ObservedState
 	var agePtr *int64
-	var lastHSPtr *time.Time
-	var errMsg *string
+	lastHSPtr := prevRT.LastHandshakeAt
+	var errMsg string
+	var stats *valkey.RunnerStats
 
 	if err != nil {
-		msg := err.Error()
-		errMsg = &msg
+		errMsg = err.Error()
 	} else {
 		callCtx, cancel := context.WithTimeout(wirerelay.WithAuthToken(ctx, tok), 5*time.Second)
 		resp, callErr := client.GetHealth(callCtx, &pb.HealthRequest{})
 		cancel()
+
+		// Fast-path recovery: if the runner restarted on its own and lost its in-memory WG config,
+		// fetch from core-iam and push it over gRPC Configure immediately instead of waiting for reconcile.
+		if callErr == nil && !resp.GetConfigured() && s.coreIAM != nil && s.coreIAM.BaseURL != "" {
+			slog.Info("health_detected_unconfigured_runner", "site_id", r.SiteID)
+			var confResp internalclient.RunnerConfResponse
+			if _, fetchErr := s.coreIAM.DoJSON(ctx, http.MethodGet, "/internal/sites/"+r.SiteID.String()+"/runner-conf", nil, &confResp); fetchErr != nil {
+				slog.Warn("health_reconfigure_fetch_failed", "site_id", r.SiteID, "error", fetchErr)
+			} else if cfgErr := s.ensureConfigured(ctx, r.SiteID, confResp.Conf, tok, true); cfgErr != nil {
+				slog.Warn("health_reconfigure_failed", "site_id", r.SiteID, "error", cfgErr)
+			} else {
+				reCtx, reCancel := context.WithTimeout(wirerelay.WithAuthToken(ctx, tok), 5*time.Second)
+				resp, callErr = client.GetHealth(reCtx, &pb.HealthRequest{})
+				reCancel()
+			}
+		}
+
 		if callErr != nil {
-			msg := callErr.Error()
-			errMsg = &msg
+			errMsg = callErr.Error()
 		} else {
+			observedState = "running"
+			configured = resp.GetConfigured()
 			newStatus = mapTunnelStatus(resp.GetStatus())
 			newHandshakeState = resp.GetHandshakeState().String()
 			age := resp.GetHandshakeAgeSeconds()
@@ -412,45 +594,210 @@ func (s *Service) checkOneRunner(ctx context.Context, r models.Runner) {
 				lastHSPtr = &hs
 			}
 			if resp.GetErrorMessage() != "" {
-				msg := resp.GetErrorMessage()
-				errMsg = &msg
+				errMsg = resp.GetErrorMessage()
+			}
+
+			// Collect live traffic and runtime counters via GetStats (best-effort; never fails health check).
+			statsCtx, statsCancel := context.WithTimeout(wirerelay.WithAuthToken(ctx, tok), 4*time.Second)
+			stResp, stErr := client.GetStats(statsCtx, &pb.StatsRequest{})
+			statsCancel()
+			if stErr == nil {
+				stats = buildRunnerStats(stResp, prevRT.Stats, now)
+			} else if status.Code(stErr) != codes.Unimplemented {
+				slog.Debug("runner_get_stats_failed", "site_id", r.SiteID, "error", stErr)
 			}
 		}
 	}
 
-	_, err = s.db.NewUpdate().Model((*models.Runner)(nil)).
-		Set("status = ?", newStatus).
-		Set("handshake_state = ?", newHandshakeState).
-		Set("handshake_age_seconds = ?", agePtr).
-		Set("last_handshake_at = COALESCE(?, last_handshake_at)", lastHSPtr).
-		Set("last_checked_at = ?", now).
-		Set("last_error = ?", errMsg).
-		Set("updated_at = ?", now).
-		Where("id = ?", r.ID).
-		Exec(ctx)
-	if err != nil {
-		slog.Warn("health_update_failed", "site_id", r.SiteID, "error", err)
-		return
+	cid := ""
+	if r.ContainerID != nil {
+		cid = *r.ContainerID
 	}
+	rt := valkey.RunnerRuntime{
+		SiteID:              r.SiteID,
+		ContainerID:         cid,
+		ObservedState:       observedState,
+		Configured:          configured,
+		Status:              newStatus,
+		HandshakeState:      newHandshakeState,
+		HandshakeAgeSeconds: agePtr,
+		LastHandshakeAt:     lastHSPtr,
+		LastCheckedAt:       &now,
+		LastReconciledAt:    prevRT.LastReconciledAt,
+		LastError:           errMsg,
+		Stats:               stats,
+	}
+	s.saveRuntime(ctx, rt)
 
-	// Write RunnerHealthEvent ONLY on status transition
-	if r.Status != newStatus {
+	// Write RunnerHealthEvent to Postgres ONLY on status transition
+	if prevStatus != newStatus {
+		var detailPtr *string
+		if errMsg != "" {
+			detailCopy := errMsg
+			detailPtr = &detailCopy
+		}
 		ev := &models.RunnerHealthEvent{
 			SiteID:     r.SiteID,
-			FromStatus: r.Status,
+			FromStatus: prevStatus,
 			ToStatus:   newStatus,
 			OccurredAt: now,
-			Detail:     errMsg,
+			Detail:     detailPtr,
 		}
 		if _, err := s.db.NewInsert().Model(ev).Exec(ctx); err != nil {
 			slog.Warn("health_event_insert_failed", "site_id", r.SiteID, "error", err)
 		}
+		// Invalidate cached site runtime snapshot so downstream services observe transitions quickly.
+		if s.vk != nil {
+			_ = s.vk.Del(ctx, valkey.KeySitesRuntime())
+		}
 		slog.Info("runner_status_transition",
 			"site_id", r.SiteID,
-			"from", r.Status,
+			"from", prevStatus,
 			"to", newStatus,
 			"handshake_state", newHandshakeState,
 		)
+	}
+}
+
+func buildRunnerStats(resp *pb.StatsResponse, prev *valkey.RunnerStats, now time.Time) *valkey.RunnerStats {
+	if resp == nil {
+		return nil
+	}
+	peers := make([]valkey.RunnerPeerStats, 0, len(resp.GetPeers()))
+	for _, p := range resp.GetPeers() {
+		peers = append(peers, valkey.RunnerPeerStats{
+			PublicKey: p.GetPublicKey(),
+			RxBytes:   p.GetRxBytes(),
+			TxBytes:   p.GetTxBytes(),
+		})
+	}
+	var rxRate, txRate float64
+	if prev != nil && !prev.CollectedAt.IsZero() {
+		dt := now.Sub(prev.CollectedAt).Seconds()
+		if dt > 0.5 {
+			if resp.GetRxBytes() >= prev.RxBytes {
+				rxRate = float64(resp.GetRxBytes()-prev.RxBytes) / dt
+			}
+			if resp.GetTxBytes() >= prev.TxBytes {
+				txRate = float64(resp.GetTxBytes()-prev.TxBytes) / dt
+			}
+		}
+	}
+	return &valkey.RunnerStats{
+		Interface:            resp.GetInterface(),
+		RxBytes:              resp.GetRxBytes(),
+		TxBytes:              resp.GetTxBytes(),
+		RxBytesPerSec:        rxRate,
+		TxBytesPerSec:        txRate,
+		UptimeSeconds:        resp.GetUptimeSeconds(),
+		ActiveStreams:        int64(resp.GetActiveStreams()),
+		MaxStreams:           int64(resp.GetMaxStreams()),
+		DialErrorsTotal:      resp.GetDialErrorsTotal(),
+		StreamsRejectedTotal: resp.GetStreamsRejectedTotal(),
+		Peers:                peers,
+		CollectedAt:          now,
+	}
+}
+
+func (s *Service) isRunnerConfigured(ctx context.Context, siteID uuid.UUID) (bool, bool) {
+	r := new(models.Runner)
+	if err := s.db.NewSelect().Model(r).Where("site_id = ?", siteID).Scan(ctx); err != nil {
+		return false, false
+	}
+	tok := ""
+	if len(r.AuthTokenEncrypted) > 0 {
+		dec, err := s.tokenCipher.Decrypt(r.AuthTokenEncrypted)
+		if err != nil {
+			return false, false
+		}
+		tok = string(dec)
+	}
+	client, err := s.getGRPCClient(siteID)
+	if err != nil {
+		return false, false
+	}
+	callCtx, cancel := context.WithTimeout(wirerelay.WithAuthToken(ctx, tok), 3*time.Second)
+	resp, err := client.GetHealth(callCtx, &pb.HealthRequest{})
+	cancel()
+	if err != nil {
+		return false, false
+	}
+	return resp.GetConfigured(), true
+}
+
+// ensureConfigured waits for the runner's gRPC server to accept connections and pushes
+// the WireGuard config via the authenticated Configure RPC if not already configured.
+func (s *Service) ensureConfigured(ctx context.Context, siteID uuid.UUID, rawConf string, authToken string, disableIPv6 bool) error {
+	unlock := s.lockSiteConfig(siteID)
+	defer unlock()
+
+	deadline := time.Now().Add(20 * time.Second)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
+	}
+
+	var lastErr error
+	for {
+		client, err := s.getGRPCClient(siteID)
+		if err != nil {
+			lastErr = err
+		} else {
+			hCtx, hCancel := context.WithTimeout(wirerelay.WithAuthToken(ctx, authToken), 3*time.Second)
+			hResp, hErr := client.GetHealth(hCtx, &pb.HealthRequest{})
+			hCancel()
+
+			if hErr == nil {
+				if hResp.GetConfigured() {
+					return nil
+				}
+				cCtx, cCancel := context.WithTimeout(wirerelay.WithAuthToken(ctx, authToken), 10*time.Second)
+				cResp, cErr := client.Configure(cCtx, &pb.ConfigureRequest{
+					Config:      rawConf,
+					DisableIpv6: disableIPv6,
+				})
+				cCancel()
+
+				if cErr == nil {
+					if cResp.GetApplied() {
+						slog.Info("runner_configured_via_grpc", "site_id", siteID, "interface", cResp.GetInterface())
+						return nil
+					}
+					return fmt.Errorf("wirerelay configure rejected: %s", cResp.GetErrorMessage())
+				}
+
+				switch status.Code(cErr) {
+				case codes.FailedPrecondition:
+					vCtx, vCancel := context.WithTimeout(wirerelay.WithAuthToken(ctx, authToken), 3*time.Second)
+					vResp, vErr := client.GetHealth(vCtx, &pb.HealthRequest{})
+					vCancel()
+					if vErr == nil && vResp.GetConfigured() {
+						return nil
+					}
+					return fmt.Errorf("wirerelay configure precondition failed: %w", cErr)
+				case codes.InvalidArgument, codes.Unauthenticated, codes.PermissionDenied, codes.Unimplemented:
+					return fmt.Errorf("wirerelay configure failed: %w", cErr)
+				default:
+					lastErr = cErr
+				}
+			} else {
+				switch status.Code(hErr) {
+				case codes.Unauthenticated, codes.PermissionDenied:
+					return fmt.Errorf("wirerelay health auth failed: %w", hErr)
+				default:
+					lastErr = hErr
+				}
+			}
+		}
+
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out configuring runner %s via gRPC: %w", siteID, lastErr)
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(300 * time.Millisecond):
+		}
 	}
 }
 
@@ -510,19 +857,19 @@ func mapTunnelStatus(st pb.TunnelStatus) string {
 	}
 }
 
-func toDTO(r models.Runner) internalclient.RunnerRecord {
+func toDTO(r models.Runner, rt *valkey.RunnerRuntime) internalclient.RunnerRecord {
+	statusStr := "UNKNOWN"
+	if r.DesiredState == "STOPPED" {
+		statusStr = "OFFLINE"
+	}
 	rec := internalclient.RunnerRecord{
-		ID:                  r.ID,
-		SiteID:              r.SiteID,
-		ContainerName:       r.ContainerName,
-		Image:               r.Image,
-		DesiredState:        r.DesiredState,
-		Status:              r.Status,
-		HandshakeState:      r.HandshakeState,
-		HandshakeAgeSeconds: r.HandshakeAgeSeconds,
-		LastHandshakeAt:     r.LastHandshakeAt,
-		LastCheckedAt:       r.LastCheckedAt,
-		LastReconciledAt:    r.LastReconciledAt,
+		ID:             r.ID,
+		SiteID:         r.SiteID,
+		ContainerName:  r.ContainerName,
+		Image:          r.Image,
+		DesiredState:   r.DesiredState,
+		Status:         statusStr,
+		HandshakeState: "UNSPECIFIED",
 	}
 	if r.ContainerID != nil {
 		rec.ContainerID = *r.ContainerID
@@ -530,11 +877,24 @@ func toDTO(r models.Runner) internalclient.RunnerRecord {
 	if r.ConfFingerprint != nil {
 		rec.ConfFingerprint = *r.ConfFingerprint
 	}
-	if r.ObservedState != nil {
-		rec.ObservedState = *r.ObservedState
-	}
-	if r.LastError != nil {
-		rec.LastError = *r.LastError
+	if rt != nil {
+		if rt.ContainerID != "" {
+			rec.ContainerID = rt.ContainerID
+		}
+		rec.ObservedState = rt.ObservedState
+		rec.Configured = rt.Configured
+		if rt.Status != "" {
+			rec.Status = rt.Status
+		}
+		if rt.HandshakeState != "" {
+			rec.HandshakeState = rt.HandshakeState
+		}
+		rec.HandshakeAgeSeconds = rt.HandshakeAgeSeconds
+		rec.LastHandshakeAt = rt.LastHandshakeAt
+		rec.LastCheckedAt = rt.LastCheckedAt
+		rec.LastError = rt.LastError
+		rec.LastReconciledAt = rt.LastReconciledAt
+		rec.Stats = rt.Stats
 	}
 	return rec
 }

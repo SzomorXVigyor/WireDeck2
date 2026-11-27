@@ -83,7 +83,7 @@ No copying needed — copy `deploy/.env.local.example` to `deploy/.env.local` an
 
 ## 3. Host Setup (Production & Staging)
 
-> Local testing (`docker-compose.local.yml`) creates its own Docker networks and uses `/tmp/wiredeck-local-runners` automatically — just `mkdir -p /tmp/wiredeck-local-runners` and skip to Step 4.
+> Local testing (`docker-compose.local.yml`) creates its own Docker networks automatically - skip straight to Step 4.
 
 ### A. Create the Two Isolated Docker Networks (Prod & Staging)
 Leaves `172.21.0.0/16` and `172.22.0.0/16` free for remote site LANs:
@@ -92,25 +92,15 @@ docker network create --driver bridge --internal --subnet=172.30.248.0/24 --ipv6
 docker network create --driver bridge --subnet=172.30.252.0/22 --ipv6=false wiredeck-runners
 ```
 
-### B. Mount `tmpfs` for WireGuard Runner Configs (Prod & Staging)
-Keeps site WireGuard private keys in RAM only (`runner-orchestrator` repopulates automatically from `core-iam` after reboot):
-```bash
-sudo mkdir -p /var/lib/wiredeck2/runners
-sudo mount -t tmpfs -o size=16m,mode=0700 tmpfs /var/lib/wiredeck2/runners
-```
-Persist across reboots in `/etc/fstab`:
-```bash
-grep -q '/var/lib/wiredeck2/runners' /etc/fstab || \
-  echo 'tmpfs /var/lib/wiredeck2/runners tmpfs size=16m,mode=0700 0 0' | sudo tee -a /etc/fstab
-```
-
-### C. Load the `wireguard` Kernel Module (Prod & Staging)
+### B. Load the `wireguard` Kernel Module (Prod & Staging)
 Site runners only receive `NET_ADMIN` (not `SYS_MODULE`), so the host kernel must already have the `wireguard` module loaded:
 ```bash
 sudo modprobe wireguard
 echo wireguard | sudo tee /etc/modules-load.d/wireguard.conf
 ```
 *(If your server is a Proxmox LXC container, run those two commands on the **Proxmox host**.)*
+
+> **No host `tmpfs` mount needed:** `runner-orchestrator` delivers each site's WireGuard config over WireRelay's authenticated gRPC `Configure` RPC. WireRelay writes only to a container-private `/run/wireguard` `tmpfs` mount during `wg-quick up` and immediately shreds the temporary file so private keys never touch host disk.
 
 ---
 
@@ -126,8 +116,8 @@ for k in WG_CONF_ENCRYPTION_KEY VNC_PASSWORD_ENCRYPTION_KEY RUNNER_TOKEN_ENCRYPT
   echo "${k}=$(openssl rand -base64 32)"
 done
 
-# URL-safe DB passwords (hex avoids @, :, /, #, ?, % breaking DATABASE_URL parsing)
-for k in OLTP_ADMIN_PASSWORD IAM_DB_PASSWORD ORCHESTRATOR_DB_PASSWORD WEBVNC_DB_PASSWORD WEBVIEW_DB_PASSWORD TSDB_ADMIN_PASSWORD TSDB_HISTORY_PASSWORD; do
+# URL-safe DB & Valkey passwords (hex avoids @, :, /, #, ?, % breaking URL parsing)
+for k in OLTP_ADMIN_PASSWORD IAM_DB_PASSWORD ORCHESTRATOR_DB_PASSWORD WEBVNC_DB_PASSWORD WEBVIEW_DB_PASSWORD TSDB_ADMIN_PASSWORD TSDB_HISTORY_PASSWORD VALKEY_PASSWORD; do
   echo "${k}=$(openssl rand -hex 24)"
 done
 ```
@@ -211,7 +201,6 @@ Staging includes **Watchtower** (`nickfedor/watchtower:1.24.1`, opt-in scoped to
 
 **Local (builds from local source):**
 ```bash
-mkdir -p /tmp/wiredeck-local-runners && chmod 700 /tmp/wiredeck-local-runners
 docker compose -f deploy/docker-compose.local.yml --env-file deploy/.env.local up -d --build
 # App: http://localhost:8080  |  Mailpit: http://localhost:18025
 ```

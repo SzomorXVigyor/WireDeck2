@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"wiredeck/pkg/valkey"
 )
 
 // SiteAuthzResponse is returned by core-iam GET /internal/sites/{siteId}/authz?user_id=.
@@ -63,23 +65,25 @@ type EnsureRunnerRequest struct {
 	DesiredState    string `json:"desiredState"` // RUNNING | STOPPED
 }
 
-// RunnerRecord represents a runner's observed status returned by runner-orchestrator.
+// RunnerRecord represents a runner's desired config + live observed status/stats from Valkey.
 type RunnerRecord struct {
-	ID                  uuid.UUID  `json:"id"`
-	SiteID              uuid.UUID  `json:"siteId"`
-	ContainerName       string     `json:"containerName"`
-	ContainerID         string     `json:"containerId,omitempty"`
-	Image               string     `json:"image"`
-	ConfFingerprint     string     `json:"confFingerprint,omitempty"`
-	DesiredState        string     `json:"desiredState"`
-	ObservedState       string     `json:"observedState,omitempty"`
-	Status              string     `json:"status"`
-	HandshakeState      string     `json:"handshakeState"`
-	HandshakeAgeSeconds *int64     `json:"handshakeAgeSeconds,omitempty"`
-	LastHandshakeAt     *time.Time `json:"lastHandshakeAt,omitempty"`
-	LastCheckedAt       *time.Time `json:"lastCheckedAt,omitempty"`
-	LastError           string     `json:"lastError,omitempty"`
-	LastReconciledAt    *time.Time `json:"lastReconciledAt,omitempty"`
+	ID                  uuid.UUID           `json:"id"`
+	SiteID              uuid.UUID           `json:"siteId"`
+	ContainerName       string              `json:"containerName"`
+	ContainerID         string              `json:"containerId,omitempty"`
+	Image               string              `json:"image"`
+	ConfFingerprint     string              `json:"confFingerprint,omitempty"`
+	DesiredState        string              `json:"desiredState"`
+	ObservedState       string              `json:"observedState,omitempty"`
+	Configured          bool                `json:"configured"`
+	Status              string              `json:"status"`
+	HandshakeState      string              `json:"handshakeState"`
+	HandshakeAgeSeconds *int64              `json:"handshakeAgeSeconds,omitempty"`
+	LastHandshakeAt     *time.Time          `json:"lastHandshakeAt,omitempty"`
+	LastCheckedAt       *time.Time          `json:"lastCheckedAt,omitempty"`
+	LastError           string              `json:"lastError,omitempty"`
+	LastReconciledAt    *time.Time          `json:"lastReconciledAt,omitempty"`
+	Stats               *valkey.RunnerStats `json:"stats,omitempty"`
 }
 
 // RunnerAuthResponse is returned by runner-orchestrator GET /runners/{siteId}/token

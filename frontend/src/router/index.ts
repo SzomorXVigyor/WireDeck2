@@ -125,6 +125,11 @@ const router = createRouter({
           component: () => import('../modules/platform-admin/AdminSitesView.vue'),
         },
         {
+          path: 'sites/:siteId',
+          name: 'admin-site-detail',
+          component: () => import('../modules/platform-admin/AdminSiteDetailView.vue'),
+        },
+        {
           path: 'users',
           name: 'admin-users',
           component: () => import('../modules/platform-admin/AdminUsersView.vue'),
@@ -133,6 +138,11 @@ const router = createRouter({
           path: 'runners',
           name: 'admin-runners',
           component: () => import('../modules/platform-admin/AdminRunnersView.vue'),
+        },
+        {
+          path: 'runners/:siteId',
+          name: 'admin-runner-detail',
+          component: () => import('../modules/platform-admin/AdminRunnerDetailView.vue'),
         },
         {
           path: 'profile',

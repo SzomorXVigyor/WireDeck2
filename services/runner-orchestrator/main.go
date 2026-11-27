@@ -17,6 +17,7 @@ import (
 	"wiredeck/pkg/internalclient"
 	"wiredeck/pkg/k8s"
 	"wiredeck/pkg/telemetry"
+	"wiredeck/pkg/valkey"
 	"wiredeck/services/runner-orchestrator/internal/backend"
 	"wiredeck/services/runner-orchestrator/internal/httpapi"
 	"wiredeck/services/runner-orchestrator/internal/orchestrator"
@@ -50,6 +51,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	var vkClient *valkey.Client
+	if vkAddr := strings.TrimSpace(os.Getenv("VALKEY_ADDR")); vkAddr != "" {
+		vkClient, err = valkey.Connect(ctx, vkAddr, os.Getenv("VALKEY_PASSWORD"))
+		if err != nil {
+			slog.Error("valkey_connect_failed", "addr", vkAddr, "error", err)
+			os.Exit(1)
+		}
+		defer vkClient.Close()
+		slog.Info("valkey_connected", "addr", vkAddr)
+	}
+
 	tokenCipher, err := wcrypto.NewCipherFromBase64(mustEnv("RUNNER_TOKEN_ENCRYPTION_KEY"))
 	if err != nil {
 		slog.Error("token_cipher_init_failed", "error", err)
@@ -58,7 +70,6 @@ func main() {
 
 	dockerBackend, err := backend.NewDockerBackend(backend.DockerConfig{
 		NetworkName: getEnv("RUNNER_NETWORK", "wiredeck-runners"),
-		ConfDir:     getEnv("RUNNER_CONF_DIR", "/var/lib/wiredeck2/runners"),
 	})
 	if err != nil {
 		slog.Error("docker_backend_init_failed", "error", err)
@@ -76,6 +87,7 @@ func main() {
 	internalToken := mustEnv("INTERNAL_API_TOKEN")
 	orchSvc := orchestrator.NewService(
 		dbBundle.Bun,
+		vkClient,
 		dockerBackend,
 		orchestrator.Config{
 			RunnerImage: runnerImage,
@@ -92,9 +104,10 @@ func main() {
 
 	var leader k8s.LeaderElector = k8s.NoopLeader{}
 
-	// 60s reconciliation loop (runs immediately on boot for tmpfs recovery - D22)
+	// 60s reconciliation loop (runs immediately on boot to restore gRPC configs after restarts)
 	go leader.RunAsLeader(ctx, "runner-orchestrator-reconcile", func(lctx context.Context) {
 		orchSvc.ReconcileOnce(lctx)
+		orchSvc.CheckHealthOnce(lctx)
 		ticker := time.NewTicker(reconcileInterval)
 		defer ticker.Stop()
 		for {
@@ -107,7 +120,7 @@ func main() {
 		}
 	})
 
-	// 30s health polling loop
+	// 30s health + stats polling loop
 	go leader.RunAsLeader(ctx, "runner-orchestrator-health", func(lctx context.Context) {
 		ticker := time.NewTicker(healthInterval)
 		defer ticker.Stop()
@@ -121,6 +134,16 @@ func main() {
 		}
 	})
 
+	readyCheck := func(rctx context.Context) error {
+		if err := dbBundle.Pool.Ping(rctx); err != nil {
+			return err
+		}
+		if vkClient != nil {
+			return vkClient.Ping(rctx)
+		}
+		return nil
+	}
+
 	// Bind internal API strictly on wiredeck-control subnet (D20/D21) so runners on wiredeck-runners cannot reach it
 	lis, err := api.ListenOnSubnet(internalAddr, os.Getenv("BIND_SUBNET"))
 	if err != nil {
@@ -128,12 +151,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	router := httpapi.NewRouter(orchSvc, internalToken, dbBundle.Pool.Ping)
+	router := httpapi.NewRouter(orchSvc, internalToken, readyCheck)
 	srv := &http.Server{Handler: router, ReadHeaderTimeout: 10 * time.Second}
 
 	// Localhost-only healthcheck probe server so Docker HEALTHCHECK works regardless of BIND_SUBNET IP
 	probeMux := http.NewServeMux()
-	probeMux.HandleFunc("/readyz", telemetry.ReadyzHandler(dbBundle.Pool.Ping))
+	probeMux.HandleFunc("/readyz", telemetry.ReadyzHandler(readyCheck))
 	probeSrv := &http.Server{Addr: "127.0.0.1:8082", Handler: probeMux, ReadHeaderTimeout: 5 * time.Second}
 	go func() { _ = probeSrv.ListenAndServe() }()
 

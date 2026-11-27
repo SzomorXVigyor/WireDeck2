@@ -7,7 +7,9 @@ Centralized, multi-site industrial telemetry, remote browser VNC, and alerting p
 - **Backend (100% Go):** `core-iam`, `runner-orchestrator`, `webvnc-proxy`, `webview-engine`, sharing a common `pkg/` layer (`uptrace/bun`, `pgx/v5`, `chi`, `huma/v2` OpenAPI 3.1 + strict JSON Schema validation).
 - **Frontend (Vue 3 + TypeScript + Vite):** Three-surface modular SPA (`OperatorLayout`, lazy-loaded `SiteAdminLayout`, lazy-loaded `PlatformAdminLayout`).
 - **Datastores:** Dedicated `postgres:18.7-alpine` (4 role-isolated OLTP schemas) + dedicated `timescale/timescaledb:2.32.1-pg18` (hypertables + continuous aggregates for sensor & register history).
-- **Site Runners & Email:** Consumes hardened [WireRelay](../WireRelay) (`v1.1.0+`, auto-pulled by `runner-orchestrator` if absent locally) and [MailGopher](../MailGopher) (`v1.2.0+`) images.
+- **In-Memory Caching:** `valkey` (in-memory key-value store) for shared caches and temporary data.
+- **gRPC Tunnels:** `wirerelay` (per-site gRPC tunnel runner) for secure, low-latency, bidirectional communication with remote sites.
+- **Email:** `mailgopher` a scalable gRCP email forwarder.
 - **Network Isolation:** Segmented `wiredeck-control` (`internal: true`) and `wiredeck-runners` Docker bridges, dual-port public (`:8080`) vs internal (`:8081`) HTTP APIs, and Kubernetes-ready interfaces (`RunnerBackend`, `OwnershipProvider`, `LeaderElector`, `HistoryStore`).
 
 ## Documentation
@@ -25,8 +27,7 @@ See [deploy/PRODUCTION.md](./deploy/PRODUCTION.md) for full Production, Staging,
 ### Local Development (Builds from Source)
 
 ```sh
-# 1. Create local runner config directory & env file
-mkdir -p /tmp/wiredeck-local-runners && chmod 700 /tmp/wiredeck-local-runners
+# 1. Create local env file
 cp deploy/.env.local.example deploy/.env.local
 # Fill in JWT_PRIVATE_KEY_B64 and the 4 encryption/API keys (see deploy/PRODUCTION.md Step 4)
 
@@ -41,11 +42,7 @@ docker compose -f deploy/docker-compose.local.yml --env-file deploy/.env.local u
 docker network create --driver bridge --internal --subnet=172.30.248.0/24 --ipv6=false wiredeck-control
 docker network create --driver bridge --subnet=172.30.252.0/22 --ipv6=false wiredeck-runners
 
-# 2. Mount tmpfs for ephemeral runner WireGuard configs (private keys never touch disk)
-sudo mkdir -p /var/lib/wiredeck2/runners
-sudo mount -t tmpfs -o size=16m,mode=0700 tmpfs /var/lib/wiredeck2/runners
-
-# 3. Configure environment and launch
+# 2. Configure environment and launch
 cp deploy/.env.prod.example deploy/.env && chmod 600 deploy/.env
 # Edit deploy/.env with generated secrets, WIREDECK_VERSION, domain, and SMTP_ACCOUNTS
 docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env pull

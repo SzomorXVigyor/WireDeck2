@@ -18,6 +18,7 @@ import (
 	"wiredeck/pkg/db"
 	"wiredeck/pkg/internalclient"
 	"wiredeck/pkg/telemetry"
+	"wiredeck/pkg/valkey"
 	"wiredeck/services/webvnc-proxy/internal/httpapi"
 	"wiredeck/services/webvnc-proxy/internal/proxy"
 	"wiredeck/services/webvnc-proxy/internal/sitecache"
@@ -50,6 +51,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	var vkClient *valkey.Client
+	if vkAddr := strings.TrimSpace(os.Getenv("VALKEY_ADDR")); vkAddr != "" {
+		vkClient, err = valkey.Connect(ctx, vkAddr, os.Getenv("VALKEY_PASSWORD"))
+		if err != nil {
+			slog.Error("valkey_connect_failed", "addr", vkAddr, "error", err)
+			os.Exit(1)
+		}
+		defer vkClient.Close()
+		slog.Info("valkey_connected", "addr", vkAddr)
+	}
+
 	passCipher, err := wcrypto.NewCipherFromBase64(mustEnv("VNC_PASSWORD_ENCRYPTION_KEY"))
 	if err != nil {
 		slog.Error("vnc_cipher_init_failed", "error", err)
@@ -68,11 +80,24 @@ func main() {
 		}
 	})
 
+	cache.SetValkey(vkClient)
+
 	vncSvc = proxy.NewService(dbBundle.Bun, passCipher, cache, proxy.Config{
 		IdleTimeout:   parseDuration(getEnv("VNC_IDLE_TIMEOUT", "15m"), 15*time.Minute),
 		MaxSession:    parseDuration(getEnv("VNC_MAX_SESSION", "8h"), 8*time.Hour),
 		DevDirectDial: isTruthy(os.Getenv("DEV_DIRECT_DIAL")),
 	})
+	vncSvc.SetValkey(vkClient)
+
+	readyCheck := func(rctx context.Context) error {
+		if err := dbBundle.Pool.Ping(rctx); err != nil {
+			return err
+		}
+		if vkClient != nil {
+			return vkClient.Ping(rctx)
+		}
+		return nil
+	}
 
 	// 15s runtime-state poll from core-iam:8081
 	go func() {
@@ -99,7 +124,7 @@ func main() {
 	}
 	internalSrv := &http.Server{
 		Addr:              internalAddr,
-		Handler:           httpapi.NewInternalRouter(vncSvc, internalToken, dbBundle.Pool.Ping),
+		Handler:           httpapi.NewInternalRouter(vncSvc, internalToken, readyCheck),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

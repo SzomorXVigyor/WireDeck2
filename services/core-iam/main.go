@@ -15,9 +15,9 @@ import (
 	wcrypto "wiredeck/pkg/crypto"
 	"wiredeck/pkg/db"
 	"wiredeck/pkg/internalclient"
-	"wiredeck/pkg/k8s"
 	"wiredeck/pkg/mailgopher"
 	"wiredeck/pkg/telemetry"
+	"wiredeck/pkg/valkey"
 	"wiredeck/pkg/wireguard"
 	"wiredeck/services/core-iam/internal/httpapi"
 	"wiredeck/services/core-iam/internal/service"
@@ -48,6 +48,17 @@ func main() {
 	if err := dbBundle.RunMigrations(ctx, migrations.FS, "."); err != nil {
 		slog.Error("database_migrations_failed", "error", err)
 		os.Exit(1)
+	}
+
+	var vkClient *valkey.Client
+	if vkAddr := strings.TrimSpace(os.Getenv("VALKEY_ADDR")); vkAddr != "" {
+		vkClient, err = valkey.Connect(ctx, vkAddr, os.Getenv("VALKEY_PASSWORD"))
+		if err != nil {
+			slog.Error("valkey_connect_failed", "addr", vkAddr, "error", err)
+			os.Exit(1)
+		}
+		defer vkClient.Close()
+		slog.Info("valkey_connected", "addr", vkAddr)
 	}
 
 	accessTTL := parseDuration(getEnv("ACCESS_TOKEN_TTL", "15m"), 15*time.Minute)
@@ -91,25 +102,22 @@ func main() {
 		internalclient.NewHTTPClient(os.Getenv("WEBVNC_INTERNAL_URL"), internalToken, 10*time.Second),
 	)
 
+	iamSvc.SetValkey(vkClient)
+
 	if err := iamSvc.BootstrapAdmin(ctx); err != nil {
 		slog.Error("bootstrap_admin_failed", "error", err)
 		os.Exit(1)
 	}
 
-	// 15s site status projection loop (LeaderElector K8s seam)
-	var leader k8s.LeaderElector = k8s.NoopLeader{}
-	go leader.RunAsLeader(ctx, "core-iam-status-projection", func(lctx context.Context) {
-		ticker := time.NewTicker(15 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-lctx.Done():
-				return
-			case <-ticker.C:
-				iamSvc.ProjectRunnerStatuses(lctx)
-			}
+	readyCheck := func(rctx context.Context) error {
+		if err := dbBundle.Pool.Ping(rctx); err != nil {
+			return err
 		}
-	})
+		if vkClient != nil {
+			return vkClient.Ping(rctx)
+		}
+		return nil
+	}
 
 	publicAddr := getEnv("PUBLIC_ADDR", ":8080")
 	publicSrv := &http.Server{
@@ -123,7 +131,7 @@ func main() {
 
 	internalSrv := &http.Server{
 		Addr:              internalAddr,
-		Handler:           httpapi.NewInternalRouter(iamSvc, internalToken, dbBundle.Pool.Ping),
+		Handler:           httpapi.NewInternalRouter(iamSvc, internalToken, readyCheck),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

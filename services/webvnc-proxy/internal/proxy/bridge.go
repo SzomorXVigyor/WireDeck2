@@ -20,6 +20,7 @@ import (
 	"github.com/uptrace/bun"
 
 	wcrypto "wiredeck/pkg/crypto"
+	"wiredeck/pkg/valkey"
 	"wiredeck/pkg/wireguard"
 	"wiredeck/pkg/wirerelay"
 	pb "wiredeck/pkg/wirerelay/v1"
@@ -57,6 +58,7 @@ type activeSession struct {
 
 type Service struct {
 	db     *bun.DB
+	vk     *valkey.Client
 	cipher *wcrypto.Cipher
 	cache  *sitecache.Cache
 	cfg    Config
@@ -66,6 +68,11 @@ type Service struct {
 
 	sessMu   sync.Mutex
 	sessions map[uuid.UUID]map[uuid.UUID]*activeSession // siteID -> sessionID -> handle
+}
+
+// SetValkey enables Valkey-backed single-use WS tickets and live active-session telemetry.
+func (s *Service) SetValkey(vk *valkey.Client) {
+	s.vk = vk
 }
 
 func NewService(db *bun.DB, cipher *wcrypto.Cipher, cache *sitecache.Cache, cfg Config) *Service {
@@ -267,6 +274,19 @@ func (s *Service) IssueTicket(ctx context.Context, siteID, targetID, userID uuid
 		return "", time.Time{}, err
 	}
 	exp := time.Now().UTC().Add(s.cfg.TicketTTL)
+	ticket := Ticket{
+		SiteID:    siteID,
+		TargetID:  targetID,
+		UserID:    userID,
+		ExpiresAt: exp,
+	}
+
+	if s.vk != nil {
+		if err := s.vk.SetJSON(ctx, valkey.KeyVncWSTicket(raw), ticket, s.cfg.TicketTTL); err != nil {
+			return "", time.Time{}, err
+		}
+		return raw, exp, nil
+	}
 
 	s.ticketMu.Lock()
 	now := time.Now().UTC()
@@ -275,18 +295,21 @@ func (s *Service) IssueTicket(ctx context.Context, siteID, targetID, userID uuid
 			delete(s.tickets, k)
 		}
 	}
-	s.tickets[raw] = Ticket{
-		SiteID:    siteID,
-		TargetID:  targetID,
-		UserID:    userID,
-		ExpiresAt: exp,
-	}
+	s.tickets[raw] = ticket
 	s.ticketMu.Unlock()
 
 	return raw, exp, nil
 }
 
-func (s *Service) consumeTicket(raw string) (Ticket, error) {
+func (s *Service) consumeTicket(ctx context.Context, raw string) (Ticket, error) {
+	if s.vk != nil {
+		t, ok, err := valkey.ConsumeJSON[Ticket](ctx, s.vk, valkey.KeyVncWSTicket(raw))
+		if err != nil || !ok || time.Now().UTC().After(t.ExpiresAt) {
+			return Ticket{}, ErrInvalidTicket
+		}
+		return t, nil
+	}
+
 	s.ticketMu.Lock()
 	t, ok := s.tickets[raw]
 	if ok {
@@ -343,7 +366,7 @@ type PreparedSession struct {
 // authorization, loads the active VNC target, and decrypts any saved VNC password
 // before the HTTP handler upgrades the connection to WebSocket.
 func (s *Service) PrepareStream(ctx context.Context, rawTicket string) (*PreparedSession, error) {
-	ticket, err := s.consumeTicket(rawTicket)
+	ticket, err := s.consumeTicket(ctx, rawTicket)
 	if err != nil {
 		return nil, ErrInvalidTicket
 	}
@@ -451,15 +474,44 @@ func (s *Service) HandleStream(ctx context.Context, ws *websocket.Conn, prep *Pr
 	lastActivity := atomic.Int64{}
 	lastActivity.Store(time.Now().UnixNano())
 
-	// Idle timeout watchdog (D14)
+	publishLiveSession := func() {
+		if s.vk == nil {
+			return
+		}
+		pctx, pcancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer pcancel()
+		_ = s.vk.HSetJSON(pctx, valkey.KeyVncActiveSessions(ticket.SiteID), sessID.String(), valkey.VncActiveSession{
+			SessionID:      sessID,
+			SiteID:         ticket.SiteID,
+			TargetID:       target.ID,
+			TargetName:     target.Name,
+			UserID:         ticket.UserID,
+			StartedAt:      sessRow.StartedAt,
+			LastActivityAt: time.Unix(0, lastActivity.Load()).UTC(),
+			BytesIn:        bytesIn.Load(),
+			BytesOut:       bytesOut.Load(),
+			UpdatedAt:      time.Now().UTC(),
+		}, valkey.TTLVncActive)
+	}
+	publishLiveSession()
+	defer func() {
+		if s.vk != nil {
+			dctx, dcancel := context.WithTimeout(context.Background(), 2*time.Second)
+			_ = s.vk.HDel(dctx, valkey.KeyVncActiveSessions(ticket.SiteID), sessID.String())
+			dcancel()
+		}
+	}()
+
+	// Idle timeout watchdog (D14) + live Valkey session heartbeat
 	go func() {
-		ticker := time.NewTicker(30 * time.Second)
+		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-sessCtx.Done():
 				return
 			case <-ticker.C:
+				publishLiveSession()
 				idle := time.Since(time.Unix(0, lastActivity.Load()))
 				if idle >= s.cfg.IdleTimeout {
 					cancelWithReason("idle_timeout")

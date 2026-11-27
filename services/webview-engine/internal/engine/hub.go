@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	wcrypto "wiredeck/pkg/crypto"
+	"wiredeck/pkg/valkey"
 )
 
 const (
@@ -54,6 +55,7 @@ type wsClient struct {
 	id             uuid.UUID
 	userID         uuid.UUID
 	siteID         uuid.UUID
+	connectedAt    time.Time
 	conn           *websocket.Conn
 	sendCh         chan []byte
 	cancel         context.CancelFunc
@@ -67,6 +69,7 @@ type wsClient struct {
 type TelemetryHub struct {
 	ticketTTL   time.Duration
 	onSubChange func(siteID uuid.UUID, mappingIDs []uuid.UUID)
+	vk          *valkey.Client
 
 	ticketMu sync.Mutex
 	tickets  map[string]WSTicket
@@ -75,6 +78,54 @@ type TelemetryHub struct {
 	clients     map[uuid.UUID]*wsClient
 	mappingSubs map[uuid.UUID]map[uuid.UUID]*wsClient // mappingID -> clientID -> client
 	latest      map[uuid.UUID]ValueSample             // mappingID -> last known sample
+}
+
+// SetValkey enables Valkey-backed single-use WS tickets and warm latest-value mirroring.
+func (h *TelemetryHub) SetValkey(vk *valkey.Client) {
+	h.vk = vk
+}
+
+type SiteClientSummary struct {
+	Clients            int
+	SubscribedMappings int
+	Sessions           []valkey.WebviewActiveSession
+}
+
+// SiteClientStats returns active WebSocket client counts, active sessions, and unique subscribed mapping counts per site.
+func (h *TelemetryHub) SiteClientStats() map[uuid.UUID]SiteClientSummary {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	out := make(map[uuid.UUID]SiteClientSummary)
+	uniqueMappings := make(map[uuid.UUID]map[uuid.UUID]struct{})
+	for _, c := range h.clients {
+		c.mu.Lock()
+		subCount := len(c.subs)
+		pollMs := c.pollIntervalMs
+		for mid := range c.subs {
+			if uniqueMappings[c.siteID] == nil {
+				uniqueMappings[c.siteID] = make(map[uuid.UUID]struct{})
+			}
+			uniqueMappings[c.siteID][mid] = struct{}{}
+		}
+		c.mu.Unlock()
+
+		st := out[c.siteID]
+		st.Clients++
+		st.Sessions = append(st.Sessions, valkey.WebviewActiveSession{
+			ClientID:        c.id,
+			UserID:          c.userID,
+			ConnectedAt:     c.connectedAt,
+			SubscribedCount: subCount,
+			PollIntervalMs:  pollMs,
+		})
+		out[c.siteID] = st
+	}
+	for sid, m := range uniqueMappings {
+		st := out[sid]
+		st.SubscribedMappings = len(m)
+		out[sid] = st
+	}
+	return out
 }
 
 func NewTelemetryHub(ticketTTL time.Duration, onSubChange func(uuid.UUID, []uuid.UUID)) *TelemetryHub {
@@ -97,20 +148,41 @@ func (h *TelemetryHub) IssueTicket(siteID, userID uuid.UUID) (string, time.Time,
 		return "", time.Time{}, err
 	}
 	exp := time.Now().UTC().Add(h.ticketTTL)
-	now := time.Now().UTC()
+	ticket := WSTicket{UserID: userID, SiteID: siteID, ExpiresAt: exp}
 
+	if h.vk != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		err := h.vk.SetJSON(ctx, valkey.KeyWebviewWSTicket(raw), ticket, h.ticketTTL)
+		cancel()
+		if err != nil {
+			return "", time.Time{}, err
+		}
+		return raw, exp, nil
+	}
+
+	now := time.Now().UTC()
 	h.ticketMu.Lock()
 	for k, v := range h.tickets {
 		if now.After(v.ExpiresAt) {
 			delete(h.tickets, k)
 		}
 	}
-	h.tickets[raw] = WSTicket{UserID: userID, SiteID: siteID, ExpiresAt: exp}
+	h.tickets[raw] = ticket
 	h.ticketMu.Unlock()
 	return raw, exp, nil
 }
 
 func (h *TelemetryHub) ConsumeTicket(raw string) (WSTicket, error) {
+	if h.vk != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		t, ok, err := valkey.ConsumeJSON[WSTicket](ctx, h.vk, valkey.KeyWebviewWSTicket(raw))
+		cancel()
+		if err != nil || !ok || time.Now().UTC().After(t.ExpiresAt) {
+			return WSTicket{}, errors.New("invalid or expired WebSocket ticket")
+		}
+		return t, nil
+	}
+
 	h.ticketMu.Lock()
 	t, ok := h.tickets[raw]
 	if ok {
@@ -167,6 +239,24 @@ func (h *TelemetryHub) Publish(samples []ValueSample) {
 		}
 	}
 	h.mu.Unlock()
+
+	// Mirror latest readings to Valkey asynchronously (non-blocking) for warm snapshots across restarts.
+	if h.vk != nil {
+		bySite := make(map[uuid.UUID]map[string]any)
+		for _, s := range samples {
+			if bySite[s.SiteID] == nil {
+				bySite[s.SiteID] = make(map[string]any)
+			}
+			bySite[s.SiteID][s.MappingID.String()] = s
+		}
+		go func(siteBatches map[uuid.UUID]map[string]any) {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			for sid, fields := range siteBatches {
+				_ = h.vk.HSetManyJSON(ctx, valkey.KeyWebviewLatest(sid), fields, valkey.TTLWebviewLatest)
+			}
+		}(bySite)
+	}
 
 	for c, batch := range perClient {
 		raw, err := json.Marshal(wsServerMsg{Type: "value_update", Samples: batch})
@@ -248,13 +338,14 @@ func (h *TelemetryHub) ServeConn(ctx context.Context, conn *websocket.Conn, tick
 	defer cancel()
 
 	client := &wsClient{
-		id:     uuid.New(),
-		userID: ticket.UserID,
-		siteID: ticket.SiteID,
-		conn:   conn,
-		sendCh: make(chan []byte, 64),
-		cancel: cancel,
-		subs:   make(map[uuid.UUID]struct{}),
+		id:          uuid.New(),
+		userID:      ticket.UserID,
+		siteID:      ticket.SiteID,
+		connectedAt: time.Now().UTC(),
+		conn:        conn,
+		sendCh:      make(chan []byte, 64),
+		cancel:      cancel,
+		subs:        make(map[uuid.UUID]struct{}),
 	}
 
 	h.mu.Lock()
@@ -329,6 +420,7 @@ func (h *TelemetryHub) subscribeClient(c *wsClient, ids []uuid.UUID, pollInterva
 
 	var snapshot []ValueSample
 	var newlyActive []uuid.UUID
+	var missingFromLocal bool
 
 	c.mu.Lock()
 	h.mu.Lock()
@@ -346,10 +438,32 @@ func (h *TelemetryHub) subscribeClient(c *wsClient, ids []uuid.UUID, pollInterva
 		m[c.id] = c
 		if s, ok := h.latest[id]; ok {
 			snapshot = append(snapshot, s)
+		} else {
+			missingFromLocal = true
 		}
 	}
 	h.mu.Unlock()
 	c.mu.Unlock()
+
+	// Warm-hydrate any missing latest samples from Valkey (e.g. immediately after service restart).
+	if missingFromLocal && h.vk != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		vkLatest, err := valkey.HGetAllJSON[ValueSample](ctx, h.vk, valkey.KeyWebviewLatest(c.siteID))
+		cancel()
+		if err == nil && len(vkLatest) > 0 {
+			h.mu.Lock()
+			for _, id := range ids {
+				if _, ok := h.latest[id]; ok {
+					continue
+				}
+				if s, ok := vkLatest[id.String()]; ok {
+					h.latest[id] = s
+					snapshot = append(snapshot, s)
+				}
+			}
+			h.mu.Unlock()
+		}
+	}
 
 	if len(snapshot) > 0 {
 		if raw, err := json.Marshal(wsServerMsg{Type: "snapshot", Samples: snapshot}); err == nil {
